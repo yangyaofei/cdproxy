@@ -1,0 +1,12 @@
+{
+  "headed": true,
+  "idleTimeout": "15m",
+  "provider": "ab-proxy",
+  "plugins": [
+    {
+      "name": "ab-proxy",
+      "command": "/Users/yangyaofei/workspace/agent-browser-proxy/plugin/ab-proxy-plugin",
+      "capabilities": ["browser.provider"]
+    }
+  ]
+}

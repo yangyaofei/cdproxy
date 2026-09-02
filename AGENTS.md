@@ -56,7 +56,7 @@ Admin 页（GET /）                    keeper：Chrome @127.0.0.1:9222（profil
 | `control.py` | HTTP 控制面 + 静态页（线程桥接 asyncio） | 不写业务，只转发调用 |
 | `settings.py` | 运行时设置（**单文件 var/settings.json，无数据库**，在线生效） | 越下限钳制 |
 | `service.py` | 装配编排（端口绑定重试 / 信号 / PID 文件） | — |
-| `plugin/` | stdio 薄壳 | 不承载状态，不直接碰 Chrome |
+| `plugin/` | stdio↔HTTP 协议桥（agent-browser 只认 stdio 插件协议，故必须有可执行文件翻译；返回代理 URL 而非 Chrome URL——隔离在 proxy） | 不承载状态，不直接碰 Chrome |
 
 ## 3. 如何着手 ★
 
@@ -109,7 +109,7 @@ Admin 页：服务起来后开 `http://127.0.0.1:9224/`（状态/会话释放/�
 | 单元 | `tests/unit/`（state / settings 纯逻辑） | 无 | 每次改动 |
 | 冒烟 | `scripts/smoke_test.py` 五项判定 | 服务 + 真实 Chrome | 改 proxy/keeper 后必跑 |
 | 并发压测 | `scripts/concurrency_test.sh`（3 校验流 + 1 churn 流四路并行，零串扰判定） | 服务 + 真实 Chrome | 改转发/焦点/回收语义后必跑 |
-| 浏览器级 | agent-browser 实连（`--config var/prov-test-config.json`） | 全链路 | 接入相关改动 |
+| 浏览器级 | agent-browser 实连（`--config examples/agent-browser-config.json`） | 全链路 | 接入相关改动 |
 
 冒烟五项：预开 tab 隔离 / createTarget 归属 / attach+eval 路由 / 越权拒绝 /
 release 回收。**任何转发语义改动，五项不全绿不得提交。**

@@ -11,6 +11,12 @@ set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CFG="$DIR/var/full-config.json"
+# 自含：config 缺失则按 examples 样例生成（plugin 路径指向本仓库）
+if [ ! -f "$CFG" ]; then
+  mkdir -p "$DIR/var"
+  sed "s|/Users/yangyaofei/workspace/agent-browser-proxy/plugin/ab-proxy-plugin|$DIR/plugin/ab-proxy-plugin|" \
+    "$DIR/examples/agent-browser-config.json" > "$CFG"
+fi
 OUT="$DIR/var/conc-results"
 ITER="${1:-20}"
 rm -rf "$OUT"; mkdir -p "$OUT"

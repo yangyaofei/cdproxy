@@ -1,25 +1,22 @@
 #!/usr/bin/env python3
-"""agent-browser 的 ab-proxy plugin（薄壳）。
+"""agent-browser 的 ab-proxy plugin —— stdio 插件协议与控制面 HTTP 之间的最小桥。
 
-职责仅一件事：把 agent-browser daemon 的 browser.launch / browser.close
-请求转到本仓库的服务控制面（HTTP），返回代理后的 cdpUrl。
+为什么必须有这个文件：agent-browser 的 provider 机制只认 stdio 插件协议
+（agent-browser.plugin.v1）——它需要浏览器时启动本命令，经 stdin 发一个
+JSON 请求、要求 stdout 回一个 JSON 响应。它不会自己去调 HTTP API，
+所以总要有一个可执行文件做这个协议桥。本文件刻意保持单文件、零第三方
+依赖：将来换成任意二进制（说同样两句对话）即可无缝替换。
 
-协议（agent-browser.plugin.v1，stdio JSON）：stdin 读一个请求对象，
-stdout 写一个响应对象。Chrome 生命周期、tab 归属、CDP 改写全部在服务侧，
-本文件不承载任何状态。
+为什么返回的是代理地址而不是 Chrome 的：直接返回 Chrome 浏览器级 WS
+地址等于所有会话共享同一视图（tab 互见、操作互相干扰——这正是本代理
+要解决的问题）。这里返回的是代理的每会话端点
+ws://127.0.0.1:<ws_port>/cdp/<token>；tab 归属过滤、越权拒绝、id 重映射
+全部发生在代理内部（见 src/agent_browser_proxy/proxy.py）。
 
-agent-browser 全局配置注册方式（~/.agent-browser/config.json）：
-
-    {
-      "provider": "ab-proxy",
-      "plugins": [
-        {
-          "name": "ab-proxy",
-          "command": "<本仓库绝对路径>/plugin/ab-proxy-plugin",
-          "capabilities": ["browser.provider"]
-        }
-      ]
-    }
+职责严格限定为两句翻译：
+  browser.launch → POST /sessions {"name": <session>} → 回 {"browser": {"cdpUrl"}}
+  browser.close  → POST /sessions/<name>/release → 回成功
+服务未运行时顺带拉起（scripts/serve.sh），无其他逻辑、无状态。
 """
 
 import json
@@ -32,17 +29,10 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 CONTROL = "http://127.0.0.1:9224"
-SERVE_CMD = [
-    "uv", "run", "--project", str(REPO),
-    "python", "-m", "agent_browser_proxy", "serve",
-]
-LOG_FILE = REPO / "var" / "plugin-autostart.log"
 STARTUP_TIMEOUT = 60
 
 
-def _http(
-    method: str, path: str, body: dict | None = None, timeout: float = 30
-) -> tuple[int, dict]:
+def _http(method: str, path: str, body: dict | None = None, timeout: float = 30) -> tuple[int, dict]:
     """控制面 HTTP 调用，返回 (状态码, JSON 体)。"""
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(
@@ -58,103 +48,90 @@ def _http(
         return exc.code, json.loads(exc.read().decode("utf-8") or "{}")
 
 
-def _ensure_service() -> None:
-    """服务不在时自动拉起（一次性，等就绪）。"""
+def _alive() -> bool:
+    """控制面是否可达。"""
     try:
         code, _ = _http("GET", "/health", timeout=3)
-        if code == 200:
-            return
+        return code == 200
     except (urllib.error.URLError, OSError):
-        pass
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with LOG_FILE.open("ab") as log:
-        subprocess.Popen(
-            SERVE_CMD,
-            stdout=log,
-            stderr=log,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        return False
+
+
+def _ensure_service() -> None:
+    """服务未运行时经 serve.sh 拉起并等就绪（一次性）。"""
+    if _alive():
+        return
+    log = (REPO / "var" / "plugin-autostart.log").open("ab")
+    subprocess.Popen(
+        [str(REPO / "scripts" / "serve.sh")],
+        stdout=log,
+        stderr=log,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
     deadline = time.monotonic() + STARTUP_TIMEOUT
     while time.monotonic() < deadline:
-        try:
-            code, _ = _http("GET", "/health", timeout=3)
-            if code == 200:
-                return
-        except (urllib.error.URLError, OSError):
-            pass
+        if _alive():
+            return
         time.sleep(0.5)
     raise RuntimeError(f"服务 {STARTUP_TIMEOUT}s 内未就绪")
 
 
-def handle_launch(session: str) -> dict:
-    """browser.launch：分配会话返回代理 cdpUrl。"""
-    _ensure_service()
-    code, body = _http("POST", "/sessions", {"name": session})
-    if code != 200:
-        raise RuntimeError(f"alloc 失败 ({code}): {body}")
-    return {
-        "protocol": "agent-browser.plugin.v1",
-        "success": True,
-        "browser": {"cdpUrl": body["cdpUrl"]},
-    }
-
-
-def handle_close(session: str) -> dict:
-    """browser.close：释放会话（服务侧关名下 tab，基座不动）。"""
-    try:
-        _ensure_service()
-        code, body = _http("POST", f"/sessions/{session}/release", {})
-        if code != 200:
-            raise RuntimeError(f"release 失败 ({code}): {body}")
-    except (urllib.error.URLError, RuntimeError, OSError, KeyError) as exc:
-        print(f"ab-proxy-plugin close 降级（服务不可达）: {exc}", file=sys.stderr)
-    return {"protocol": "agent-browser.plugin.v1", "success": True}
+def _respond(payload: dict) -> int:
+    """按协议输出响应并退出。"""
+    print(json.dumps(payload))
+    return 0
 
 
 def main() -> int:
-    """stdio 协议主循环：读一个请求，写一个响应。"""
-    raw = sys.stdin.read()
-    # 请求形状审计（追加式，排障用；stderr 会被 agent-browser 压制故落文件）
+    """stdio 协议主循环：读一个请求，写一个响应。
+
+    信封结构：{type, capability, protocol, request:{provider, session, launchOptions}}。
+    """
     try:
-        (REPO / "var").mkdir(parents=True, exist_ok=True)
-        with (REPO / "var" / "plugin-requests.log").open("a") as log:
-            log.write(raw.strip() + "\n")
-    except OSError:
-        pass
-    try:
-        envelope = json.loads(raw)
+        envelope = json.loads(sys.stdin.read())
     except ValueError:
-        print(json.dumps({
+        return _respond({
             "protocol": "agent-browser.plugin.v1",
             "success": False,
             "error": "invalid JSON request",
-        }))
-        return 1
+        })
 
-    # 信封结构：{type, capability, protocol, request:{provider, session, launchOptions}}
     kind = str(envelope.get("type", ""))
     inner = envelope.get("request") or {}
-    session = str(inner.get("session") or envelope.get("session") or "default")
+    session = str(inner.get("session") or "default")
+
     try:
         if kind == "browser.launch":
-            response = handle_launch(session)
-        elif kind == "browser.close":
-            response = handle_close(session)
-        else:
-            response = {
+            _ensure_service()
+            code, body = _http("POST", "/sessions", {"name": session})
+            if code != 200:
+                raise RuntimeError(f"alloc 失败 ({code}): {body}")
+            return _respond({
                 "protocol": "agent-browser.plugin.v1",
-                "success": False,
-                "error": f"unsupported request type: {kind}",
-            }
+                "success": True,
+                "browser": {"cdpUrl": body["cdpUrl"]},
+            })
+        if kind == "browser.close":
+            # agent-browser 0.36.0 的 close 实际不回调 provider（回收靠断连触发，
+            # 见 AGENTS.md），此分支为协议完备性保留；服务不在则静默降级。
+            try:
+                _ensure_service()
+                _http("POST", f"/sessions/{session}/release", {})
+            except (urllib.error.URLError, RuntimeError, OSError) as exc:
+                print(f"ab-proxy-plugin close 降级: {exc}", file=sys.stderr)
+            return _respond({"protocol": "agent-browser.plugin.v1", "success": True})
+        return _respond({
+            "protocol": "agent-browser.plugin.v1",
+            "success": False,
+            "error": f"unsupported request type: {kind}",
+        })
     except (urllib.error.URLError, RuntimeError, OSError, KeyError) as exc:
-        response = {
+        return _respond({
             "protocol": "agent-browser.plugin.v1",
             "success": False,
             "error": f"{type(exc).__name__}: {exc}",
-        }
-    print(json.dumps(response))
-    return 0
+        })
 
 
 if __name__ == "__main__":

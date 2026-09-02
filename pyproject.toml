@@ -21,6 +21,14 @@ agent-browser-proxy = "agent_browser_proxy.__main__:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = [
+    "unit: 单元测试（无外部依赖）",
+    "e2e: 端到端测试（需真实 Chrome，见 scripts/smoke_test.py）",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

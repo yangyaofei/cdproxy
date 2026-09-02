@@ -94,7 +94,7 @@ uv run python scripts/smoke_test.py              # 端到端五项（需真实 C
 - `profile` 不放全局——登录态由 keeper 侧管理（默认 `~/agent-browser/profile`）
 - 自管 skill（twitter-daily 等）不受影响：它们经 `AGENT_BROWSER_CONFIG` 指向自己的干净配置
 
-不碰全局配置的试用方式：`agent-browser --config var/prov-test-config.json --session <名> open <url>`
+不碰全局配置的试用方式：`agent-browser --config examples/agent-browser-config.json --session <名> open <url>`
 （该文件即上述四键的样例）。
 
 ## 生命周期语义
