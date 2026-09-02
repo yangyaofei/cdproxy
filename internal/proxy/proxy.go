@@ -93,18 +93,26 @@ func (p *Proxy) Stop() {
 
 // AllocSession 分配会话：确保下游、登记、预开一个后台空白 tab（getTargets
 // 非空 + 与基座 UI 隔离）、排程未连兜底回收。返回上游连接地址。
+//
+// 注意 URL 必须用 session 实际注册的 token：同名未连接复用时 Alloc 返回
+// 旧 session（旧 token），若返回新生成的 token，daemon 拿来连接会命中
+// 4401 unknown session（close 后立即重开必现）。
 func (p *Proxy) AllocSession(name string) (string, error) {
 	if err := p.ensureDownstream(); err != nil {
 		return "", err
 	}
 	token := randomToken()
-	sess := p.st.Alloc(name, token)
-	if err := p.dsCommand(sess, 0, false, "Target.createTarget",
-		map[string]any{"url": "about:blank", "background": true}, "create"); err != nil {
-		p.log.Error("预开 tab 失败（会话仍可用，首个命令会开新 tab）", "session", name, "err", err)
+	sess, created := p.st.Alloc(name, token)
+	p.log.Info("alloc 会话", "session", name, "token_prefix", sess.Token[:min(8, len(sess.Token))], "reused", !created)
+	if created {
+		// 仅全新会话预开后台 tab；复用路径沿用既有 tab（避免每次 launch 泄漏一个）
+		if err := p.dsCommand(sess, 0, false, "Target.createTarget",
+			map[string]any{"url": "about:blank", "background": true}, "create"); err != nil {
+			p.log.Error("预开 tab 失败（会话仍可用，首个命令会开新 tab）", "session", name, "err", err)
+		}
+		p.scheduleReap(sess, p.store.Get().AllocReapSeconds)
 	}
-	p.scheduleReap(sess, p.store.Get().AllocReapSeconds)
-	return fmt.Sprintf("ws://127.0.0.1:%d/cdp/%s", p.wsPort, token), nil
+	return fmt.Sprintf("ws://127.0.0.1:%d/cdp/%s", p.wsPort, sess.Token), nil
 }
 
 // ReleaseSession 释放会话并尽力关闭其名下 tab（fire-and-forget）。
@@ -165,16 +173,20 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if sess == nil {
+		// 拒绝必须留痕：4401 是「token 未注册」的唯一观测点（排查连接凭证问题）
+		p.log.Warn("拒绝未知 token 的上游连接", "token_prefix", token[:min(8, len(token))])
 		_ = conn.Close(4401, "unknown session")
 		return
 	}
 	conn.SetReadLimit(64 << 20)
 	// 顶替：旧连接存在则关闭（其读循环因 WS 不再匹配而不会误清状态）
 	if old := sess.WS(); old != nil && sess.Connected() {
+		p.log.Warn("顶替同会话旧连接", "session", sess.Name, "token_prefix", token[:min(8, len(token))])
 		_ = old.Close(4400, "superseded")
 	}
+	replaced := sess.WS() != nil && sess.Connected()
 	sess.SetWS(conn)
-	p.log.Info("会话已连接", "session", sess.Name)
+	p.log.Info("会话已连接", "session", sess.Name, "token_prefix", token[:min(8, len(token))], "superseded", replaced)
 	go p.pingLoop(r.Context(), conn, 20*time.Second)
 	defer func() {
 		if sess.ClearWSIfCurrent(conn) {

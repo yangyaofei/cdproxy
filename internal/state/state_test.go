@@ -9,7 +9,8 @@ import (
 
 func alloc(t *testing.T, st *State, name string) *Session {
 	t.Helper()
-	return st.Alloc(name, "token-"+name)
+	s, _ := st.Alloc(name, "token-"+name)
+	return s
 }
 
 func TestAllocFreshSession(t *testing.T) {
@@ -26,22 +27,46 @@ func TestAllocFreshSession(t *testing.T) {
 func TestAllocSameNameUnconnectedReuses(t *testing.T) {
 	st := New()
 	s1 := alloc(t, st, "a")
-	s2 := st.Alloc("a", "token-a2")
+	s2, _ := st.Alloc("a", "token-a2")
 	if s1 != s2 {
 		t.Fatal("未连接应复用同一 session")
 	}
 }
 
-func TestAllocSameNameConnectedReplaces(t *testing.T) {
+func TestAllocReuseKeepsOriginalToken(t *testing.T) {
+	// 不变量：复用路径保留原 token——AllocSession 返回的连接 URL 以
+	// sess.Token 拼接，若此处换新 token，daemon 重连必命中 4401。
+	st := New()
+	s1, _ := st.Alloc("a", "tok-1")
+	s2, _ := st.Alloc("a", "tok-2")
+	if s1 != s2 {
+		t.Fatal("未连接应复用")
+	}
+	if s2.Token != "tok-1" {
+		t.Fatalf("复用必须保留原 token，实际 %q", s2.Token)
+	}
+	if st.FindByToken("tok-1") != s2 {
+		t.Fatal("原 token 必须仍可定位")
+	}
+	if st.FindByToken("tok-2") != nil {
+		t.Fatal("未注册的新 token 不应可定位")
+	}
+}
+
+func TestAllocSameNameConnectedAlsoReuses(t *testing.T) {
+	// 连接中的同名 alloc 也复用（接管由 WS supersede 完成，token 保持稳定）
 	st := New()
 	s1 := alloc(t, st, "a")
 	fakeWS(s1)
-	s2 := st.Alloc("a", "token-a2")
-	if s1 == s2 {
-		t.Fatal("连接中应顶掉并新建")
+	s2, created := st.Alloc("a", "token-a2")
+	if s1 != s2 || created {
+		t.Fatal("同名一律复用，不新建")
 	}
-	if st.FindByToken("token-a") != nil {
-		t.Fatal("旧 token 应失活")
+	if s2.Token != "token-a" {
+		t.Fatalf("token 应保持稳定，实际 %q", s2.Token)
+	}
+	if st.FindByToken("token-a") != s2 {
+		t.Fatal("原 token 应仍可定位")
 	}
 }
 
@@ -131,7 +156,7 @@ func TestConcurrentAllocAndPending(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s := st.Alloc("race", "token-race")
+			s, _ := st.Alloc("race", "token-race")
 			st.NextDsID(s, 1, true, "")
 			st.OwnTarget(s, "tid")
 		}()

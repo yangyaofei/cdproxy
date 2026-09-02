@@ -117,20 +117,21 @@ func New() *State {
 	}
 }
 
-// Alloc 按名分配 session；同名未连接则复用（重连语义），连接中则顶掉。
-func (st *State) Alloc(name string, token string) *Session {
+// Alloc 按名分配 session：同名一律复用（保留原 token 与归属）。
+//
+// 连接的接管由 WS 层 supersede 完成（新连接顶替旧连接），会话对象与
+// token 保持稳定——daemon 重开时会连续多次 launch，replace 语义会制造
+// 连接孤儿与 tab 泄漏。返回值 created 表示是否全新创建。
+func (st *State) Alloc(name string, token string) (*Session, bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if existing, ok := st.sessions[name]; ok && !existing.Connected() {
-		return existing
-	}
 	if existing, ok := st.sessions[name]; ok {
-		st.drop(existing)
+		return existing, false
 	}
 	sess := &Session{Name: name, Token: token, ownedTargets: map[string]struct{}{}}
 	st.sessions[name] = sess
 	st.byToken[token] = sess
-	return sess
+	return sess, true
 }
 
 // Release 释放 session，返回其名下 target 列表（调用方负责关 tab）。
