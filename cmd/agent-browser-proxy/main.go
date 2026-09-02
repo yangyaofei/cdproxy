@@ -1,0 +1,423 @@
+// agent-browser-proxy 主入口。
+//
+// 子命令：
+//
+//	serve   前台运行服务（keeper + 代理 + 管理面）
+//	status  查看运行状态
+//	stop    停止运行中的服务
+//	plugin  agent-browser stdio 插件模式（也可隐式触发：无参数 + stdin 为管道）
+//
+// 隐式 plugin 模式的意义：agent-browser 的插件配置只需
+//
+//	{"command": "<本二进制路径>"}（无需 args 字段——其支持性未经验证）
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"os/user"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/yangyaofei/agent-browser-proxy/internal/control"
+	"github.com/yangyaofei/agent-browser-proxy/internal/keeper"
+	"github.com/yangyaofei/agent-browser-proxy/internal/proxy"
+	"github.com/yangyaofei/agent-browser-proxy/internal/settings"
+)
+
+// version 经 -ldflags -X main.version 注入。
+var version = "dev"
+
+const usage = `agent-browser-proxy ` + "v" + `%s — Chrome CDP 隔离代理（Keeper + 多会话 WS 路由）
+
+用法:
+  agent-browser-proxy serve    [--chrome <path>] [--profile <dir>] [--cdp-port 9222]
+                               [--control-port 9224] [--ws-port 9225] [--headless]
+                               [--data-dir ~/.agent-browser/proxy]
+  agent-browser-proxy status   [--control-port 9224]
+  agent-browser-proxy stop     [--control-port 9224]
+  agent-browser-proxy plugin   (stdin/stdout 插件协议；无参数+管道 stdin 时自动进入)
+
+环境变量:
+  AB_PROXY_CONTROL   管理面地址（默认 http://127.0.0.1:9224）
+  AB_PROXY_DATA_DIR  数据目录（默认 ~/.agent-browser/proxy）
+`
+
+func main() {
+	args := os.Args[1:]
+	// 隐式 plugin：无子命令且 stdin 为管道（agent-browser 以管道拉起插件）
+	if len(args) == 0 {
+		if stdinIsPipe() {
+			os.Exit(runPlugin())
+		}
+		fmt.Printf(usage, version)
+		return
+	}
+	switch args[0] {
+	case "serve":
+		os.Exit(runServe(args[1:]))
+	case "status":
+		os.Exit(runStatus(args[1:]))
+	case "stop":
+		os.Exit(runStop(args[1:]))
+	case "plugin":
+		os.Exit(runPlugin())
+	case "version", "--version", "-v":
+		fmt.Println(version)
+	default:
+		fmt.Printf(usage, version)
+		os.Exit(2)
+	}
+}
+
+func stdinIsPipe() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice == 0
+}
+
+// ── serve ────────────────────────────────────────────────────────
+
+type serveOptions struct {
+	chrome      string
+	profile     string
+	cdpPort     int
+	controlPort int
+	wsPort      int
+	headless    bool
+	dataDir     string
+}
+
+func parseServeOptions(args []string) serveOptions {
+	opts := serveOptions{cdpPort: 9222, controlPort: 9224, wsPort: 9225, dataDir: defaultDataDir()}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--chrome":
+			i++; opts.chrome = argAt(args, i)
+		case "--profile":
+			i++; opts.profile = argAt(args, i)
+		case "--cdp-port":
+			opts.cdpPort = intAt(args, i+1); i++
+		case "--control-port":
+			opts.controlPort = intAt(args, i+1); i++
+		case "--ws-port":
+			opts.wsPort = intAt(args, i+1); i++
+		case "--headless":
+			opts.headless = true
+		case "--data-dir":
+			i++; opts.dataDir = argAt(args, i)
+		}
+	}
+	return opts
+}
+
+func argAt(args []string, i int) string {
+	if i < len(args) {
+		return args[i]
+	}
+	return ""
+}
+
+func intAt(args []string, i int) int {
+	if i < len(args) {
+		if v, err := strconv.Atoi(args[i]); err == nil {
+			return v
+		}
+	}
+	return 0
+}
+
+func defaultDataDir() string {
+	if v := os.Getenv("AB_PROXY_DATA_DIR"); v != "" {
+		return v
+	}
+	home := os.Getenv("HOME")
+	if u, err := user.Current(); err == nil && home == "" {
+		home = u.HomeDir
+	}
+	return filepath.Join(home, ".agent-browser", "proxy")
+}
+
+func controlBase(args []string) string {
+	// status/stop 的控制面地址：flag > env > 默认
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--control-port" && i+1 < len(args) {
+			return "http://127.0.0.1:" + args[i+1]
+		}
+	}
+	if v := os.Getenv("AB_PROXY_CONTROL"); v != "" {
+		return v
+	}
+	return "http://127.0.0.1:9224"
+}
+
+func runServe(args []string) int {
+	opts := parseServeOptions(args)
+
+	if err := os.MkdirAll(opts.dataDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "数据目录创建失败: %v\n", err)
+		return 1
+	}
+	logPath := filepath.Join(opts.dataDir, "service.log")
+	logger := newLogger(logPath)
+	logger.Info("服务启动", "version", version, "data_dir", opts.dataDir)
+
+	// PID 文件（stop 的 SIGTERM 兜底用）
+	pidPath := filepath.Join(opts.dataDir, "agent-browser-proxy.pid")
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		logger.Warn("PID 文件写入失败", "err", err)
+	}
+	defer func() { _ = os.Remove(pidPath) }()
+
+	// keeper 配置
+	kcfg := keeper.Defaults()
+	if opts.chrome != "" {
+		kcfg.ChromePath = opts.chrome
+	}
+	if opts.profile != "" {
+		kcfg.ProfileDir = opts.profile
+	}
+	kcfg.CDPPort = opts.cdpPort
+	kcfg.Headless = opts.headless
+
+	store := settings.NewStore(filepath.Join(opts.dataDir, "settings.json"))
+
+	shutdown := make(chan struct{})
+	p := proxy.New(kcfg, opts.wsPort, store, logger)
+	if err := p.Start(); err != nil {
+		logger.Error("代理启动失败", "err", err)
+		return 1
+	}
+
+	ctl := control.New(p, store, kcfg, logPath, func() { close(shutdown) }, logger)
+	controlAddr := fmt.Sprintf("127.0.0.1:%d", opts.controlPort)
+	if _, err := control.StartControl(controlAddr, ctl.Handler(), logger); err != nil {
+		logger.Error("管理面启动失败", "err", err)
+		return 1
+	}
+	logger.Info("服务就绪",
+		"control", controlAddr,
+		"proxy_ws", fmt.Sprintf("ws://127.0.0.1:%d/cdp/<token>", opts.wsPort),
+		"cdp", fmt.Sprintf("127.0.0.1:%d", opts.cdpPort),
+	)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	select {
+	case <-ctx.Done():
+		logger.Info("收到停止信号")
+	case <-shutdown:
+		logger.Info("收到管理面停机指令")
+	}
+	p.Stop()
+	logger.Info("服务已停止")
+	return 0
+}
+
+func newLogger(logPath string) *slog.Logger {
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return slog.New(slog.NewTextHandler(os.Stderr, nil))
+	}
+	return slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, file), nil))
+}
+
+// ── status / stop ────────────────────────────────────────────────
+
+func runStatus(args []string) int {
+	body, code := httpGet(controlBase(args) + "/status")
+	if code != 200 {
+		fmt.Fprintf(os.Stderr, "服务不可达（HTTP %d）\n", code)
+		return 1
+	}
+	var pretty any
+	if err := json.Unmarshal(body, &pretty); err == nil {
+		out, _ := json.MarshalIndent(pretty, "", "  ")
+		fmt.Println(string(out))
+	} else {
+		fmt.Println(string(body))
+	}
+	return 0
+}
+
+func runStop(args []string) int {
+	base := controlBase(args)
+	_, code := httpPost(base+"/shutdown", nil)
+	if code == 200 {
+		fmt.Println("停机指令已发送")
+		// 等待退出（PID 消失）
+		pidPath := filepath.Join(defaultDataDir(), "agent-browser-proxy.pid")
+		for i := 0; i < 30; i++ {
+			if _, err := os.Stat(pidPath); os.IsNotExist(err) {
+				fmt.Println("服务已停止")
+				return 0
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		fmt.Println("停机指令已发送（等待退出超时，请查日志）")
+		return 0
+	}
+	// HTTP 不通 → PID 兜底 SIGTERM
+	pidPath := filepath.Join(defaultDataDir(), "agent-browser-proxy.pid")
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "服务不可达且无 PID 文件\n")
+		return 1
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "PID 文件损坏\n")
+		return 1
+	}
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		fmt.Fprintf(os.Stderr, "SIGTERM 失败: %v\n", err)
+		return 1
+	}
+	fmt.Println("已发送 SIGTERM")
+	return 0
+}
+
+func httpGet(url string) ([]byte, int) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, 0
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	return body, resp.StatusCode
+}
+
+func httpPost(url string, payload []byte) ([]byte, int) {
+	resp, err := http.Post(url, "application/json", strings.NewReader(string(payload)))
+	if err != nil {
+		return nil, 0
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	return body, resp.StatusCode
+}
+
+// ── plugin（agent-browser stdio 协议桥）──────────────────────────
+
+// pluginResponse 协议信封。
+type pluginResponse struct {
+	Protocol string         `json:"protocol"`
+	Success  bool           `json:"success"`
+	Browser  *pluginBrowser `json:"browser,omitempty"`
+	Error    string         `json:"error,omitempty"`
+}
+
+type pluginBrowser struct {
+	CdpURL string `json:"cdpUrl"`
+}
+
+func runPlugin() int {
+	raw, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Error: "stdin 读取失败"})
+		return 1
+	}
+	var envelope struct {
+		Type    string `json:"type"`
+		Request struct {
+			Session string `json:"session"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Error: "invalid JSON request"})
+		return 1
+	}
+	session := envelope.Request.Session
+	if session == "" {
+		session = "default"
+	}
+	switch envelope.Type {
+	case "browser.launch":
+		if err := ensureServiceUp(); err != nil {
+			respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Error: fmt.Sprintf("服务拉起失败: %v", err)})
+			return 1
+		}
+		body, code := httpPost(controlBase(nil)+"/sessions", mustJSON(map[string]string{"name": session}))
+		if code != 200 {
+			respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Error: fmt.Sprintf("alloc 失败 (HTTP %d): %s", code, string(body))})
+			return 1
+		}
+		var alloc struct {
+			CdpURL string `json:"cdpUrl"`
+		}
+		_ = json.Unmarshal(body, &alloc)
+		respondPlugin(pluginResponse{
+			Protocol: "agent-browser.plugin.v1",
+			Success:  true,
+			Browser:  &pluginBrowser{CdpURL: alloc.CdpURL},
+		})
+		return 0
+	case "browser.close":
+		// agent-browser 0.36.0 的 close 实际不回调 provider（回收靠断连触发）；
+		// 此分支为协议完备性保留，服务不在则静默降级。
+		_, _ = httpPost(controlBase(nil)+"/sessions/"+session+"/release", nil)
+		respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Success: true})
+		return 0
+	default:
+		respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Error: "unsupported request type: " + envelope.Type})
+		return 1
+	}
+}
+
+// ensureServiceUp 控制面存活检查，不可达则自启动（脱离会话）并等就绪。
+func ensureServiceUp() error {
+	if _, code := httpGet(controlBase(nil) + "/health"); code == 200 {
+		return nil
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	dataDir := defaultDataDir()
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(filepath.Join(dataDir, "plugin-autostart.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = logFile.Close() }()
+	cmd := exec.Command(self, "serve", "--data-dir", dataDir)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, code := httpGet(controlBase(nil) + "/health"); code == 200 {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("60s 内未就绪")
+}
+
+func respondPlugin(resp pluginResponse) {
+	out, _ := json.Marshal(resp)
+	fmt.Println(string(out))
+}
+
+func mustJSON(v any) []byte {
+	data, _ := json.Marshal(v)
+	return data
+}

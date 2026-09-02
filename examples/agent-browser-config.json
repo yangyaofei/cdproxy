@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "ab-proxy",
-      "command": "/Users/yangyaofei/workspace/agent-browser-proxy/plugin/ab-proxy-plugin",
+      "command": "/Users/yangyaofei/workspace/agent-browser-proxy/var/agent-browser-proxy",
       "capabilities": ["browser.provider"]
     }
   ]

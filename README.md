@@ -25,40 +25,50 @@ agent-browser-proxy 服务
 隔离语义：每个 session 只能看到、操作自己名下的 tab；基座 Chrome 与登录态全体共享，
 一个 session 的 close 不影响他人。
 
-## 快速开始
+## 快速开始（Go 主实现）
 
 ```bash
-uv sync --dev                                    # 安装依赖（含开发工具）
-scripts/serve.sh                                 # 分离启动服务（脱离调用方进程组）
+# 构建（单二进制，含内嵌 Admin 页）
+CGO_ENABLED=0 go build -ldflags="-s -w" -o var/agent-browser-proxy ./cmd/agent-browser-proxy
 
-# 状态 / 停止
-uv run python -m agent_browser_proxy status
-uv run python -m agent_browser_proxy stop
+var/agent-browser-proxy serve                    # 前台运行（keeper/代理/管理面）
+var/agent-browser-proxy status                   # 状态 / 停止（stop）
+open http://127.0.0.1:9224/                      # Admin 页（状态/释放/设置/日志/停机）
 
-# Admin 页（状态 / 会话释放 / 运行时设置 / 日志尾巴 / 停机）
-open http://127.0.0.1:9224/
+# 交叉编译（示例：Linux amd64）
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o var/agent-browser-proxy-linux ./cmd/agent-browser-proxy
 
 # 质量门禁 + 测试
-uv run ruff check src/ tests/ scripts/ plugin/
-uv run mypy src/
-uv run pytest                                     # 单元测试
-uv run python scripts/smoke_test.py              # 端到端五项（需真实 Chrome）
-./scripts/concurrency_test.sh 20                   # 并发压测（四路并行零串扰）
+go vet ./...
+go test ./...                                    # 单元测试
+uv run python scripts/smoke_test.py              # 端到端五项（需真实 Chrome，语言无关）
+./scripts/concurrency_test.sh 20                  # 并发压测（自动构建二进制，四路并行零串扰）
 ```
+
+插件配置无需 `args` 字段——二进制在「无子命令 + stdin 为管道」时自动进入 plugin 模式
+（`{"command": "<二进制绝对路径>"}` 即可）。
+
+数据目录默认 `~/.agent-browser/proxy/`（settings.json / service.log / pid），
+`--data-dir` 可覆盖。
 
 ## 工程结构
 
 ```
 ├── AGENTS.md                 # AI 协作入口（架构/规范/工作流）
-├── src/agent_browser_proxy/
-│   ├── keeper.py / proxy.py / state.py     # 基座 + CDP 转发核心
-│   ├── control.py / service.py / __main__.py
-│   └── settings.py           # 运行时设置（Admin 在线改，var/settings.json 持久化）
-├── static/admin/             # Admin 页（Alpine 无构建 + vendored，见 static/README.md）
-├── plugin/ab-proxy-plugin    # agent-browser 薄壳（stdio JSON → 控制面）
-├── scripts/                  # serve.sh（分离启动）/ smoke_test.py（五项判定）
-├── tests/unit/               # 纯逻辑单测（pytest）
-└── var/                      # 运行数据（日志/settings/pid，gitignore）
+├── go.mod / assets.go        # Go 模块 + 静态资产内嵌（package assets 在仓库根）
+├── cmd/agent-browser-proxy/  # CLI 入口（serve/status/stop/plugin + 隐式 plugin）
+├── internal/
+│   ├── keeper/               # Chrome 基座生命周期
+│   ├── proxy/                # CDP 转发核心（归属/路由/重映射/焦点/回收）
+│   ├── state/                # 会话与关联表
+│   ├── control/              # 管理面 HTTP + 内嵌 Admin 页
+│   └── settings/             # 运行时设置
+├── static/admin/             # Admin 页（Alpine 无构建 + vendored，go:embed 内嵌）
+├── src/agent_browser_proxy/  # Python 参考实现（语义基准，Go 版的行为对齐依据）
+├── plugin/ab-proxy-plugin    # Python 插件壳（参考；Go 二进制自带 plugin 模式）
+├── scripts/                  # smoke_test.py（五项判定）/ concurrency_test.sh
+├── internal/*/​*_test.go      # Go 单元测试
+└── var/                      # 运行数据（gitignore；Go 版数据目录默认 ~/.agent-browser/proxy）
 ```
 
 ## 运行时设置

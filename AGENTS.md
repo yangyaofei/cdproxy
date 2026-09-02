@@ -81,6 +81,16 @@ Admin 页（GET /）                    keeper：Chrome @127.0.0.1:9222（profil
 
 ## 5. 开发命令
 
+Go 主实现（cd 仓库根）：
+
+```bash
+CGO_ENABLED=0 go build -ldflags="-s -w" -o var/agent-browser-proxy ./cmd/agent-browser-proxy
+go vet ./... && go test ./...     # 门禁
+var/agent-browser-proxy serve     # 运行（status/stop 同入口）
+```
+
+Python 参考实现（语义基准，行为对齐依据）：
+
 ```bash
 uv sync --dev                                   # 安装依赖（含 dev）
 scripts/serve.sh                                # 分离启动服务（脱离进程组）
