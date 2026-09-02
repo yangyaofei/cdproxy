@@ -74,6 +74,17 @@
             <span class="hint">分配后从未连接的回收时限（防泄漏）</span>
           </td>
         </tr>
+        <tr>
+          <td><label for="s-focus">焦点策略</label></td>
+          <td>
+            <select id="s-focus" x-model="form.focus_mode">
+              <option value="background">不抢焦点（background）</option>
+              <option value="steal">原生（steal）</option>
+            </select>
+            <span class="hint">background：tab 创建/切换不抢用户焦点（createTarget 后台 +
+              activate/bringToFront 拦截）；需要真实可视操作时切原生</span>
+          </td>
+        </tr>
       </table>
       <div>
         <button class="primary" @click="saveSettings()" :disabled="busy || !dirty()">保存设置</button>

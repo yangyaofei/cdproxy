@@ -44,6 +44,7 @@ Admin 页（GET /）                    keeper：Chrome @127.0.0.1:9222（profil
 | 下游 | 代理到 Chrome 的单条浏览器级 WS（全体共享，id 重映射在此发生） |
 | 归属（ownership） | tab（targetId）属于创建它的 session；getTargets 只见自己的 |
 | 回收（reap） | 断连 60s / 分配后未连接 300s（运行时设置可调）→ 关名下 tab 摘会话 |
+| 焦点策略（focus_mode） | background（默认）：createTarget 强制 background + activateTarget/bringToFront 假成功不转发，操作不抢用户焦点；steal=原生 |
 
 ### 模块职责表
 

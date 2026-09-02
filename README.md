@@ -66,6 +66,7 @@ uv run python scripts/smoke_test.py              # 端到端五项（需真实 C
 |---|---|---|
 | `disconnect_reap_seconds` | 60 | 上游断连后的回收宽限（容忍 daemon 重启） |
 | `alloc_reap_seconds` | 300 | 分配后从未连接的回收时限（防泄漏） |
+| `focus_mode` | background | 焦点策略：background=不抢用户焦点（createTarget 强制后台 + activateTarget/bringToFront 拦截假成功）；steal=原生 |
 
 修改渠道：Admin 页（即改即生效）或 `PUT /settings`；持久化到 `var/settings.json`。
 **单文件设置，无数据库**。

@@ -209,6 +209,16 @@ class CdpProxy:
                 await self._reject(session, up_id, f"target {tid} 属于其他 session")
                 return
 
+        # ── 焦点策略（background 模式：不抢用户焦点）──
+        if self._settings.settings.focus_mode == "background":
+            if method == "Target.createTarget":
+                params = dict(params)
+                params["background"] = True
+                msg = {**msg, "params": params}
+            elif method in ("Target.activateTarget", "Page.bringToFront"):
+                await self._fake_success(session, up_id, method)
+                return
+
         tag: str | None = None
         if method == "Target.createTarget":
             tag = "create"
@@ -222,6 +232,19 @@ class CdpProxy:
             out["id"] = self.state.next_ds_id(session, int(up_id), tag)
         # sessionId 身份传递（每 session 独立 attach，字符串天然不冲突）
         await self._ds_send(json.dumps(out))
+
+    async def _fake_success(
+        self, session: ProxySession, up_id: Any, method: str
+    ) -> None:
+        """background 焦点模式下对抢焦点命令回假成功（不转发下游）。"""
+        logger.info("抑制 %s（background 焦点模式, session %s）", method, session.name)
+        if up_id is None or session.ws is None:
+            return
+        resp = {"id": int(up_id), "result": {}}
+        try:
+            await session.ws.send(json.dumps(resp))
+        except (OSError, websockets.WebSocketException):
+            logger.warning("假成功响应发送失败（session %s）", session.name)
 
     async def _reject(
         self, session: ProxySession, up_id: Any, message: str

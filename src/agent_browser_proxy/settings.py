@@ -8,6 +8,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,11 @@ _MIN_VALUES = {
     "alloc_reap_seconds": 5.0,
 }
 
+# 枚举字段合法值（非法值回落首项）
+_ENUM_VALUES = {
+    "focus_mode": ("background", "steal"),
+}
+
 
 @dataclass
 class RuntimeSettings:
@@ -24,10 +30,13 @@ class RuntimeSettings:
 
     :param disconnect_reap_seconds: 上游断连后的回收宽限（容忍 daemon 重启）。
     :param alloc_reap_seconds: 分配后从未连接的回收时限（防泄漏）。
+    :param focus_mode: 焦点策略。background=不抢焦点（createTarget 强制
+        background、activateTarget/bringToFront 假成功不转发）；steal=原生行为。
     """
 
     disconnect_reap_seconds: float = 60.0
     alloc_reap_seconds: float = 300.0
+    focus_mode: str = "background"
 
 
 def default_settings_path() -> Path:
@@ -52,9 +61,12 @@ class SettingsStore:
             logger.warning("settings.json 损坏，回落默认值: %s", self._path)
             return RuntimeSettings()
         known = {f.name: f.type for f in fields(RuntimeSettings)}
-        kwargs = {
+        kwargs: dict[str, Any] = {
             k: v for k, v in data.items() if k in known and isinstance(v, (int, float))
         }
+        for key, allowed in _ENUM_VALUES.items():
+            if data.get(key) in allowed:
+                kwargs[key] = data[key]
         return RuntimeSettings(**kwargs)
 
     def update(self, patch: dict) -> RuntimeSettings:
@@ -66,6 +78,10 @@ class SettingsStore:
             raise ValueError("settings 必须是 JSON 对象")
         current = asdict(self.settings)
         for key, value in patch.items():
+            if key in _ENUM_VALUES:
+                if value in _ENUM_VALUES[key]:
+                    current[key] = value
+                continue
             if key not in current or not isinstance(value, (int, float)):
                 continue
             minimum = _MIN_VALUES.get(key)
