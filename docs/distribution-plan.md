@@ -76,7 +76,7 @@ builds:
 - 需 `--add-data static/admin`；运行数据目录须从仓库 var/ 迁 `~/.agent-browser/`
 - 自用免签名；对外分发需 codesign + notarize
 
-## Skill 改造计划（记录待办）
+## Skill 改造计划（已完成 2026-09-02）
 
 - 定位：机制研究/规则 → **安装 + 使用手册**；建议更名
   `agent-browser-keeper` → `agent-browser-proxy`
@@ -86,7 +86,9 @@ builds:
   排障（服务自启链路 / keeper 死 → status / 端口冲突 / tab 泄漏 → release）
   红线（killall 禁令 / 并发 default 撞归属）
 - references/（mechanism.md 410 行研究史 + compat-inventory.md 存量扫描）保留为历史依据
-- 时机：oh-my-agents PR #1 review 合并后
+- 已执行：oh-my-agents skills/browser-skill-isolation 分支 commit 9707efe
+  （目录更名 agent-browser-keeper → agent-browser-proxy，SKILL.md 重写为
+  安装+使用手册，references 加历史档案头），随 PR #1 review
 
 ## 决策点
 
