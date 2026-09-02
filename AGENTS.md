@@ -67,6 +67,7 @@ Admin 页（GET /）                    keeper：Chrome @127.0.0.1:9222（profil
 
 - 新增一个运行时设置：`settings.py` 加字段（含 `_MIN_VALUES` 下限）→ Admin 页
   `index.html` 加输入 + `app.js` 加 save 字段 → `tests/unit/test_settings.py` 补用例。
+- 基座保护：`Browser.close` 在代理侧拦截（假成功），任何会话杀不掉共享 Chrome
 - 调整 CDP 过滤规则：`proxy.py` `_on_upstream_message`（命令守卫）与
   `_on_ds_event`（事件路由）成对改 → smoke_test 五项必须全绿。
 - 换 Chrome 路径/profile：`keeper.py::KeeperConfig.defaults()` 或 serve 参数。

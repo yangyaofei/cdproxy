@@ -10,6 +10,11 @@
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# socket 目录隔离：本脚本的 agent-browser 会话不进默认目录，
+# 与用户日常会话互不可见——close --all 双向都不会误伤。
+export AGENT_BROWSER_SOCKET_DIR="$DIR/var/ab-sock"
+mkdir -p "$AGENT_BROWSER_SOCKET_DIR"
 CFG="$DIR/var/full-config.json"
 BIN="$DIR/var/agent-browser-proxy"
 # 自含：Go 二进制缺失则构建；config 缺失则按 examples 样例生成（指向本仓库二进制）

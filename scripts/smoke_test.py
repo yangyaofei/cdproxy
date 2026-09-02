@@ -8,6 +8,7 @@
   T3 attach + Runtime.evaluate 全链路（1+1=2）
   T4 越权 closeTarget 被拒（error 响应）
   T5 release 后 tab 被关（getTargets 变空 / targetDestroyed 收到）
+  T6 Browser.close 被基座保护拦截（假成功 + Chrome 仍存活）
 """
 
 import asyncio
@@ -73,7 +74,7 @@ class Client:
 
 
 async def main() -> int:
-    """跑五项判定，全过返回 0。"""
+    """跑六项判定，全过返回 0。"""
     a = http_post("/sessions", {"name": f"smoke-a-{RUN_ID}"})
     b = http_post("/sessions", {"name": f"smoke-b-{RUN_ID}"})
     print(f"[alloc] a={a['cdpUrl'][-12:]} b={b['cdpUrl'][-12:]}")
@@ -142,6 +143,13 @@ async def main() -> int:
         assert not (ta & b_targets_after), f"T5 失败: a 的 tab 残留 {ta & b_targets_after}"
         assert destroyed is None or destroyed.get("params", {}).get("targetId") not in tb
         print("T5 ✓ release 关闭名下 tab，他人无感知")
+
+        # T6 Browser.close 被基座保护拦截（共享 Chrome 不许任何会话杀死）
+        kill = await cb.call("Browser.close")
+        assert "error" not in kill, f"T6 失败: 拦截返回了错误: {kill}"
+        alive = await cb.call("Browser.getVersion")
+        assert "result" in alive, f"T6 失败: 基座无响应: {alive}"
+        print("T6 ✓ Browser.close 被拦截（基座保护生效，Chrome 仍存活）")
 
     print("\n全部通过 ✅")
     return 0

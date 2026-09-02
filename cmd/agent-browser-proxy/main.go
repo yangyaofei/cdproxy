@@ -147,7 +147,9 @@ func defaultDataDir() string {
 	if u, err := user.Current(); err == nil && home == "" {
 		home = u.HomeDir
 	}
-	return filepath.Join(home, ".agent-browser", "proxy")
+	// 归到我们自己的目录（~/agent-browser/），与 agent-browser 的
+	// 默认家（~/.agent-browser/）隔离——close --all 等批量操作不越界。
+	return filepath.Join(home, "agent-browser", "proxy")
 }
 
 func controlBase(args []string) string {

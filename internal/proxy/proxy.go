@@ -203,7 +203,7 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// onUpstreamMessage 上游命令处理（顺序：越权守卫 → 焦点拦截 → tag → id 重映射 → 转发）。
+// onUpstreamMessage 上游命令处理（顺序：越权守卫 → 基座保护 → 焦点拦截 → tag → id 重映射 → 转发）。
 func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 	var msg map[string]any
 	if err := json.Unmarshal(data, &msg); err != nil || msg == nil {
@@ -224,6 +224,14 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 				return
 			}
 		}
+	}
+
+	// 基座保护：Browser.close 会杀死共享 Chrome——全体会话共用的基础设施。
+	// 任何会话都无权终止它（close --all / daemon 异常路径一律拦下），假成功应答。
+	if method == "Browser.close" {
+		p.fakeSuccess(sess, upIDf, hasID, method)
+		p.log.Warn("已拦截 Browser.close（基座保护）", "session", sess.Name)
+		return
 	}
 
 	// 焦点拦截：不抢用户焦点
