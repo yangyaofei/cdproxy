@@ -43,6 +43,7 @@ uv run ruff check src/ tests/ scripts/ plugin/
 uv run mypy src/
 uv run pytest                                     # 单元测试
 uv run python scripts/smoke_test.py              # 端到端五项（需真实 Chrome）
+./scripts/concurrency_test.sh 20                   # 并发压测（四路并行零串扰）
 ```
 
 ## 工程结构

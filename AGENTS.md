@@ -108,6 +108,7 @@ Admin 页：服务起来后开 `http://127.0.0.1:9224/`（状态/会话释放/�
 |----|------|------|--------|
 | 单元 | `tests/unit/`（state / settings 纯逻辑） | 无 | 每次改动 |
 | 冒烟 | `scripts/smoke_test.py` 五项判定 | 服务 + 真实 Chrome | 改 proxy/keeper 后必跑 |
+| 并发压测 | `scripts/concurrency_test.sh`（3 校验流 + 1 churn 流四路并行，零串扰判定） | 服务 + 真实 Chrome | 改转发/焦点/回收语义后必跑 |
 | 浏览器级 | agent-browser 实连（`--config var/prov-test-config.json`） | 全链路 | 接入相关改动 |
 
 冒烟五项：预开 tab 隔离 / createTarget 归属 / attach+eval 路由 / 越权拒绝 /
