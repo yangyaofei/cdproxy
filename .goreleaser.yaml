@@ -1,0 +1,52 @@
+# GoReleaser 发布配置
+#
+# 触发：push tag v*（.github/workflows/release.yml）
+# 产物：四平台二进制（darwin/linux × amd64/arm64）+ tar.gz 归档 + SHA256SUMS
+# 说明：仓库当前 PRIVATE——Homebrew tap 需公开仓库，暂不启用（公开后加 brew 段即可）。
+version: 2
+
+project_name: agent-browser-proxy
+
+builds:
+  - id: agent-browser-proxy
+    main: ./cmd/agent-browser-proxy
+    binary: agent-browser-proxy
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats:
+      - tar.gz
+    files:
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  draft: false
+  prerelease: auto

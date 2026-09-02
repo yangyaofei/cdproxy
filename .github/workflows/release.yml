@@ -1,0 +1,38 @@
+# 发布管线：push tag v* → 质量门禁 → GoReleaser 多平台产物
+#
+# 产物落 GitHub Release 页（本仓库为 PRIVATE，凭登录下载）。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 质量门禁
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: 发布
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

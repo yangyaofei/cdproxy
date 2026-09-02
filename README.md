@@ -71,6 +71,16 @@ uv run python scripts/smoke_test.py              # 端到端五项（需真实 C
 └── var/                      # 运行数据（gitignore；Go 版数据目录默认 ~/.agent-browser/proxy）
 ```
 
+## 发布（GoReleaser）
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0   # 打 tag 即触发
+```
+
+CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleaser 四平台构建
+（darwin/linux × amd64/arm64）→ tar.gz + SHA256SUMS 落 GitHub Release 页。
+本地不发布验证：`goreleaser release --snapshot --clean`。
+
 ## 运行时设置
 
 | 参数 | 默认 | 说明 |

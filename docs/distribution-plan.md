@@ -63,7 +63,7 @@ builds:
     ldflags: ["-s -w -X main.version={{.Version}}"]
 ```
 
-- GitHub Actions：push tag → goreleaser-action → Release 页产物 + 校验和
+- 已实施（88e738c 后续 commit）：.goreleaser.yaml + .github/workflows/release.yml（push tag v* → 门禁 → 四平台产物 + checksums.txt 落 Release）；快照本地验证通过（10s 全流程）
 - 可选：Homebrew tap（GoReleaser 自动维护 Formula）→
   `brew install yangyaofei/tap/agent-browser-proxy`
 - 用户接入：`~/.agent-browser/config.json` 的
@@ -91,5 +91,5 @@ builds:
 ## 决策点
 
 1. ~~Go 重写立项？~~ 已完成（2026-09-02）：功能对等达成，黑盒验收全绿（冒烟五项 / agent-browser e2e 隔离+tab 全功能+焦点 / 并发 190 操作 0 失败 / plugin 三模式 / Admin 内嵌 / 自启动链路）
-2. Homebrew tap 是否开（对外公开发布才需要）
+2. Homebrew tap 暂缓——仓库 PRIVATE，brew install 拉不到私有仓库；公开后加 goreleaser brew 段即可
 3. Python 版处置：归档保留为参考实现，还是重写验收后删除
