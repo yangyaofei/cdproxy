@@ -1,0 +1,15 @@
+[project]
+name = "agent-browser-proxy"
+version = "0.1.0"
+description = "agent-browser 共享 Chrome 的 CDP 转发代理：会话级 tab 归属隔离 + 基座生命周期一体管理"
+requires-python = ">=3.12"
+dependencies = [
+    "websockets>=13.0",
+]
+
+[project.scripts]
+agent-browser-proxy = "agent_browser_proxy.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
