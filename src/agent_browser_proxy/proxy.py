@@ -29,29 +29,29 @@ import websockets
 
 from . import keeper as keeper_mod
 from .keeper import KeeperConfig
+from .settings import SettingsStore
 from .state import ProxySession, ProxyState
 
 logger = logging.getLogger(__name__)
 
-# 上游断开后多久回收（容忍 daemon 重启：skills 的 _ensure-daemon-env 会重启 daemon）
-DISCONNECT_REAP_SECONDS = 60
-# 分配后从未连接的回收（防泄漏：plugin 探活式分配后不再回来）
-ALLOC_REAP_SECONDS = 300
-# 上游连接空闲保活上限（websockets 层 ping 保活，此处仅兜底）
-_UPSTREAM_RECV_TIMEOUT = 600
-
 
 class CdpProxy:
-    """CDP 转发代理主体（含下游连接管理）。"""
+    """CDP 转发代理主体（含下游连接管理）。
 
-    def __init__(self, config: KeeperConfig, ws_port: int) -> None:
+    :param config: 基座配置。
+    :param ws_port: 上游 WS 监听端口。
+    :param settings: 运行时设置（回收时限在 Admin 页在线可调，排程时现读）。
+    """
+
+    def __init__(self, config: KeeperConfig, ws_port: int, settings: SettingsStore) -> None:
         self._config = config
         self._ws_port = ws_port
+        self._settings = settings
         self.state = ProxyState()
         self._downstream: websockets.ClientConnection | None = None
         self._ds_recv_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
-        self._server: websockets.asyncio.server.Server | None = None
+        self._server: Any | None = None
 
     # ── 生命周期 ──
 
@@ -108,6 +108,11 @@ class CdpProxy:
             self.state.ds_session_owner.clear()
         await self._ensure_downstream()
 
+    async def restart_keeper(self) -> None:
+        """重启基座 Chrome 并重建下游连接（归属清空，daemon 重连后重新分配）。"""
+        keeper_mod.stop(self._config)
+        await self._restart_downstream()
+
     # ── 会话分配（供 control 调用）──
 
     async def alloc_session(self, name: str) -> tuple[ProxySession, str]:
@@ -123,7 +128,9 @@ class CdpProxy:
             tag="create",
         )
         # 分配即排程回收：覆盖「分配后从未连接」的泄漏（连接中会被跳过）
-        asyncio.create_task(self._schedule_reap(session, ALLOC_REAP_SECONDS))
+        asyncio.create_task(
+            self._schedule_reap(session, self._settings.settings.alloc_reap_seconds)
+        )
         url = f"ws://127.0.0.1:{self._ws_port}/cdp/{session.token}"
         return session, url
 
@@ -143,7 +150,8 @@ class CdpProxy:
 
     async def _handle_upstream(self, ws: websockets.ServerConnection) -> None:
         """每个消费 session 一条上游连接的处理循环。"""
-        path = getattr(ws, "request", None) and ws.request.path
+        request = getattr(ws, "request", None)
+        path = request.path if request is not None else ""
         token = str(path or "").rsplit("/", 1)[-1]
         session = self.state.find_by_token(token)
         if session is None:
@@ -166,7 +174,9 @@ class CdpProxy:
                 session.connected = False
                 session.ws = None
                 logger.info("session %s 上游连接断开", session.name)
-                asyncio.create_task(self._schedule_reap(session, DISCONNECT_REAP_SECONDS))
+                asyncio.create_task(
+                    self._schedule_reap(session, self._settings.settings.disconnect_reap_seconds)
+                )
 
     async def _schedule_reap(self, session: ProxySession, delay: float) -> None:
         """延迟回收（到期仍非连接态才动手；连接中跳过）。"""
@@ -256,8 +266,10 @@ class CdpProxy:
         """下游响应：取回关联 → 标签加工 → 还原上游 id 回给来源 session。"""
         entry = self.state.take_pending(int(msg["id"]))
         if entry is None:
-            return  # 非 agent-browser 面向的命令（自管理类），忽略
+            return  # 未知命令（外部观察者注入），忽略
         session, up_id, tag = entry
+        if session is None:
+            return  # 服务自管理命令（回收关 tab 等），无需回传上游
 
         if tag == "create":
             target_id = str((msg.get("result") or {}).get("targetId", ""))
@@ -344,7 +356,8 @@ class CdpProxy:
 
     async def _ds_raw(self, method: str, params: dict[str, Any]) -> Any:
         """服务自身发起的下游命令（fire-and-forget，响应经 pending 空转忽略）。"""
-        payload = json.dumps({"id": self.state.next_ds_id(None, None, None), "method": method, "params": params})
+        ds_id = self.state.next_ds_id(None, None, None)
+        payload = json.dumps({"id": ds_id, "method": method, "params": params})
         await self._ds_send(payload)
 
     async def _ds_command(
@@ -356,7 +369,8 @@ class CdpProxy:
         tag: str | None = None,
     ) -> None:
         """带关联登记的下游命令发送。"""
-        payload = json.dumps({"id": self.state.next_ds_id(session, up_id, tag), "method": method, "params": params})
+        ds_id = self.state.next_ds_id(session, up_id, tag)
+        payload = json.dumps({"id": ds_id, "method": method, "params": params})
         await self._ds_send(payload)
 
     # ── 状态查询（供 control）──

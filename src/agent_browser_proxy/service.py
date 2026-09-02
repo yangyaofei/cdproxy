@@ -8,10 +8,10 @@ import signal
 import urllib.request
 from pathlib import Path
 
-from . import keeper as keeper_mod
 from .control import make_control_server, serve_in_thread
 from .keeper import KeeperConfig
 from .proxy import CdpProxy
+from .settings import SettingsStore, default_settings_path
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,8 @@ async def run(options: ServiceOptions) -> None:
         options.config.profile_dir,
     )
 
-    proxy = CdpProxy(options.config, options.ws_port)
+    settings_store = SettingsStore(default_settings_path())
+    proxy = CdpProxy(options.config, options.ws_port, settings_store)
     await proxy.start()
 
     loop = asyncio.get_running_loop()
@@ -77,7 +78,8 @@ async def run(options: ServiceOptions) -> None:
     for attempt in range(10):
         try:
             control = make_control_server(
-                proxy, options.config, loop, options.control_port, on_shutdown=_shutdown
+                proxy, options.config, loop, options.control_port,
+                settings_store, log_file=options.log_file, on_shutdown=_shutdown,
             )
             break
         except OSError:

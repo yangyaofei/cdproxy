@@ -28,16 +28,46 @@ agent-browser-proxy 服务
 ## 快速开始
 
 ```bash
-# 启动服务（分离式，脱离调用方进程组）
-scripts/serve.sh
+uv sync --dev                                    # 安装依赖（含开发工具）
+scripts/serve.sh                                 # 分离启动服务（脱离调用方进程组）
 
 # 状态 / 停止
 uv run python -m agent_browser_proxy status
 uv run python -m agent_browser_proxy stop
 
-# 冒烟测试（五项判定：隔离/归属/路由/越权拒绝/回收）
-uv run python scripts/smoke_test.py
+# Admin 页（状态 / 会话释放 / 运行时设置 / 日志尾巴 / 停机）
+open http://127.0.0.1:9224/
+
+# 质量门禁 + 测试
+uv run ruff check src/ tests/ scripts/ plugin/
+uv run mypy src/
+uv run pytest                                     # 单元测试
+uv run python scripts/smoke_test.py              # 端到端五项（需真实 Chrome）
 ```
+
+## 工程结构
+
+```
+├── AGENTS.md                 # AI 协作入口（架构/规范/工作流）
+├── src/agent_browser_proxy/
+│   ├── keeper.py / proxy.py / state.py     # 基座 + CDP 转发核心
+│   ├── control.py / service.py / __main__.py
+│   ├── settings.py           # 运行时设置（Admin 在线改，var/settings.json 持久化）
+│   └── static/               # Admin 单页（Alpine 无构建 + vendored）
+├── plugin/ab-proxy-plugin    # agent-browser 薄壳（stdio JSON → 控制面）
+├── scripts/                  # serve.sh（分离启动）/ smoke_test.py（五项判定）
+├── tests/unit/               # 纯逻辑单测（pytest）
+└── var/                      # 运行数据（日志/settings/pid，gitignore）
+```
+
+## 运行时设置
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `disconnect_reap_seconds` | 60 | 上游断连后的回收宽限（容忍 daemon 重启） |
+| `alloc_reap_seconds` | 300 | 分配后从未连接的回收时限（防泄漏） |
+
+修改渠道：Admin 页（即改即生效）或 `PUT /settings`；持久化到 `var/settings.json`。
 
 ## 接入 agent-browser（全局配置）
 

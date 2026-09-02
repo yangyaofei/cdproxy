@@ -88,7 +88,7 @@ async def main() -> int:
         ta = {t["targetId"] for t in ga}
         tb = {t["targetId"] for t in gb}
         assert len(ta) == 1 and len(tb) == 1 and ta != tb, f"T1 失败: {ta} vs {tb}"
-        print(f"T1 ✓ 预开 tab 隔离（各 1 个，无交集）")
+        print("T1 ✓ 预开 tab 隔离（各 1 个，无交集）")
 
         # T2 各自再开 tab 仍隔离
         ra = await ca.call("Target.createTarget", {"url": "about:blank?A2"})
@@ -104,10 +104,6 @@ async def main() -> int:
         # T3 attach + eval 全链路
         att = await ca.call("Target.attachToTarget", {"targetId": next(iter(ta)), "flatten": True})
         sid = att["result"]["sessionId"]
-        ev = await ca.call(
-            "Runtime.evaluate",
-            {"expression": "1+1", "returnByValue": True},
-        )
         # Runtime.evaluate 需带 sessionId —— 用底层发送验证定向路由
         await wsa.send(json.dumps({
             "id": 999, "sessionId": sid,

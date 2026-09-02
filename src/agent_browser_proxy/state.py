@@ -11,6 +11,8 @@ import itertools
 import secrets
 from dataclasses import dataclass, field
 
+import websockets
+
 
 @dataclass
 class ProxySession:
@@ -20,7 +22,7 @@ class ProxySession:
     token: str
     owned_targets: set[str] = field(default_factory=set)
     connected: bool = False
-    ws: object | None = None  # websockets.ServerConnection，避免循环依赖用弱类型
+    ws: websockets.ServerConnection | None = None
 
     @property
     def key(self) -> str:
@@ -38,7 +40,8 @@ class ProxyState:
         self.target_owner: dict[str, ProxySession] = {}  # targetId → session
         self.ds_session_owner: dict[str, ProxySession] = {}  # 下游 sessionId → session
         # 下游命令 id → (session, 上游原始 id, 标签)
-        self.pending: dict[int, tuple[ProxySession, int | None, str | None]] = {}
+        # 下游命令 id → (归属 session, 上游原始 id, 标签)；session=None 为服务自管理命令
+        self.pending: dict[int, tuple[ProxySession | None, int | None, str | None]] = {}
 
     # ── session 管理 ──
 
@@ -69,6 +72,7 @@ class ProxyState:
         self.by_token.pop(session.token, None)
         for tid in list(session.owned_targets):
             self.target_owner.pop(tid, None)
+        session.owned_targets.clear()
         for ds_sid in [
             sid for sid, s in self.ds_session_owner.items() if s is session
         ]:
@@ -109,12 +113,16 @@ class ProxyState:
 
     # ── 命令关联 ──
 
-    def next_ds_id(self, session: ProxySession, up_id: int | None, tag: str | None) -> int:
+    def next_ds_id(
+        self, session: ProxySession | None, up_id: int | None, tag: str | None
+    ) -> int:
         """登记一条上游命令，返回重映射后的下游 id。"""
         ds_id = next(self._id_counter)
         self.pending[ds_id] = (session, up_id, tag)
         return ds_id
 
-    def take_pending(self, ds_id: int) -> tuple[ProxySession, int | None, str | None] | None:
+    def take_pending(
+        self, ds_id: int
+    ) -> tuple[ProxySession | None, int | None, str | None] | None:
         """响应到达时取回关联（一次性）。"""
         return self.pending.pop(ds_id, None)
