@@ -52,8 +52,8 @@ uv run python scripts/smoke_test.py              # 端到端五项（需真实 C
 ├── src/agent_browser_proxy/
 │   ├── keeper.py / proxy.py / state.py     # 基座 + CDP 转发核心
 │   ├── control.py / service.py / __main__.py
-│   ├── settings.py           # 运行时设置（Admin 在线改，var/settings.json 持久化）
-│   └── static/               # Admin 单页（Alpine 无构建 + vendored）
+│   └── settings.py           # 运行时设置（Admin 在线改，var/settings.json 持久化）
+├── static/admin/             # Admin 页（Alpine 无构建 + vendored，见 static/README.md）
 ├── plugin/ab-proxy-plugin    # agent-browser 薄壳（stdio JSON → 控制面）
 ├── scripts/                  # serve.sh（分离启动）/ smoke_test.py（五项判定）
 ├── tests/unit/               # 纯逻辑单测（pytest）
@@ -68,6 +68,7 @@ uv run python scripts/smoke_test.py              # 端到端五项（需真实 C
 | `alloc_reap_seconds` | 300 | 分配后从未连接的回收时限（防泄漏） |
 
 修改渠道：Admin 页（即改即生效）或 `PUT /settings`；持久化到 `var/settings.json`。
+**单文件设置，无数据库**。
 
 ## 接入 agent-browser（全局配置）
 

@@ -13,9 +13,10 @@ Python 服务统一管理基座 Chrome 生命周期、按会话隔离的 CDP 协
 **不是什么**：不做远程浏览器、不做云 provider（browserless/browserbase 等）、
 不做 agent 语义层（那是 agent-browser 自己的事）。
 
-src layout：`src/agent_browser_proxy/`（服务五模块 + `static/` Admin 页）+
-`plugin/ab-proxy-plugin`（薄壳）+ `scripts/`（serve.sh / smoke_test.py）+
-`tests/unit/`（纯逻辑单测）。
+src layout：`src/agent_browser_proxy/`（服务六模块：keeper / proxy / state /
+control / settings / service）；另根目录 `static/admin/`（Admin 页静态文件，零构建，
+定位见 `static/README.md`）+ `plugin/ab-proxy-plugin`（薄壳）+ `scripts/`（serve.sh /
+smoke_test.py）+ `tests/unit/`（纯逻辑单测）。
 
 ## 2. 架构全景
 
@@ -52,7 +53,7 @@ Admin 页（GET /）                    keeper：Chrome @127.0.0.1:9222（profil
 | `proxy.py` | CDP 转发核心：归属过滤、越权拒绝、事件定向路由、id 双向重映射 | 协议语义改动必须过 `scripts/smoke_test.py` 全部五项 |
 | `state.py` | 归属表 / 会话表 / pending 关联（纯逻辑，单事件循环内无锁） | 不做 IO |
 | `control.py` | HTTP 控制面 + 静态页（线程桥接 asyncio） | 不写业务，只转发调用 |
-| `settings.py` | 运行时设置（var/settings.json，在线生效） | 越下限钳制 |
+| `settings.py` | 运行时设置（**单文件 var/settings.json，无数据库**，在线生效） | 越下限钳制 |
 | `service.py` | 装配编排（端口绑定重试 / 信号 / PID 文件） | — |
 | `plugin/` | stdio 薄壳 | 不承载状态，不直接碰 Chrome |
 

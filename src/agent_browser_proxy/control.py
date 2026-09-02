@@ -27,7 +27,8 @@ from .settings import SettingsStore
 
 logger = logging.getLogger(__name__)
 
-_STATIC_DIR = Path(__file__).resolve().parent / "static"
+# 仓库根 static/admin（静态资产不入包，与 mh-ai-service #133 约定一致）
+_STATIC_DIR = Path(__file__).resolve().parents[2] / "static" / "admin"
 _LOG_TAIL_LINES = 200
 
 
