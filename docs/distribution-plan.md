@@ -86,9 +86,9 @@ builds:
   排障（服务自启链路 / keeper 死 → status / 端口冲突 / tab 泄漏 → release）
   红线（killall 禁令 / 并发 default 撞归属）
 - references/（mechanism.md 410 行研究史 + compat-inventory.md 存量扫描）保留为历史依据
-- 已执行：oh-my-agents skills/browser-skill-isolation 分支 commit 9707efe
-  （目录更名 agent-browser-keeper → agent-browser-proxy，SKILL.md 重写为
-  安装+使用手册，references 加历史档案头），随 PR #1 review
+- 已执行：oh-my-agents skills/browser-skill-isolation 分支（PR #1 review 后定稿）：
+  skill 更名 agent-browser-proxy-reminder（知识性：know-how/安装(仅要求时)/诊断），
+  本 docs/ 下 mechanism.md 与 compat-inventory.md 即自 skill 移入的研究档案
 
 ## 决策点
 
