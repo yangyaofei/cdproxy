@@ -72,14 +72,13 @@ function admin() {
       document.documentElement.dataset.theme = saved;
       await this.refresh();
       setInterval(() => this.refresh(), 5000);
-      this.$nextTick(() => {
+      // 触底加载更早日志：轮询哨兵位置（scroll 事件在本环境不可靠，轮询确定性最高；
+      // slogLoading/hasMore 在 loadOlderLogs 内防重入，空闲开销为一次 getBoundingClientRect）
+      setInterval(() => {
         const el = document.getElementById("slogSentinel");
-        if (el && "IntersectionObserver" in window) {
-          new IntersectionObserver((entries) => {
-            entries.forEach((e) => { if (e.isIntersecting) this.loadOlderLogs(); });
-          }, { rootMargin: "600px" }).observe(el);
-        }
-      });
+        if (!el || el.offsetParent === null) return;
+        if (el.getBoundingClientRect().top < innerHeight + 600) this.loadOlderLogs();
+      }, 600);
     },
 
     toggleTheme() {
