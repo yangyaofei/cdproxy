@@ -93,6 +93,7 @@ type PendingEntry struct {
 	UpID    int64
 	HasUpID bool
 	Tag     string
+	Method  string // 原始 CDP method（响应日志归属用）
 }
 
 // State 全局状态表。
@@ -234,10 +235,10 @@ func (st *State) UnbindDsSession(dsSessionID string) {
 }
 
 // NextDsID 登记一条上游命令，返回重映射后的下游 id。
-func (st *State) NextDsID(sess *Session, upID int64, hasUpID bool, tag string) int64 {
+func (st *State) NextDsID(sess *Session, upID int64, hasUpID bool, tag, method string) int64 {
 	dsID := st.nextID.Add(1)
 	st.mu.Lock()
-	st.pending[dsID] = PendingEntry{Sess: sess, UpID: upID, HasUpID: hasUpID, Tag: tag}
+	st.pending[dsID] = PendingEntry{Sess: sess, UpID: upID, HasUpID: hasUpID, Tag: tag, Method: method}
 	st.mu.Unlock()
 	return dsID
 }

@@ -132,10 +132,22 @@ function admin() {
 
     fmtEntry(e) {
       const t = new Date(e.ts).toLocaleTimeString();
-      const id = e.id !== undefined && e.id !== null ? ` #${e.id}` : "";
-      const st = e.status ? ` [${e.status}]` : "";
-      const act = e.action ? ` <${e.action}>` : "";
-      return `${t} ${e.dir}/${e.kind}${id}${st}${act} ${e.method || ""} ${e.detail || ""}`.trimEnd();
+      const ids = [
+        e.up_id !== undefined ? `up#${e.up_id}` : null,
+        e.ds_id !== undefined ? `ds#${e.ds_id}` : null,
+      ].filter(Boolean).join("→");
+      let s = `${t} ${e.dir}/${e.kind} ${e.method || ""}`;
+      if (ids) s += ` ${ids}`;
+      if (e.status) s += ` [${e.status}]`;
+      if (e.action) s += ` <${e.action}>`;
+      if (e.target_id) s += ` tid=${e.target_id.slice(0, 12)}`;
+      const lines = [s];
+      if (e.in !== undefined) lines.push(`    in:  ${JSON.stringify(e.in)}`);
+      if (e.out !== undefined) lines.push(`    out: ${JSON.stringify(e.out)}`);
+      if (e.result !== undefined) lines.push(`    ${e.status === "error" ? "error" : "result"}: ${JSON.stringify(e.result)}`);
+      if (e.delta) lines.push(`    Δ ${e.delta}`);
+      if (e.detail) lines.push(`    · ${e.detail}`);
+      return lines.join("\n");
     },
 
     async shutdown() {

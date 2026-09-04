@@ -132,8 +132,8 @@ func TestReleaseClearsDsBindings(t *testing.T) {
 func TestPendingMonotonicAndTakeOnce(t *testing.T) {
 	st := New()
 	s := alloc(t, st, "a")
-	d1 := st.NextDsID(s, 100, true, "create")
-	d2 := st.NextDsID(s, 101, true, "")
+	d1 := st.NextDsID(s, 100, true, "create", "")
+	d2 := st.NextDsID(s, 101, true, "", "")
 	if d2 <= d1 {
 		t.Fatal("id 应单调递增")
 	}
@@ -157,7 +157,7 @@ func TestConcurrentAllocAndPending(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			s, _ := st.Alloc("race", "token-race")
-			st.NextDsID(s, 1, true, "")
+			st.NextDsID(s, 1, true, "", "")
 			st.OwnTarget(s, "tid")
 		}()
 	}

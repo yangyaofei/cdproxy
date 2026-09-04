@@ -10,18 +10,13 @@ import (
 
 func TestRingCapAndOrder(t *testing.T) {
 	l := New("")
-	for i := 0; i < ringCap + 50; i++ {
+	for i := 0; i < ringCap+50; i++ {
 		l.Append(Entry{Session: "s1", Dir: "up", Kind: "cmd", Method: "M", Detail: "d"})
 	}
 	r := l.Ring("s1", 0)
 	if len(r) != ringCap {
 		t.Fatalf("环形容量 %d != %d", len(r), ringCap)
 	}
-	// 最新 50 条被保留（最老的被挤掉）
-	if r[0].Detail != "d" || len(r) != ringCap {
-		t.Fatalf("环形顺序异常")
-	}
-	// limit 截取
 	if got := l.Ring("s1", 10); len(got) != 10 {
 		t.Fatalf("limit 截取失败: %d", len(got))
 	}
@@ -30,19 +25,25 @@ func TestRingCapAndOrder(t *testing.T) {
 	}
 }
 
-func TestUnownedDropped(t *testing.T) {
+func TestUnownedKeyKept(t *testing.T) {
 	l := New("")
-	l.Append(Entry{Session: "", Dir: "down", Kind: "event", Method: "Target.targetCreated"})
-	if got := l.Sessions(); len(got) != 0 {
-		t.Fatalf("空 session 应丢弃: %v", got)
+	l.Append(Entry{Session: UnownedKey, Dir: "down", Kind: "event", Action: "unowned"})
+	if got := l.Sessions(); len(got) != 1 || got[0] != UnownedKey {
+		t.Fatalf("unowned 应保留: %v", got)
+	}
+	l.Append(Entry{Session: "", Dir: "down", Kind: "event"})
+	if got := l.Sessions(); len(got) != 1 {
+		t.Fatalf("空 session 应丢弃")
 	}
 }
 
 func TestFilePersistAndDrop(t *testing.T) {
 	dir := t.TempDir()
 	l := New(dir)
-	l.Append(Entry{Session: "s1", Dir: "up", Kind: "cmd", Method: "Page.navigate", Action: "forwarded"})
-	l.Append(Entry{Session: "s1", Dir: "down", Kind: "resp", Status: "error", Detail: "boom"})
+	l.Append(Entry{Session: "s1", Dir: "up", Kind: "cmd", Method: "Page.navigate",
+		UpID: int64(7), DSID: int64(42), Action: "forwarded", In: map[string]any{"url": "https://x.com"}})
+	l.Append(Entry{Session: "s1", Dir: "down", Kind: "resp", Status: "error",
+		Method: "Page.navigate", UpID: int64(7), Result: map[string]any{"message": "boom"}})
 	l.Drop("s1")
 	data, err := os.ReadFile(filepath.Join(dir, "s1.jsonl"))
 	if err != nil {
@@ -56,22 +57,68 @@ func TestFilePersistAndDrop(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &e); err != nil || e.Status != "error" {
 		t.Fatalf("jsonl 解析异常: %v %v", err, e)
 	}
-	// Drop 后内存清空、文件仍在
+	var c Entry
+	_ = json.Unmarshal([]byte(lines[0]), &c)
+	// JSON 反序列化后数字为 float64
+	if c.UpID.(float64) != 7 || c.DSID.(float64) != 42 {
+		t.Fatalf("up/ds id 序列化异常: %+v", c)
+	}
 	if got := l.Ring("s1", 0); len(got) != 0 {
 		t.Fatalf("Drop 后环形应清空")
 	}
 }
 
-func TestTrim(t *testing.T) {
+func jsonMust(v any) []byte {
+	data, _ := json.Marshal(v)
+	return data
+}
+
+func makeArr(n int) []any {
+	out := make([]any, n)
+	for i := range out {
+		out[i] = i
+	}
+	return out
+}
+
+func TestSafeDeepTrim(t *testing.T) {
 	long := strings.Repeat("x", 500)
-	got := Trim(map[string]any{"k": long})
-	if len(got) > detailCap+3 {
-		t.Fatalf("Trim 未截断: %d", len(got))
+	big := map[string]any{
+		"s":     long,
+		"arr":   makeArr(50),
+		"deep":  map[string]any{"a": map[string]any{"b": map[string]any{"c": map[string]any{"d": map[string]any{"e": "too deep"}}}}},
 	}
-	if !strings.HasSuffix(got, "…") {
-		t.Fatalf("截断应带省略号")
+	got := Safe(big)
+	m, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("应保持结构")
 	}
-	if Trim(nil) != "" {
-		t.Fatalf("nil 应为空")
+	if s, _ := m["s"].(string); !strings.HasSuffix(s, "…") || len(s) != maxStr+3 {
+		t.Fatalf("长串应截断: %d", len(s))
+	}
+	if arr, _ := m["arr"].([]any); len(arr) != maxArr+1 {
+		t.Fatalf("数组应截断到 %d+标记: %d", maxArr, len(arr))
+	}
+	deep, _ := m["deep"].(map[string]any)
+	a, _ := deep["a"].(map[string]any)
+	b, _ := a["b"].(map[string]any)
+	c, _ := b["c"].(map[string]any)
+	d, _ := c["d"]
+	if d != "…" {
+		t.Fatalf("超深应截断为省略号: %v", d)
+	}
+	// 超总长整体降级字符串：深裁剪上限内仍可超过 maxJSON（16 键 × 120 字符）
+	huge := map[string]any{}
+	for i := 0; i < maxKeys+1; i++ {
+		huge[string(rune('a'+i%26))+string(rune('a'+i/26))] = strings.Repeat("y", maxStr)
+	}
+	if v := Safe(huge); true {
+		s, isStr := v.(string)
+		if !isStr || len(s) > maxJSON+3 {
+			t.Fatalf("超总长应降级截断字符串: %T len=%d", v, len(jsonMust(v)))
+		}
+	}
+	if Safe(nil) != nil {
+		t.Fatalf("nil 应为 nil")
 	}
 }

@@ -220,13 +220,18 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 		params = map[string]any{}
 	}
 	upIDf, hasID := msg["id"].(float64)
+	// in 快照：守卫改写前的原始 params（TrimValue 重建结构，不受后续 in-place 改写影响）
+	inSnap := interlog.Safe(params)
+	delta := ""
+	action := "forwarded"
 
 	// 越权守卫：attach/close 只允许操作自己名下 target
 	if method == "Target.attachToTarget" || method == "Target.closeTarget" {
 		if tid, _ := params["targetId"].(string); tid != "" {
 			if owner := p.st.OwnerOf(tid); owner != nil && owner != sess {
 				p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
-					ID: msg["id"], Action: "scope-guard", Detail: "越权 target " + interlog.Trim(tid)})
+					UpID: msg["id"], Action: "scope-guard", In: inSnap,
+					Delta: "rejected（target 属于其他 session）", TargetID: tid})
 				p.reject(sess, upIDf, hasID, fmt.Sprintf("target %s 属于其他 session，禁止操作", tid))
 				return
 			}
@@ -237,7 +242,7 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 	// 任何会话都无权终止它（close --all / daemon 异常路径一律拦下），假成功应答。
 	if method == "Browser.close" {
 		p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
-			ID: msg["id"], Action: "base-guard", Detail: "基座保护拦截"})
+			UpID: msg["id"], Action: "base-guard", In: inSnap, Delta: "faked（不转发）"})
 		p.fakeSuccess(sess, upIDf, hasID, method)
 		p.log.Warn("已拦截 Browser.close（基座保护）", "session", sess.Name)
 		return
@@ -249,11 +254,11 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 		case "Target.createTarget":
 			params["background"] = true
 			msg["params"] = params
-			p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
-				ID: msg["id"], Action: "rewritten", Detail: "强制 background:true " + interlog.Trim(params)})
+			action = "rewritten"
+			delta = "+background:true"
 		case "Target.activateTarget", "Page.bringToFront":
 			p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
-				ID: msg["id"], Action: "focus-guard", Detail: "假成功不转发 " + interlog.Trim(params)})
+				UpID: msg["id"], Action: "focus-guard", In: inSnap, Delta: "faked（不转发）"})
 			p.fakeSuccess(sess, upIDf, hasID, method)
 			return
 		case "Browser.setWindowBounds":
@@ -262,13 +267,12 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 					delete(b, "focused")
 					params["bounds"] = b
 					msg["params"] = params
-					p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
-						ID: msg["id"], Action: "rewritten", Detail: "剥离 focused 字段 " + interlog.Trim(params)})
+					action = "rewritten"
+					delta = "-focused"
 				}
 			}
 		case "Emulation.setFocusEmulationEnabled":
-			p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
-				ID: msg["id"], Action: "focus-watch", Detail: "焦点仿真透传（页内 hasFocus 失真来源）" + interlog.Trim(params)})
+			delta = "焦点仿真透传（页内 hasFocus 失真来源）"
 		}
 	}
 
@@ -283,11 +287,17 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 		tag = "gettargets"
 	}
 
+	var dsID any
 	if hasID {
-		msg["id"] = p.st.NextDsID(sess, int64(upIDf), true, tag)
+		dsID = p.st.NextDsID(sess, int64(upIDf), true, tag, method)
+		msg["id"] = dsID
 	}
-	p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
-		ID: msg["id"], Action: "forwarded", Detail: interlog.Trim(params)})
+	entry := interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
+		UpID: msg2UpID(upIDf, hasID), DSID: dsID, Action: action, In: inSnap, Delta: delta}
+	if action == "rewritten" {
+		entry.Out = interlog.Safe(params)
+	}
+	p.ilog.Append(entry)
 	out, err := json.Marshal(msg)
 	if err != nil {
 		return
@@ -295,6 +305,14 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 	if err := p.dsSend(out); err != nil {
 		p.log.Error("下游转发失败", "session", sess.Name, "method", method, "err", err)
 	}
+}
+
+// msg2UpID 归一化上游 id（无 id 命令返回 nil）。
+func msg2UpID(upIDf float64, hasID bool) any {
+	if !hasID {
+		return nil
+	}
+	return int64(upIDf)
 }
 
 // reject 越权拒绝（CDP 错误语义）。
@@ -404,13 +422,13 @@ func (p *Proxy) dsSend(data []byte) error {
 
 // dsRaw 服务自管理命令（无上游关联，如回收关 tab）。
 func (p *Proxy) dsRaw(method string, params map[string]any) error {
-	id := p.st.NextDsID(nil, 0, false, "")
+	id := p.st.NextDsID(nil, 0, false, "", method)
 	return p.sendDownstreamCommand(id, method, params)
 }
 
 // dsCommand 会话命令登记（含 tag）。
 func (p *Proxy) dsCommand(sess *state.Session, upID int64, hasUpID bool, method string, params map[string]any, tag string) error {
-	id := p.st.NextDsID(sess, upID, hasUpID, tag)
+	id := p.st.NextDsID(sess, upID, hasUpID, tag, method)
 	return p.sendDownstreamCommand(id, method, params)
 }
 
@@ -472,11 +490,12 @@ func (p *Proxy) onDsResponse(msg map[string]any) {
 		msg["id"] = entry.UpID
 		if errMsg, ok := msg["error"].(map[string]any); ok {
 			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "resp", Session: entry.Sess.Name,
-				ID: entry.UpID, Status: "error", Method: "←" + entry.Tag,
-				Detail: interlog.Trim(errMsg)})
+				Method: entry.Method, UpID: entry.UpID, DSID: int64(dsIDf),
+				Status: "error", Result: interlog.Safe(errMsg)})
 		} else if entry.Tag == "create" || entry.Tag == "attach" || entry.Tag == "gettargets" {
 			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "resp", Session: entry.Sess.Name,
-				ID: entry.UpID, Status: "ok", Method: "←" + entry.Tag, Detail: interlog.Trim(result)})
+				Method: entry.Method, UpID: entry.UpID, DSID: int64(dsIDf),
+				Status: "ok", Result: interlog.Safe(result)})
 		}
 		p.sendTo(entry.Sess, msg)
 	}
@@ -490,8 +509,12 @@ func (p *Proxy) onDsEvent(msg map[string]any) {
 	// 带 sessionId 的事件 → 路由到绑定的 session
 	if sid, ok := msg["sessionId"].(string); ok && sid != "" {
 		if sess := p.st.SessionOfDs(sid); sess != nil {
-			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
-				Method: method, Action: "routed", Detail: interlog.Trim(sid)})
+			if method != "Runtime.consoleAPICalled" && method != "Log.entryAdded" &&
+				method != "Page.frameStartedLoading" && method != "Page.frameNavigated" &&
+				method != "Page.frameStartedReceiving" && method != "Page.navigatedWithinDocument" {
+				p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
+					Method: method, Action: "routed", Detail: sid[:min(12, len(sid))]})
+			}
 			p.sendTo(sess, msg)
 		}
 		return
@@ -504,6 +527,8 @@ func (p *Proxy) onDsEvent(msg map[string]any) {
 		sid, _ := params["sessionId"].(string)
 		if owner := p.st.OwnerOf(tid); owner != nil && sid != "" {
 			p.st.BindDsSession(owner, sid)
+			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: owner.Name,
+				Method: method, Action: "routed", TargetID: tid, In: interlog.Safe(ti)})
 			p.sendTo(owner, msg)
 		}
 	case "Target.detachedFromTarget":
@@ -515,14 +540,12 @@ func (p *Proxy) onDsEvent(msg map[string]any) {
 		tid, _ := ti["targetId"].(string)
 		if owner := p.st.OwnerOf(tid); owner != nil {
 			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: owner.Name,
-				Method: method, Action: "routed", Detail: interlog.Trim(ti)})
+				Method: method, Action: "routed", TargetID: tid, In: interlog.Safe(ti)})
 			p.sendTo(owner, msg)
 		} else if method == "Target.targetCreated" {
 			// 非自有 target 创建 = 页面发起弹窗等浏览器内部行为（上游守卫够不着的通道）
-			typ, _ := ti["type"].(string)
-			url, _ := ti["url"].(string)
-			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: "",
-				Method: method, Action: "unowned", Detail: "type=" + typ + " url=" + interlog.Trim(url)})
+			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: interlog.UnownedKey,
+				Method: method, Action: "unowned", TargetID: tid, In: interlog.Safe(ti)})
 		}
 	case "Target.targetDestroyed":
 		tid, _ := params["targetId"].(string)
