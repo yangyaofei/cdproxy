@@ -11,8 +11,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 )
+
+// knownKeys 合法设置键（Update 对未知键显式报错而非静默忽略——配置写错
+// 必须当场暴露，否则调用方以为生效，事后才发现被吞）。
+var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "popup_policy", "rewrites"}
 
 // 各字段的下限（防误配成 0 导致回收风暴）。
 var minValues = map[string]float64{
@@ -149,13 +155,24 @@ func (s *Store) Get() Settings {
 	return s.settings
 }
 
-// Update 合并式更新（未知字段忽略，数值越下限钳制，非法枚举忽略），
+// Update 合并式更新（未知键 422 报错，数值越下限钳制，非法枚举忽略），
 // 原子存盘并返回新值。
 func (s *Store) Update(patch map[string]any) (Settings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if patch == nil {
 		return Settings{}, errors.New("settings 必须是 JSON 对象")
+	}
+	var unknown []string
+	for key := range patch {
+		if !contains(knownKeys, key) {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return Settings{}, fmt.Errorf("未知设置键: %s（合法键: %s）",
+			strings.Join(unknown, ", "), strings.Join(knownKeys, ", "))
 	}
 	current := s.settings
 	for key, value := range patch {

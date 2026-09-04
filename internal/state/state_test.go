@@ -75,7 +75,10 @@ func TestReleaseReturnsTargetsAndCleans(t *testing.T) {
 	s := alloc(t, st, "a")
 	st.OwnTarget(s, "t1")
 	st.OwnTarget(s, "t2")
-	targets := st.Release("a")
+	sess, targets := st.Release("a")
+	if sess == nil || sess.Name != "a" {
+		t.Fatalf("期望返回原 session，实际 %v", sess)
+	}
 	if len(targets) != 2 {
 		t.Fatalf("期望 2 个 target，实际 %v", targets)
 	}
@@ -87,8 +90,31 @@ func TestReleaseReturnsTargetsAndCleans(t *testing.T) {
 	}
 }
 
+func TestClearOwnershipReturnsSnapshot(t *testing.T) {
+	st := New()
+	a := alloc(t, st, "a")
+	b := alloc(t, st, "b")
+	st.OwnTarget(a, "ta")
+	st.OwnTarget(b, "tb")
+	st.BindDsSession(a, "dsa")
+	st.BindDsSession(b, "dsb")
+	owned, bound := st.ClearOwnership()
+	if len(owned[a]) != 1 || owned[a][0] != "ta" {
+		t.Fatalf("期望 owned[a]=[ta]，实际 %v", owned[a])
+	}
+	if len(bound[b]) != 1 || bound[b][0] != "dsb" {
+		t.Fatalf("期望 bound[b]=[dsb]，实际 %v", bound[b])
+	}
+	if st.OwnerOf("ta") != nil || st.SessionOfDs("dsa") != nil {
+		t.Fatal("清理后归属与绑定应为空")
+	}
+	if len(a.OwnedTargets()) != 0 || len(b.OwnedTargets()) != 0 {
+		t.Fatal("session 名下应清空")
+	}
+}
+
 func TestReleaseUnknownNameIsNoop(t *testing.T) {
-	if New().Release("ghost") != nil {
+	if sess, targets := New().Release("ghost"); sess != nil || targets != nil {
 		t.Fatal("未知名应为 no-op")
 	}
 }

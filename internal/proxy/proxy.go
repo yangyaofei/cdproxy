@@ -121,9 +121,14 @@ func (p *Proxy) AllocSession(name string) (string, error) {
 }
 
 // ReleaseSession 释放会话并尽力关闭其名下 tab（fire-and-forget）。
+// 会话身份终点：同时关闭其上游连接——原生等价反应（浏览器消亡连接必断），
+// daemon 立即感知 session 已过期，而不是持有僵尸连接继续「成功」收发。
 func (p *Proxy) ReleaseSession(name string) {
 	defer p.ilog.DetachFile(name)
-	targets := p.st.Release(name)
+	sess, targets := p.st.Release(name)
+	if sess == nil {
+		return
+	}
 	closed := 0
 	for _, tid := range targets {
 		if err := p.dsRaw("Target.closeTarget", map[string]any{"targetId": tid}); err != nil {
@@ -134,6 +139,10 @@ func (p *Proxy) ReleaseSession(name string) {
 	}
 	if len(targets) > 0 {
 		p.log.Info("会话已释放", "session", name, "tabs_total", len(targets), "tabs_closed", closed)
+	}
+	if conn := sess.WS(); conn != nil {
+		_ = conn.Close(4401, "session released")
+		p.log.Info("已关闭释放会话的上游连接", "session", name)
 	}
 }
 
@@ -147,7 +156,8 @@ func (p *Proxy) RestartKeeper() error {
 		_ = ds.Close(websocket.StatusGoingAway, "keeper restart")
 	}
 	p.cfg.Stop()
-	p.st.ClearOwnership()
+	owned, bound := p.st.ClearOwnership()
+	p.notifyOwnershipCleared(owned, bound)
 	if err := p.ensureDownstream(); err != nil {
 		return err
 	}
@@ -372,9 +382,44 @@ func (p *Proxy) onDownstreamDead(conn *websocket.Conn, reason error) {
 		return // 已被主动替换（如 RestartKeeper），无需处理
 	}
 	p.log.Error("下游断开，清空归属并重建", "err", reason)
-	p.st.ClearOwnership()
+	owned, bound := p.st.ClearOwnership()
+	p.notifyOwnershipCleared(owned, bound)
 	if err := p.ensureDownstream(); err != nil {
 		p.log.Error("下游重建失败", "err", err)
+	}
+}
+
+// notifyOwnershipCleared 下游重建导致归属全清后，向受影响会话合成原生等价
+// 事件：每个曾绑定的下游会话推 Target.detachedFromTarget，每个曾归属的
+// target 推 Target.targetDestroyed。原生 Chrome 中 tab 消亡必推送这些事件；
+// 代理选择保持上游连接存活（自愈价值），就必须补齐等价可见反应——否则
+// daemon 持有陈旧 pin/绑定，后续命令表现为「成功但无效」的静默错乱。
+func (p *Proxy) notifyOwnershipCleared(owned, bound map[*state.Session][]string) {
+	for sess, sids := range bound {
+		for _, sid := range sids {
+			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
+				Method: "Target.detachedFromTarget", Action: "synthetic",
+				Detail: sid[:min(12, len(sid))] + "（下游重建）"})
+			p.sendTo(sess, map[string]any{
+				"method": "Target.detachedFromTarget",
+				"params": map[string]any{"sessionId": sid},
+			})
+		}
+	}
+	for sess, tids := range owned {
+		for _, tid := range tids {
+			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
+				Method: "Target.targetDestroyed", Action: "synthetic", TargetID: tid,
+				Detail: "下游重建"})
+			p.sendTo(sess, map[string]any{
+				"method": "Target.targetDestroyed",
+				"params": map[string]any{"targetId": tid},
+			})
+		}
+	}
+	if len(owned) > 0 || len(bound) > 0 {
+		p.log.Warn("下游重建：已向受影响会话合成 targetDestroyed/detachedFromTarget",
+			"sessions", len(owned)+len(bound))
 	}
 }
 

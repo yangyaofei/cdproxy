@@ -94,16 +94,20 @@ func TestUpdateClampsToMinimum(t *testing.T) {
 	}
 }
 
-func TestUpdateIgnoresUnknownAndNonNumeric(t *testing.T) {
+func TestUpdateRejectsUnknownButIgnoresNonNumeric(t *testing.T) {
 	store, _ := newStore(t)
-	updated, err := store.Update(map[string]any{"hack": 1, "alloc_reap_seconds": "fast"})
+	// 未知键：必须报错（静默吞掉会让调用方误以为已生效）
+	if _, err := store.Update(map[string]any{"hack": 1}); err == nil {
+		t.Fatal("未知键必须报错")
+	}
+	// 已知键的非数值：类型不匹配忽略，不报错不改动
+	updated, err := store.Update(map[string]any{"alloc_reap_seconds": "fast"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	base := Defaults()
-	if updated.DisconnectReapSeconds != base.DisconnectReapSeconds || updated.AllocReapSeconds != base.AllocReapSeconds ||
-		updated.PopupPolicy != base.PopupPolicy || len(updated.Rewrites) != len(base.Rewrites) {
-		t.Fatalf("未知/非数值应被忽略，实际 %+v", updated)
+	if updated.AllocReapSeconds != base.AllocReapSeconds {
+		t.Fatalf("非数值应被忽略，实际 %+v", updated)
 	}
 }
 
@@ -145,4 +149,14 @@ func (s *Store) mustUpdate(t *testing.T, key string, value any) any {
 		return updated.AllocReapSeconds
 	}
 	return nil
+}
+
+func TestUpdateRejectsUnknownKeys(t *testing.T) {
+	s := NewStore(t.TempDir() + "/settings.json")
+	if _, err := s.Update(map[string]any{"focus_mode": "steal"}); err == nil {
+		t.Fatal("未知键必须报错（静默吞掉会让调用方误以为已生效）")
+	}
+	if _, err := s.Update(map[string]any{"popup_policy": "allow"}); err != nil {
+		t.Fatalf("合法键不应报错: %v", err)
+	}
 }

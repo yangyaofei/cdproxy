@@ -135,17 +135,19 @@ func (st *State) Alloc(name string, token string) (*Session, bool) {
 	return sess, true
 }
 
-// Release 释放 session，返回其名下 target 列表（调用方负责关 tab）。
-func (st *State) Release(name string) []string {
+// Release 释放 session，返回 session（不存在则 nil）与其名下 target 列表。
+// 调用方负责关 tab 与关闭其上游连接（原生等价：浏览器消亡连接必断，
+// 否则 daemon 持僵尸连接继续收发，表现为释放后仍可用）。
+func (st *State) Release(name string) (*Session, []string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	sess, ok := st.sessions[name]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	targets := sess.OwnedTargets()
 	st.drop(sess)
-	return targets
+	return sess, targets
 }
 
 // drop 摘除 session 并清理全部关联（调用方持锁）。
@@ -177,15 +179,28 @@ func (st *State) IsCurrent(sess *Session) bool {
 	return st.sessions[sess.Name] == sess
 }
 
-// ClearOwnership 清空全部归属（下游重建时调用）。
-func (st *State) ClearOwnership() {
+// ClearOwnership 清空全部归属（下游重建时调用），并返回清理前快照：
+// owned = session → 名下 targetId 列表；bound = session → 绑定的下游
+// sessionId 列表。供 proxy 合成 targetDestroyed / detachedFromTarget 通知
+// ——原生 Chrome 中 tab 消亡必推送事件，代理保持上游连接存活（自愈价值）
+// 就必须补齐等价可见反应，否则 daemon 持陈旧 pin 表现为「成功但无效」。
+func (st *State) ClearOwnership() (owned map[*Session][]string, bound map[*Session][]string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	owned = make(map[*Session][]string, len(st.targetOwn))
+	for tid, sess := range st.targetOwn {
+		owned[sess] = append(owned[sess], tid)
+	}
+	bound = make(map[*Session][]string, len(st.dsSession))
+	for sid, sess := range st.dsSession {
+		bound[sess] = append(bound[sess], sid)
+	}
 	for _, sess := range st.sessions {
 		sess.ownedTargets = map[string]struct{}{}
 	}
 	st.targetOwn = map[string]*Session{}
 	st.dsSession = map[string]*Session{}
+	return owned, bound
 }
 
 // OwnTarget 登记 tab 归属（创建响应到达时调用）。
