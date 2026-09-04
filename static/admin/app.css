@@ -94,3 +94,5 @@ code {
 /* 会话交互日志 */
 .log-toolbar { margin: 6px 0; display: flex; align-items: center; gap: 8px; }
 .logs.session-logs { max-height: 320px; font-size: 11px; }
+
+.pill.off { background: #eee; color: #888; }

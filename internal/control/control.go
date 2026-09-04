@@ -82,6 +82,7 @@ func (c *Control) Handler() http.Handler {
 		snapshot["keeper"] = map[string]any{"chrome": c.keeper.Alive()}
 		snapshot["settings"] = c.store.Get()
 		snapshot["version"] = c.version
+		snapshot["recent_sessions"] = c.ilg.Recent(50)
 		writeJSON(w, http.StatusOK, snapshot)
 	})
 

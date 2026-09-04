@@ -7,6 +7,7 @@ function admin() {
     logs: [],
     logOpen: "",
     sessionLogs: [],
+    viewSessions: [],
     form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, focus_mode: null, popup_policy: null },
     savedAt: "",
     busy: false,
@@ -34,6 +35,13 @@ function admin() {
         const snap = await this.api("GET", "/status");
         this.status = snap;
         this.healthy = true;
+        // 合并视图：活跃会话 + 最近断开（内存环形仍保留，日志可查）
+        const active = (snap.sessions || []).map(s => ({ ...s, state: s.connected ? "connected" : "idle" }));
+        const activeNames = new Set(active.map(s => s.name));
+        const recent = (snap.recent_sessions || [])
+          .filter(r => !activeNames.has(r.name))
+          .map(r => ({ name: r.name, state: "released", targets: 0, last_ts: r.last_ts }));
+        this.viewSessions = [...active, ...recent];
         if (this.form.disconnect_reap_seconds === null) {
           this.form.disconnect_reap_seconds = snap.settings.disconnect_reap_seconds;
           this.form.alloc_reap_seconds = snap.settings.alloc_reap_seconds;
@@ -132,6 +140,11 @@ function admin() {
       } finally {
         this.busy = false;
       }
+    },
+
+    fmtLast(ts) {
+      if (!ts) return "";
+      return new Date(ts).toLocaleTimeString();
     },
 
     fmtEntry(e) {

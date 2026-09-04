@@ -2,6 +2,7 @@ package interlog
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,7 +45,7 @@ func TestFilePersistAndDrop(t *testing.T) {
 		UpID: int64(7), DSID: int64(42), Action: "forwarded", In: map[string]any{"url": "https://x.com"}})
 	l.Append(Entry{Session: "s1", Dir: "down", Kind: "resp", Status: "error",
 		Method: "Page.navigate", UpID: int64(7), Result: map[string]any{"message": "boom"}})
-	l.Drop("s1")
+	l.DetachFile("s1")
 	data, err := os.ReadFile(filepath.Join(dir, "s1.jsonl"))
 	if err != nil {
 		t.Fatalf("jsonl 未落盘: %v", err)
@@ -63,8 +64,28 @@ func TestFilePersistAndDrop(t *testing.T) {
 	if c.UpID.(float64) != 7 || c.DSID.(float64) != 42 {
 		t.Fatalf("up/ds id 序列化异常: %+v", c)
 	}
-	if got := l.Ring("s1", 0); len(got) != 0 {
-		t.Fatalf("Drop 后环形应清空")
+	// DetachFile 后环形保留（断开会话日志可查）、文件仍在盘上
+	if got := l.Ring("s1", 0); len(got) != 2 {
+		t.Fatalf("DetachFile 后环形应保留: %d", len(got))
+	}
+}
+
+func TestRecentAndEviction(t *testing.T) {
+	l := New("")
+	for i := 0; i < maxRings+20; i++ {
+		l.Append(Entry{Session: fmt.Sprintf("s%03d", i), Dir: "up", Kind: "cmd", Method: "M"})
+	}
+	rec := l.Recent(0)
+	if len(rec) != maxRings {
+		t.Fatalf("环形数应淘汰到 %d: %d", maxRings, len(rec))
+	}
+	if rec[0]["name"] != fmt.Sprintf("s%03d", maxRings+19) {
+		t.Fatalf("Recent 排序异常: %v", rec[0])
+	}
+	for _, r := range rec {
+		if r["name"] == "s000" {
+			t.Fatalf("最老会话应被淘汰")
+		}
 	}
 }
 

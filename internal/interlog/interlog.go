@@ -29,6 +29,7 @@ import (
 
 const (
 	ringCap     = 500
+	maxRings    = 200 // 内存保留的会话环形数上限（LRU：按最后一条时间淘汰）
 	maxLogFiles = 100
 	maxStr      = 120 // 字符串截断长度
 	maxArr      = 8   // 数组保留条数
@@ -90,6 +91,34 @@ func (l *Log) Append(e Entry) {
 	}
 	l.rings[e.Session] = ring
 	l.writeFile(e)
+	l.evictRingsLocked()
+}
+
+// evictRingsLocked 会话环形数超限时按最后一条时间淘汰（调用方持锁）。
+// 已释放会话的环形保留在此处——最近断开的会话日志仍可在 Admin 查看。
+func (l *Log) evictRingsLocked() {
+	if len(l.rings) <= maxRings {
+		return
+	}
+	oldestName := ""
+	var oldestTS int64
+	for name, ring := range l.rings {
+		var last int64
+		if len(ring) > 0 {
+			last = ring[len(ring)-1].TS
+		}
+		// 同 ts 平局按名字决胜（确定性淘汰）
+		if oldestName == "" || last < oldestTS || (last == oldestTS && name < oldestName) {
+			oldestName, oldestTS = name, last
+		}
+	}
+	if oldestName != "" {
+		delete(l.rings, oldestName)
+		if f, ok := l.files[oldestName]; ok {
+			_ = f.Close()
+			delete(l.files, oldestName)
+		}
+	}
 }
 
 // Ring 返回某会话的内存快照（最新 limit 条，时间升序）。
@@ -127,16 +156,46 @@ func (l *Log) Sessions() []string {
 	return out
 }
 
-// Drop 清除某会话的内存环形与文件句柄（release 时调用；jsonl 保留在盘上）。
-func (l *Log) Drop(session string) {
+// DetachFile 会话释放时调用：仅关闭文件句柄（jsonl 保留在盘上）。
+// 内存环形保留——最近断开的会话日志仍可在 Admin 查看（按 maxRings 淘汰）。
+func (l *Log) DetachFile(session string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if f, ok := l.files[session]; ok {
 		_ = f.Close()
 		delete(l.files, session)
 	}
-	delete(l.rings, session)
 	l.pruneFilesLocked()
+}
+
+// Recent 返回有日志的会话（最近活动时间降序，limit 上限）。
+func (l *Log) Recent(limit int) []map[string]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	type pair struct {
+		name string
+		last int64
+	}
+	var ps []pair
+	for name, ring := range l.rings {
+		if len(ring) > 0 {
+			ps = append(ps, pair{name, ring[len(ring)-1].TS})
+		}
+	}
+	sort.Slice(ps, func(i, j int) bool {
+		if ps[i].last != ps[j].last {
+			return ps[i].last > ps[j].last
+		}
+		return ps[i].name > ps[j].name // 同 ts 平局按名字降序（确定性）
+	})
+	if limit > 0 && len(ps) > limit {
+		ps = ps[:limit]
+	}
+	out := make([]map[string]any, len(ps))
+	for i, p := range ps {
+		out[i] = map[string]any{"name": p.name, "last_ts": p.last}
+	}
+	return out
 }
 
 // pruneFilesLocked jsonl 文件数超限时清最老（调用方持锁）。

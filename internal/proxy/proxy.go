@@ -121,7 +121,7 @@ func (p *Proxy) AllocSession(name string) (string, error) {
 
 // ReleaseSession 释放会话并尽力关闭其名下 tab（fire-and-forget）。
 func (p *Proxy) ReleaseSession(name string) {
-	defer p.ilog.Drop(name)
+	defer p.ilog.DetachFile(name)
 	targets := p.st.Release(name)
 	closed := 0
 	for _, tid := range targets {

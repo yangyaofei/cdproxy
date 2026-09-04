@@ -38,24 +38,26 @@
     <!-- 会话 -->
     <section>
       <h2>会话 <span class="count" x-text="status ? status.sessions.length : 0"></span></h2>
-      <table class="list" x-show="status && status.sessions.length">
-        <thead><tr><th>名称</th><th>连接</th><th>名下 tab</th><th></th></tr></thead>
+      <table class="list" x-show="viewSessions.length">
+        <thead><tr><th>名称</th><th>状态</th><th>名下 tab</th><th>最近活动</th><th></th></tr></thead>
         <tbody>
-          <template x-for="s in (status ? status.sessions : [])" :key="s.name">
+          <template x-for="s in viewSessions" :key="s.name">
             <tr>
               <td x-text="s.name"></td>
-              <td><span class="pill" :class="s.connected ? 'ok' : 'idle'" x-text="s.connected ? '已连接' : '空闲'"></span></td>
+              <td><span class="pill" :class="s.state === 'connected' ? 'ok' : (s.state === 'idle' ? 'idle' : 'off')"
+                         x-text="s.state === 'connected' ? '已连接' : (s.state === 'idle' ? '空闲' : '已断开')"></span></td>
               <td x-text="s.targets"></td>
+              <td x-text="fmtLast(s.last_ts)"></td>
               <td>
                 <button class="sm" @click="toggleLogs(s.name)" x-text="logOpen === s.name ? '收起' : '日志'"></button>
-                <button class="danger sm" @click="release(s.name)" :disabled="busy">释放</button>
+                <button class="danger sm" x-show="s.state !== 'released'" @click="release(s.name)" :disabled="busy">释放</button>
               </td>
             </tr>
             <tr x-show="logOpen === s.name">
-              <td colspan="4">
+              <td colspan="5">
                 <div class="log-toolbar">
                   <button class="sm" @click="loadSessionLogs(s.name)" :disabled="busy">刷新</button>
-                  <span class="hint">CDP 交互流水（action: forwarded=转发 / rewritten=改写 / focus-guard=焦点拦截 / base-guard=基座保护 / scope-guard=越权拒绝 / unowned=非自有 target）</span>
+                  <span class="hint">CDP 交互流水（forwarded=转发 / rewritten=改写 / focus-guard=焦点拦截 / base-guard=基座保护 / scope-guard=越权拒绝 / popup-close=弹窗回收 / unowned=无主 target）</span>
                 </div>
                 <pre class="logs session-logs" x-text="sessionLogs.length ? sessionLogs.map(fmtEntry).join('\n') : '（暂无记录）'"></pre>
               </td>
@@ -63,7 +65,7 @@
           </template>
         </tbody>
       </table>
-      <p class="hint" x-show="status && !status.sessions.length">暂无会话</p>
+      <p class="hint" x-show="!viewSessions.length">暂无会话</p>
     </section>
 
     <!-- 设置 -->
