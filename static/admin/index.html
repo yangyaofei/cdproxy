@@ -1,19 +1,27 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>agent-browser-proxy · Admin</title>
-  <link rel="stylesheet" href="/static/app.css?v=0.2.3">
-  <script src="/static/app.js?v=0.2.3" defer></script>
+  <link rel="stylesheet" href="/static/app.css?v=0.2.4">
+  <script src="/static/app.js?v=0.2.4" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
 </head>
 <body>
   <div x-data="admin()" x-init="init()">
     <header>
-      <h1>agent-browser-proxy <span class="ver" x-text="status ? 'v' + status.version : ''"></span></h1>
-      <div class="health" :class="healthy ? 'ok' : 'bad'">
-        <span x-text="healthy ? '● 服务在线' : '● 服务离线'"></span>
+      <div class="h-left">
+        <h1>agent-browser-proxy</h1>
+        <span class="ver" x-text="status ? 'v' + status.version : ''"></span>
+      </div>
+      <div class="h-right">
+        <div class="health" :class="healthy ? 'ok' : 'bad'">
+          <span x-text="healthy ? '● 服务在线' : '● 服务离线'"></span>
+        </div>
+        <button class="sm" @click="toggleTheme()" title="切换暗色/亮色">
+          <span x-text="document.documentElement.dataset.theme === 'dark' ? '☀ 亮色' : '🌙 暗色'"></span>
+        </button>
       </div>
     </header>
     <nav class="tabs">
@@ -45,6 +53,7 @@
     <!-- 会话 -->
     <section x-show="tab === 'sessions'">
       <h2>会话 <span class="count" x-text="viewSessions.length"></span></h2>
+      <div class="table-scroll">
       <table class="list">
         <thead><tr><th>名称</th><th>状态</th><th>名下 tab</th><th>最近活动</th><th></th></tr></thead>
         <template x-for="s in viewSessions" :key="s.name">
@@ -61,7 +70,7 @@
               </td>
             </tr>
             <tr x-show="logOpen === s.name">
-              <td colspan="5">
+              <td colspan="5" style="padding: 0 8px 10px">
                 <div class="logs-wrap">
                   <div class="logs-toolbar">
                     <button class="sm" @click="loadSessionLogs(s.name)" :disabled="busy">刷新</button>
@@ -74,31 +83,32 @@
                   </div>
                   <div class="log-scroll">
                     <table class="logt" x-show="sessionLogs.length">
-                      <thead><tr><th>时间</th><th>向</th><th>Method</th><th>ID</th><th>Action</th><th>摘要</th></tr></thead>
+                      <thead><tr><th>时间</th><th>向</th><th>Method</th><th>ID</th><th>Action</th><th style="width:40%">摘要</th></tr></thead>
                       <template x-for="(e, i) in sessionLogs" :key="i">
                         <tbody>
-                          <tr :class="selLog === i ? 'sel' : ''" @click="selLog = i">
-                            <td x-text="fmtTime(e.ts)"></td>
+                          <tr :class="selLog === i ? 'sel' : ''" @click="selLog = (selLog === i ? -1 : i)">
+                            <td class="mono" x-text="fmtTime(e.ts)"></td>
                             <td><span class="badge" :class="e.dir" x-text="e.dir === 'up' ? '↑' : '↓'"></span></td>
-                            <td x-text="e.method || ''"></td>
-                            <td>
+                            <td class="mono" x-text="e.method || ''"></td>
+                            <td class="mono">
                               <span class="idchip" x-show="e.up_id !== undefined" x-text="'up#' + e.up_id"></span>
                               <span class="arrow" x-show="e.up_id !== undefined && e.ds_id !== undefined">→</span>
                               <span class="idchip" x-show="e.ds_id !== undefined" x-text="'ds#' + e.ds_id"></span>
                             </td>
                             <td><span class="badge" :class="e.action" x-text="e.action || ''"></span>
-                                <span class="badge" x-show="e.status" :class="e.status === 'error' ? 'base-guard' : 'ok'" x-text="e.status"></span></td>
+                                <span class="badge err-b" x-show="e.status === 'error'" x-text="e.status"></span>
+                                <span class="badge ok-b" x-show="e.status === 'ok'" x-text="e.status"></span></td>
                             <td class="wrap" x-text="logSummary(e)"></td>
                           </tr>
                           <tr x-show="selLog === i">
                             <td colspan="6" style="padding:0">
-                              <div class="detail-pane" style="border:none">
+                              <div class="detail-pane">
                                 <div class="kvline" x-show="e.delta"><b>Δ</b> <span x-text="e.delta"></span></div>
                                 <div class="kvline" x-show="e.target_id"><b>target</b> <span x-text="e.target_id"></span></div>
-                                <div x-show="e.in !== undefined"><h3>in（daemon 原始 params）</h3><pre x-text="pretty(e.in)"></pre></div>
-                                <div x-show="e.out !== undefined"><h3>out（代理改写后转发）</h3><pre x-text="pretty(e.out)"></pre></div>
-                                <div x-show="e.result !== undefined"><h3 x-text="e.status === 'error' ? 'error' : 'result'"></h3><pre x-text="pretty(e.result)"></pre></div>
-                                <div x-show="e.detail"><h3>说明</h3><pre x-text="e.detail"></pre></div>
+                                <div x-show="e.in !== undefined"><h3>in · daemon 原始参数</h3><div class="jt" x-html="pretty(e.in) ? jsonTree(e.in, null, 0) : ''"></div></div>
+                                <div x-show="e.out !== undefined"><h3>out · 代理改写后转发</h3><div class="jt" x-html="pretty(e.out) ? jsonTree(e.out, null, 0) : ''"></div></div>
+                                <div x-show="e.result !== undefined"><h3 x-text="e.status === 'error' ? 'error' : 'result'"></h3><div class="jt" x-html="pretty(e.result) ? jsonTree(e.result, null, 0) : ''"></div></div>
+                                <div x-show="e.detail"><h3>说明</h3><div class="kvline" x-text="e.detail"></div></div>
                               </div>
                             </td>
                           </tr>
@@ -113,27 +123,53 @@
           </tbody>
         </template>
       </table>
+      </div>
       <p class="hint" x-show="!viewSessions.length">暂无会话</p>
     </section>
 
     <!-- 规则 -->
     <section x-show="tab === 'rules'">
-      <h2>改写规则 <span class="hint" style="font-weight:normal">match 方法名（尾部 * 前缀通配）· action: rewrite=改 params 后转发 / fake=假成功不转发 · remove 支持点路径</span></h2>
-      <div class="log-toolbar">
+      <h2>改写规则
+        <span class="hint">match 方法名（尾部 * 前缀通配）· action: rewrite=改 params 后转发 / fake=假成功不转发 · remove 支持点路径 · 顺序执行</span>
+      </h2>
+      <div class="logs-toolbar">
         <button class="sm" @click="applyPreset('focus')" :disabled="busy">预设：不抢焦点（默认）</button>
         <button class="sm" @click="applyPreset('passthrough')" :disabled="busy">预设：原生透传</button>
-        <button class="sm" @click="resetRulesEditor()" :disabled="busy">恢复编辑器为当前值</button>
+        <button class="sm" @click="addRule()" :disabled="busy">＋ 添加规则</button>
+        <button class="sm" @click="resetRules()" :disabled="busy">放弃编辑</button>
       </div>
-      <textarea id="rules-json" class="rules-json" spellcheck="false"
-                x-model="rulesText" rows="14"></textarea>
-      <div>
+      <div class="rules-editor">
+        <table>
+          <thead><tr><th style="width:22%">match</th><th style="width:9%">action</th><th style="width:17%">set（JSON）</th><th style="width:14%">remove（点路径）</th><th style="width:9%">group</th><th>note</th><th style="width:36px"></th></tr></thead>
+          <template x-for="(r, i) in rules" :key="i">
+            <tbody>
+              <tr>
+                <td class="mono"><input x-model="r.match" @change="rulesError = ''"></td>
+                <td>
+                  <select x-model="r.action">
+                    <option value="rewrite">rewrite</option>
+                    <option value="fake">fake</option>
+                  </select>
+                </td>
+                <td class="mono"><input :value="setJsonOf(i)" @change="onSetInput(i, $event.target.value)" placeholder="{}"></td>
+                <td class="mono"><input :value="(r.remove || []).join(',')" @change="r.remove = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)" placeholder="点路径，如 bounds.focused"></td>
+                <td><input x-model="r.group" placeholder="focus/base"></td>
+                <td><input x-model="r.note"></td>
+                <td><button class="danger sm" @click="delRule(i)" :disabled="busy">✕</button></td>
+              </tr>
+            </tbody>
+          </template>
+        </table>
+      </div>
+      <div style="margin-top: 10px">
         <button class="primary" @click="saveRules()" :disabled="busy">保存规则</button>
-        <span class="hint">规则顺序执行 · 保存即生效并持久化</span>
+        <span class="hint">保存即生效并持久化</span>
         <span class="ok-text" x-show="rulesSavedAt" x-text="'已保存 ' + rulesSavedAt"></span>
         <span class="err-text" x-show="rulesError" x-text="rulesError"></span>
       </div>
     </section>
 
+    <!-- 基座 -->
     <!-- 设置 -->
     <section x-show="tab === 'settings'">
       <h2>运行时设置</h2>
@@ -141,16 +177,14 @@
         <tr>
           <td><label for="s-disconnect">断连回收宽限（秒）</label></td>
           <td>
-            <input id="s-disconnect" type="number" min="5" step="1"
-                   x-model="form.disconnect_reap_seconds">
+            <input id="s-disconnect" type="number" min="5" step="1" x-model="form.disconnect_reap_seconds">
             <span class="hint">上游断连后多久回收会话与名下 tab（容忍 daemon 重启）</span>
           </td>
         </tr>
         <tr>
           <td><label for="s-alloc">未连接回收（秒）</label></td>
           <td>
-            <input id="s-alloc" type="number" min="5" step="1"
-                   x-model="form.alloc_reap_seconds">
+            <input id="s-alloc" type="number" min="5" step="1" x-model="form.alloc_reap_seconds">
             <span class="hint">分配后从未连接的回收时限（防泄漏）</span>
           </td>
         </tr>
@@ -161,8 +195,7 @@
               <option value="close">关闭（close）</option>
               <option value="allow">放行（allow）</option>
             </select>
-            <span class="hint">页面发起的弹窗（window.open / target=_blank）会劫持共享窗口的活动 tab，
-              且会话无法操作它们——close 策略在创建瞬间即回收</span>
+            <span class="hint">页面发起的弹窗会劫持共享窗口的活动 tab，且会话无法操作它们——close 在创建瞬间即回收</span>
           </td>
         </tr>
       </table>
@@ -171,19 +204,35 @@
         <span class="hint">保存即生效并持久化（数据目录 settings.json）</span>
         <span class="ok-text" x-show="savedAt" x-text="'已保存 ' + savedAt"></span>
       </div>
+      <h2 style="margin-top:22px">停机</h2>
+      <button class="danger" @click="shutdown()" :disabled="busy">停止服务</button>
+      <span class="hint">基座 Chrome 不受影响（keeper 独立管理，重新拉起服务即可恢复）</span>
     </section>
 
     <!-- 日志 -->
     <section x-show="tab === 'logs'">
-      <h2>日志尾部 <button class="sm" @click="loadLogs()" :disabled="busy">刷新</button></h2>
-      <pre class="logs" x-text="logs.length ? logs.join('\n') : '（暂无日志）'"></pre>
-    </section>
-
-    <!-- 危险区 -->
-    <section class="danger-zone" x-show="tab === 'settings'">
-      <h2>停机</h2>
-      <button class="danger" @click="shutdown()" :disabled="busy">停止服务</button>
-      <span class="hint">基座 Chrome 不受影响（keeper 独立管理，可用 scripts/serve.sh 重新拉起服务）</span>
+      <h2>服务日志
+        <button class="sm" @click="loadLogs()" :disabled="busy">刷新</button>
+        <span class="hint">最近 200 行 · slog 结构化解析</span>
+      </h2>
+      <div class="logs-wrap">
+        <div class="log-scroll" style="max-height: 460px">
+          <table class="slogt" x-show="slogParsed.length">
+            <thead><tr><th style="width:190px">时间</th><th style="width:70px">级别</th><th style="width:34%">消息</th><th>属性</th></tr></thead>
+            <template x-for="(e, i) in slogParsed" :key="i">
+              <tbody>
+                <tr>
+                  <td class="mono" x-text="e.ts"></td>
+                  <td><span class="lvl" :class="e.level" x-text="e.level"></span></td>
+                  <td class="wrap" x-text="e.msg"></td>
+                  <td class="wrap mono" style="color: var(--muted)" x-text="e.rest"></td>
+                </tr>
+              </tbody>
+            </template>
+          </table>
+          <div class="log-empty" x-show="!slogParsed.length">（暂无日志）</div>
+        </div>
+      </div>
     </section>
   </div>
 </body>

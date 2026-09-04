@@ -1,34 +1,77 @@
-/* agent-browser-proxy Admin 逻辑（Alpine 组件） */
+/* agent-browser-proxy Admin 逻辑（Alpine 组件，无外部依赖） */
 
 const DEFAULT_REWRITES = [
-  { match: "Target.createTarget", action: "rewrite", set: { background: true }, group: "focus", note: "tab 创建不抢焦点（+background:true）" },
-  { match: "Target.activateTarget", action: "fake", group: "focus", note: "激活拦截（假成功）" },
-  { match: "Page.bringToFront", action: "fake", group: "focus", note: "置前拦截（假成功）" },
-  { match: "Browser.setWindowBounds", action: "rewrite", remove: ["bounds.focused"], group: "focus", note: "剥离窗口 focused 字段" },
-  { match: "Emulation.setFocusEmulationEnabled", action: "rewrite", group: "focus", note: "焦点仿真透传（页内 hasFocus 失真来源）" },
-  { match: "Browser.close", action: "fake", group: "base", note: "基座保护（全体会话共用基础设施）" },
+  { match: "Target.createTarget", action: "rewrite", set: { background: true }, remove: [], group: "focus", note: "tab 创建不抢焦点（+background:true）" },
+  { match: "Target.activateTarget", action: "fake", set: {}, remove: [], group: "focus", note: "激活拦截（假成功）" },
+  { match: "Page.bringToFront", action: "fake", set: {}, remove: [], group: "focus", note: "置前拦截（假成功）" },
+  { match: "Browser.setWindowBounds", action: "rewrite", set: {}, remove: ["bounds.focused"], group: "focus", note: "剥离窗口 focused 字段" },
+  { match: "Emulation.setFocusEmulationEnabled", action: "rewrite", set: {}, remove: [], group: "focus", note: "焦点仿真透传（页内 hasFocus 失真来源）" },
+  { match: "Browser.close", action: "fake", set: {}, remove: [], group: "base", note: "基座保护（全体会话共用基础设施）" },
 ];
+
+/* ── JSON 树查看器（无依赖，<details> 原生折叠）── */
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function jsonTree(value, key, depth) {
+  const k = key !== null ? `<span class="k">"${esc(key)}"</span>: ` : "";
+  if (value === null) return `${k}<span class="u">null</span>`;
+  if (typeof value === "string") return `${k}<span class="s">"${esc(value)}"</span>`;
+  if (typeof value === "number") return `${k}<span class="n">${value}</span>`;
+  if (typeof value === "boolean") return `${k}<span class="b">${value}</span>`;
+  const isOpen = depth < 1 ? " open" : "";
+  if (Array.isArray(value)) {
+    if (!value.length) return `${k}<span class="br">[]</span>`;
+    const items = value.map((v) => `<div>${jsonTree(v, null, depth + 1)}</div>`).join("");
+    return `${k}<details${isOpen}><summary><span class="br">[</span> ${value.length} 项 <span class="br">]</span></summary>${items}</details>`;
+  }
+  if (typeof value === "object") {
+    const keys = Object.keys(value);
+    if (!keys.length) return `${k}<span class="br">{}</span>`;
+    const items = keys.map((kk) => `<div>${jsonTree(value[kk], kk, depth + 1)}</div>`).join("");
+    return `${k}<details${isOpen}><summary><span class="br">{</span> ${keys.length} 键 <span class="br">}</span></summary>${items}</details>`;
+  }
+  return `${k}<span class="u">${esc(value)}</span>`;
+}
+
+/* ── slog 行解析：time=… level=… msg=… [k=v …] ── */
+function parseSlogLine(line) {
+  const m = line.match(/^time=(\S+) level=(\S+) msg=(?:"((?:[^"\\]|\\.)*)"|(\S+)) ?(.*)$/);
+  if (!m) return null;
+  return {
+    ts: m[1], level: m[2], msg: m[3] !== undefined ? m[3] : (m[4] || ""), rest: (m[5] || "").trim(),
+  };
+}
 
 function admin() {
   return {
     healthy: false,
     status: null,
     tab: "sessions",
-    logs: [],
     viewSessions: [],
     logOpen: "",
     sessionLogs: [],
     selLog: -1,
     form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, popup_policy: null },
     savedAt: "",
-    rulesText: "",
+    rules: [],
     rulesError: "",
     rulesSavedAt: "",
+    slogLines: [],
+    slogParsed: [],
     busy: false,
 
     async init() {
+      const saved = localStorage.getItem("abp_theme") || "dark";
+      document.documentElement.dataset.theme = saved;
       await this.refresh();
       setInterval(() => this.refresh(), 5000);
+    },
+
+    toggleTheme() {
+      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      localStorage.setItem("abp_theme", next);
     },
 
     async api(method, path, body) {
@@ -38,9 +81,7 @@ function admin() {
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
       const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) {
-        throw new Error(data.error || `${method} ${path} → ${resp.status}`);
-      }
+      if (!resp.ok) throw new Error(data.error || `${method} ${path} → ${resp.status}`);
       return data;
     },
 
@@ -61,9 +102,9 @@ function admin() {
           this.form.disconnect_reap_seconds = snap.settings.disconnect_reap_seconds;
           this.form.alloc_reap_seconds = snap.settings.alloc_reap_seconds;
           this.form.popup_policy = snap.settings.popup_policy;
-          this.rulesText = JSON.stringify(snap.settings.rewrites || [], null, 2);
+          this.rules = JSON.parse(JSON.stringify(snap.settings.rewrites || []));
         }
-        if (!this.logs.length) this.loadLogs();
+        if (!this.slogParsed.length) this.loadLogs();
         if (this.logOpen) this.loadSessionLogs(this.logOpen);
       } catch (err) {
         this.healthy = false;
@@ -100,36 +141,44 @@ function admin() {
       }
     },
 
-    // ── 改写规则 ──
+    // ── 改写规则（结构化编辑）──
     applyPreset(kind) {
-      this.rulesText = JSON.stringify(kind === "focus" ? DEFAULT_REWRITES : DEFAULT_REWRITES.filter(r => r.group === "base"), null, 2);
+      this.rules = JSON.parse(JSON.stringify(kind === "focus" ? DEFAULT_REWRITES : DEFAULT_REWRITES.filter(r => r.group === "base")));
       this.rulesError = "";
     },
 
-    resetRulesEditor() {
-      if (this.status && this.status.settings.rewrites) {
-        this.rulesText = JSON.stringify(this.status.settings.rewrites, null, 2);
+    addRule() {
+      this.rules.push({ match: "", action: "rewrite", set: {}, remove: [], group: "", note: "" });
+    },
+
+    delRule(i) {
+      this.rules.splice(i, 1);
+    },
+
+    // set 的 JSON 文本输入（key=value 双向绑定由 x-model 直连 setJson 缓存）
+    setJsonOf(i) {
+      try { return JSON.stringify(this.rules[i].set || {}); } catch (err) { return "{}"; }
+    },
+
+    onSetInput(i, text) {
+      try {
+        const v = JSON.parse(text || "{}");
+        this.rules[i].set = v;
+        this.rulesError = "";
+      } catch (err) {
+        this.rulesError = `第 ${i + 1} 条 set 不是合法 JSON：${err.message}`;
       }
-      this.rulesError = "";
     },
 
     async saveRules() {
       this.rulesError = "";
-      let rules;
-      try {
-        rules = JSON.parse(this.rulesText);
-      } catch (err) {
-        this.rulesError = "JSON 解析失败: " + err.message;
-        return;
-      }
-      if (!Array.isArray(rules)) {
-        this.rulesError = "rewrites 必须是数组";
-        return;
+      for (const r of this.rules) {
+        if (!r.match || !r.match.trim()) { this.rulesError = "存在空的 match"; return; }
       }
       this.busy = true;
       try {
-        const updated = await this.api("PUT", "/settings", { rewrites: rules });
-        this.rulesText = JSON.stringify(updated.rewrites, null, 2);
+        const updated = await this.api("PUT", "/settings", { rewrites: this.rules });
+        this.rules = JSON.parse(JSON.stringify(updated.rewrites || []));
         this.rulesSavedAt = new Date().toLocaleTimeString();
       } catch (err) {
         this.rulesError = err.message;
@@ -145,11 +194,7 @@ function admin() {
       try {
         await this.api("POST", `/sessions/${encodeURIComponent(name)}/release`, {});
         await this.refresh();
-      } catch (err) {
-        alert("释放失败: " + err.message);
-      } finally {
-        this.busy = false;
-      }
+      } catch (err) { alert("释放失败: " + err.message); } finally { this.busy = false; }
     },
 
     async restartKeeper() {
@@ -158,11 +203,7 @@ function admin() {
       try {
         await this.api("POST", "/keeper/restart", {});
         await this.refresh();
-      } catch (err) {
-        alert("重启失败: " + err.message);
-      } finally {
-        this.busy = false;
-      }
+      } catch (err) { alert("重启失败: " + err.message); } finally { this.busy = false; }
     },
 
     // ── 会话交互日志 ──
@@ -181,19 +222,11 @@ function admin() {
       } catch (err) {
         this.sessionLogs = [];
         alert("读取日志失败: " + err.message);
-      } finally {
-        this.busy = false;
-      }
+      } finally { this.busy = false; }
     },
 
-    fmtLast(ts) {
-      if (!ts) return "";
-      return new Date(ts).toLocaleTimeString();
-    },
-
-    fmtTime(ts) {
-      return new Date(ts).toLocaleTimeString();
-    },
+    fmtLast(ts) { return ts ? new Date(ts).toLocaleTimeString() : ""; },
+    fmtTime(ts) { return ts ? new Date(ts).toLocaleTimeString() : ""; },
 
     logSummary(e) {
       if (e.delta) return e.delta;
@@ -207,26 +240,22 @@ function admin() {
       try { return JSON.stringify(v, null, 2); } catch (err) { return String(v); }
     },
 
+    // ── 服务日志（slog 结构化）──
     async loadLogs() {
       this.busy = true;
       try {
         const data = await this.api("GET", "/logs/tail");
-        this.logs = data.lines;
+        this.slogLines = data.lines || [];
+        this.slogParsed = this.slogLines.map(parseSlogLine).filter(Boolean);
       } catch (err) {
-        this.logs = ["读取日志失败: " + err.message];
-      } finally {
-        this.busy = false;
-      }
+        this.slogParsed = [];
+      } finally { this.busy = false; }
     },
 
     async shutdown() {
       if (!confirm("停止服务？基座 Chrome 不受影响。")) return;
-      try {
-        await this.api("POST", "/shutdown", {});
-        this.healthy = false;
-      } catch (err) {
-        this.healthy = false;
-      }
+      try { await this.api("POST", "/shutdown", {}); this.healthy = false; }
+      catch (err) { this.healthy = false; }
     },
   };
 }
