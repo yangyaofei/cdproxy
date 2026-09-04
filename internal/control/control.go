@@ -27,6 +27,7 @@ import (
 	"time"
 
 	assets "github.com/yangyaofei/agent-browser-proxy" // 根目录 package assets（go:embed 只能嵌包内文件）
+	"github.com/yangyaofei/agent-browser-proxy/internal/interlog"
 	"github.com/yangyaofei/agent-browser-proxy/internal/keeper"
 	"github.com/yangyaofei/agent-browser-proxy/internal/proxy"
 	"github.com/yangyaofei/agent-browser-proxy/internal/settings"
@@ -35,16 +36,18 @@ import (
 // Control 管理面服务。
 type Control struct {
 	proxy    *proxy.Proxy
+	ilg      *interlog.Log
 	store    *settings.Store
 	keeper   keeper.Config
 	logPath  string
+	version  string
 	onShutdown func()
 	log      *slog.Logger
 }
 
 // New 构造管理面。
-func New(p *proxy.Proxy, store *settings.Store, k keeper.Config, logPath string, onShutdown func(), log *slog.Logger) *Control {
-	return &Control{proxy: p, store: store, keeper: k, logPath: logPath, onShutdown: onShutdown, log: log}
+func New(p *proxy.Proxy, ilg *interlog.Log, store *settings.Store, k keeper.Config, logPath, version string, onShutdown func(), log *slog.Logger) *Control {
+	return &Control{proxy: p, ilg: ilg, store: store, keeper: k, logPath: logPath, version: version, onShutdown: onShutdown, log: log}
 }
 
 // Handler 构造路由。
@@ -78,7 +81,22 @@ func (c *Control) Handler() http.Handler {
 		snapshot := c.proxy.Status()
 		snapshot["keeper"] = map[string]any{"chrome": c.keeper.Alive()}
 		snapshot["settings"] = c.store.Get()
+		snapshot["version"] = c.version
 		writeJSON(w, http.StatusOK, snapshot)
+	})
+
+	// per-session CDP 交互日志（内存环形快照）
+	mux.HandleFunc("GET /sessions/{name}/logs", func(w http.ResponseWriter, r *http.Request) {
+		limit := 0
+		if v := r.URL.Query().Get("limit"); v != "" {
+			fmt.Sscanf(v, "%d", &limit)
+		}
+		name := r.PathValue("name")
+		entries := c.ilg.Ring(name, limit)
+		if entries == nil {
+			entries = []interlog.Entry{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"session": name, "entries": entries})
 	})
 
 	mux.HandleFunc("GET /settings", func(w http.ResponseWriter, _ *http.Request) {

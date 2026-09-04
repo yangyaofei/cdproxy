@@ -46,7 +46,19 @@
               <td x-text="s.name"></td>
               <td><span class="pill" :class="s.connected ? 'ok' : 'idle'" x-text="s.connected ? '已连接' : '空闲'"></span></td>
               <td x-text="s.targets"></td>
-              <td><button class="danger sm" @click="release(s.name)" :disabled="busy">释放</button></td>
+              <td>
+                <button class="sm" @click="toggleLogs(s.name)" x-text="logOpen === s.name ? '收起' : '日志'"></button>
+                <button class="danger sm" @click="release(s.name)" :disabled="busy">释放</button>
+              </td>
+            </tr>
+            <tr x-show="logOpen === s.name">
+              <td colspan="4">
+                <div class="log-toolbar">
+                  <button class="sm" @click="loadSessionLogs(s.name)" :disabled="busy">刷新</button>
+                  <span class="hint">CDP 交互流水（action: forwarded=转发 / rewritten=改写 / focus-guard=焦点拦截 / base-guard=基座保护 / scope-guard=越权拒绝 / unowned=非自有 target）</span>
+                </div>
+                <pre class="logs session-logs" x-text="sessionLogs.length ? sessionLogs.map(fmtEntry).join('\n') : '（暂无记录）'"></pre>
+              </td>
             </tr>
           </template>
         </tbody>

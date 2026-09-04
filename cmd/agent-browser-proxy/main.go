@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/yangyaofei/agent-browser-proxy/internal/control"
+	"github.com/yangyaofei/agent-browser-proxy/internal/interlog"
 	"github.com/yangyaofei/agent-browser-proxy/internal/keeper"
 	"github.com/yangyaofei/agent-browser-proxy/internal/proxy"
 	"github.com/yangyaofei/agent-browser-proxy/internal/settings"
@@ -195,15 +196,16 @@ func runServe(args []string) int {
 	kcfg.Headless = opts.headless
 
 	store := settings.NewStore(filepath.Join(opts.dataDir, "settings.json"))
+	ilg := interlog.New(filepath.Join(opts.dataDir, "logs"))
 
 	shutdown := make(chan struct{})
-	p := proxy.New(kcfg, opts.wsPort, store, logger)
+	p := proxy.New(kcfg, opts.wsPort, store, ilg, logger)
 	if err := p.Start(); err != nil {
 		logger.Error("代理启动失败", "err", err)
 		return 1
 	}
 
-	ctl := control.New(p, store, kcfg, logPath, func() { close(shutdown) }, logger)
+	ctl := control.New(p, ilg, store, kcfg, logPath, version, func() { close(shutdown) }, logger)
 	controlAddr := fmt.Sprintf("127.0.0.1:%d", opts.controlPort)
 	if _, err := control.StartControl(controlAddr, ctl.Handler(), logger); err != nil {
 		logger.Error("管理面启动失败", "err", err)

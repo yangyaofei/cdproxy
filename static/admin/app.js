@@ -5,6 +5,8 @@ function admin() {
     healthy: false,
     status: null,
     logs: [],
+    logOpen: "",
+    sessionLogs: [],
     form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, focus_mode: null },
     savedAt: "",
     busy: false,
@@ -108,6 +110,32 @@ function admin() {
       } finally {
         this.busy = false;
       }
+    },
+
+    // ── 会话 CDP 交互日志 ──
+    toggleLogs(name) {
+      this.logOpen = this.logOpen === name ? "" : name;
+      if (this.logOpen) this.loadSessionLogs(name);
+    },
+
+    async loadSessionLogs(name) {
+      this.busy = true;
+      try {
+        const data = await this.api("GET", `/sessions/${encodeURIComponent(name)}/logs?limit=200`);
+        this.sessionLogs = data.entries || [];
+      } catch (err) {
+        this.sessionLogs = [{ ts: Date.now(), dir: "!", detail: "读取失败: " + err.message }];
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    fmtEntry(e) {
+      const t = new Date(e.ts).toLocaleTimeString();
+      const id = e.id !== undefined && e.id !== null ? ` #${e.id}` : "";
+      const st = e.status ? ` [${e.status}]` : "";
+      const act = e.action ? ` <${e.action}>` : "";
+      return `${t} ${e.dir}/${e.kind}${id}${st}${act} ${e.method || ""} ${e.detail || ""}`.trimEnd();
     },
 
     async shutdown() {
