@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"net/http"
 	"sync"
 	"time"
@@ -220,12 +221,10 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 		params = map[string]any{}
 	}
 	upIDf, hasID := msg["id"].(float64)
-	// in 快照：守卫改写前的原始 params（TrimValue 重建结构，不受后续 in-place 改写影响）
+	// in 快照：规则改写前的原始 params（Safe 重建结构，不受后续 in-place 改写影响）
 	inSnap := interlog.Safe(params)
-	delta := ""
-	action := "forwarded"
 
-	// 越权守卫：attach/close 只允许操作自己名下 target
+	// 越权守卫：attach/close 只允许操作自己名下 target（多租户完整性，结构化不可配）
 	if method == "Target.attachToTarget" || method == "Target.closeTarget" {
 		if tid, _ := params["targetId"].(string); tid != "" {
 			if owner := p.st.OwnerOf(tid); owner != nil && owner != sess {
@@ -238,43 +237,19 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 		}
 	}
 
-	// 基座保护：Browser.close 会杀死共享 Chrome——全体会话共用的基础设施。
-	// 任何会话都无权终止它（close --all / daemon 异常路径一律拦下），假成功应答。
-	if method == "Browser.close" {
+	// 可配置改写规则（settings.rewrites，默认=「不抢焦点」+ 基座保护）
+	outcome := applyUpstreamRules(p.store.Get().Rewrites, method, params)
+	if outcome.Stop {
 		p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
-			UpID: msg["id"], Action: "base-guard", In: inSnap, Delta: "faked（不转发）"})
+			UpID: msg["id"], Action: outcome.Action, In: inSnap, Delta: outcome.Delta})
 		p.fakeSuccess(sess, upIDf, hasID, method)
-		p.log.Warn("已拦截 Browser.close（基座保护）", "session", sess.Name)
+		if outcome.Action == "base-guard" {
+			p.log.Warn("已拦截 Browser.close（基座保护）", "session", sess.Name)
+		}
 		return
 	}
-
-	// 焦点拦截：不抢用户焦点
-	if p.store.Get().FocusMode == "background" {
-		switch method {
-		case "Target.createTarget":
-			params["background"] = true
-			msg["params"] = params
-			action = "rewritten"
-			delta = "+background:true"
-		case "Target.activateTarget", "Page.bringToFront":
-			p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
-				UpID: msg["id"], Action: "focus-guard", In: inSnap, Delta: "faked（不转发）"})
-			p.fakeSuccess(sess, upIDf, hasID, method)
-			return
-		case "Browser.setWindowBounds":
-			if b, ok := params["bounds"].(map[string]any); ok {
-				if _, hasFocused := b["focused"]; hasFocused {
-					delete(b, "focused")
-					params["bounds"] = b
-					msg["params"] = params
-					action = "rewritten"
-					delta = "-focused"
-				}
-			}
-		case "Emulation.setFocusEmulationEnabled":
-			delta = "焦点仿真透传（页内 hasFocus 失真来源）"
-		}
-	}
+	delta := outcome.Delta
+	action := outcome.Action
 
 	// 处理标签（响应到达时做归属/绑定/过滤）
 	var tag string
@@ -292,6 +267,7 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 		dsID = p.st.NextDsID(sess, int64(upIDf), true, tag, method)
 		msg["id"] = dsID
 	}
+	msg["params"] = params
 	entry := interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
 		UpID: msg2UpID(upIDf, hasID), DSID: dsID, Action: action, In: inSnap, Delta: delta}
 	if action == "rewritten" {
@@ -509,9 +485,9 @@ func (p *Proxy) onDsEvent(msg map[string]any) {
 	// 带 sessionId 的事件 → 路由到绑定的 session
 	if sid, ok := msg["sessionId"].(string); ok && sid != "" {
 		if sess := p.st.SessionOfDs(sid); sess != nil {
-			if method != "Runtime.consoleAPICalled" && method != "Log.entryAdded" &&
-				method != "Page.frameStartedLoading" && method != "Page.frameNavigated" &&
-				method != "Page.frameStartedReceiving" && method != "Page.navigatedWithinDocument" {
+			// 只记结构类事件（Target 生命周期/对话框/弹窗），网络与帧噪声跳过——
+			// 它们会淹没命令流水
+			if strings.HasPrefix(method, "Target.") || method == "Page.javascriptDialogOpening" || method == "Page.windowOpen" {
 				p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
 					Method: method, Action: "routed", Detail: sid[:min(12, len(sid))]})
 			}

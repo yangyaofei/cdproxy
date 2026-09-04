@@ -15,8 +15,11 @@ func newStore(t *testing.T) (*Store, string) {
 
 func TestMissingFileReturnsDefaults(t *testing.T) {
 	s := NewStore(filepath.Join(t.TempDir(), "none.json"))
-	if got := s.Get(); got != Defaults() {
-		t.Fatalf("期望默认值，实际 %v", got)
+	got := s.Get()
+	want := Defaults()
+	if got.DisconnectReapSeconds != want.DisconnectReapSeconds || got.AllocReapSeconds != want.AllocReapSeconds ||
+		got.PopupPolicy != want.PopupPolicy || len(got.Rewrites) != len(want.Rewrites) {
+		t.Fatalf("期望默认值，实际 %+v", got)
 	}
 }
 
@@ -46,23 +49,27 @@ func TestKnownFieldsLoaded(t *testing.T) {
 	}
 }
 
-func TestFocusModeValidLoaded(t *testing.T) {
+func TestRewritesLoaded(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
-	if err := os.WriteFile(path, []byte(`{"focus_mode":"steal"}`), 0o644); err != nil {
+	raw := `{"rewrites":[{"match":"Page.bringToFront","action":"fake","group":"focus","note":"x"},
+	                     {"match":"Network.*","action":"rewrite","set":{"block":true}}]}`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if NewStore(path).Get().FocusMode != "steal" {
-		t.Fatal("期望 steal")
+	rules := NewStore(path).Get().Rewrites
+	if len(rules) != 2 || rules[0].Match != "Page.bringToFront" || rules[1].Set["block"] != true {
+		t.Fatalf("rewrites 加载异常: %+v", rules)
 	}
 }
 
-func TestFocusModeInvalidFallsBack(t *testing.T) {
+func TestRewritesInvalidFallsBackToDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
-	if err := os.WriteFile(path, []byte(`{"focus_mode":"chaos"}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"rewrites":[{"match":"X","action":"nuke"}]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if NewStore(path).Get().FocusMode != "background" {
-		t.Fatal("非法枚举应回落 background")
+	rules := NewStore(path).Get().Rewrites
+	if len(rules) != len(DefaultRewrites()) {
+		t.Fatalf("非法规则应回落默认集: %d", len(rules))
 	}
 }
 
@@ -93,18 +100,28 @@ func TestUpdateIgnoresUnknownAndNonNumeric(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated != Defaults() {
-		t.Fatalf("未知/非数值应被忽略，实际 %v", updated)
+	base := Defaults()
+	if updated.DisconnectReapSeconds != base.DisconnectReapSeconds || updated.AllocReapSeconds != base.AllocReapSeconds ||
+		updated.PopupPolicy != base.PopupPolicy || len(updated.Rewrites) != len(base.Rewrites) {
+		t.Fatalf("未知/非数值应被忽略，实际 %+v", updated)
 	}
 }
 
-func TestUpdateFocusMode(t *testing.T) {
-	store, _ := newStore(t)
-	if got := store.mustUpdate(t, "focus_mode", "steal"); got != "steal" {
-		t.Fatalf("期望 steal，实际 %v", got)
+func TestUpdateRewrites(t *testing.T) {
+	store, path := newStore(t)
+	rules := []map[string]any{{"match": "Page.bringToFront", "action": "fake"}}
+	if _, err := store.Update(map[string]any{"rewrites": rules}); err != nil {
+		t.Fatal(err)
 	}
-	if got := store.mustUpdate(t, "focus_mode", "nope"); got != "steal" {
-		t.Fatalf("非法值应保持当前 steal，实际 %v", got)
+	if got := NewStore(path).Get().Rewrites; len(got) != 1 || got[0].Match != "Page.bringToFront" {
+		t.Fatalf("rewrites 应持久化: %+v", got)
+	}
+	// 非法 action → 422 语义（返回错误，不改当前值）
+	if _, err := store.Update(map[string]any{"rewrites": []map[string]any{{"match": "X", "action": "nuke"}}}); err == nil {
+		t.Fatal("非法 action 应报错")
+	}
+	if got := store.Get().Rewrites; len(got) != 1 {
+		t.Fatalf("失败更新不应改动当前值: %d", len(got))
 	}
 }
 
@@ -126,8 +143,6 @@ func (s *Store) mustUpdate(t *testing.T, key string, value any) any {
 		return updated.DisconnectReapSeconds
 	case "alloc_reap_seconds":
 		return updated.AllocReapSeconds
-	case "focus_mode":
-		return updated.FocusMode
 	}
 	return nil
 }

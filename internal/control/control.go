@@ -69,9 +69,11 @@ func (c *Control) Handler() http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
 		_, _ = w.Write(data)
 	})
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(admin))))
+	// 静态资源禁缓存（go:embed 随二进制更新，持久 profile 的浏览器会缓存旧版）
+	mux.Handle("GET /static/", http.StripPrefix("/static/", noCache(http.FileServer(http.FS(admin)))))
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -79,7 +81,12 @@ func (c *Control) Handler() http.Handler {
 
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		snapshot := c.proxy.Status()
-		snapshot["keeper"] = map[string]any{"chrome": c.keeper.Alive()}
+		snapshot["keeper"] = map[string]any{
+			"chrome":      c.keeper.Alive(),
+			"cdp_port":    c.keeper.CDPPort,
+			"profile":     c.keeper.ProfileDir,
+			"chrome_path": c.keeper.ChromePath,
+		}
 		snapshot["settings"] = c.store.Get()
 		snapshot["version"] = c.version
 		snapshot["recent_sessions"] = c.ilg.Recent(50)
@@ -160,6 +167,14 @@ func (c *Control) Handler() http.Handler {
 	})
 
 	return mux
+}
+
+// noCache 静态资源禁缓存包装（嵌入资产随二进制发布，浏览器不得缓存旧版）。
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // tailLog 读日志尾部 n 行。

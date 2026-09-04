@@ -7,6 +7,7 @@ package settings
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -21,8 +22,56 @@ var minValues = map[string]float64{
 
 // 枚举字段合法值。
 var enumValues = map[string][]string{
-	"focus_mode":   {"background", "steal"},
 	"popup_policy": {"close", "allow"},
+}
+
+// RewriteRule 上游命令改写规则。
+//
+//	Match   方法名（精确匹配；尾部 * 为前缀通配，如 "Network.*"）
+//	Action  rewrite = 对 params 做 Set/Remove 后转发；fake = 假成功不转发
+//	Set     覆盖 params 顶层键
+//	Remove  删除 params 键（支持点路径，如 "bounds.focused"）
+//	Group   规则分组标记（focus/base），仅用于预设与展示
+//	Note    人类说明（日志 delta 用）
+type RewriteRule struct {
+	Match  string         `json:"match"`
+	Action string         `json:"action"`
+	Set    map[string]any `json:"set,omitempty"`
+	Remove []string       `json:"remove,omitempty"`
+	Group  string         `json:"group,omitempty"`
+	Note   string         `json:"note,omitempty"`
+}
+
+// DefaultRewrites 默认规则集 = 「不抢焦点」预设 + 基座保护。
+func DefaultRewrites() []RewriteRule {
+	return []RewriteRule{
+		{Match: "Target.createTarget", Action: "rewrite", Set: map[string]any{"background": true},
+			Group: "focus", Note: "tab 创建不抢焦点（+background:true）"},
+		{Match: "Target.activateTarget", Action: "fake", Group: "focus", Note: "激活拦截（假成功）"},
+		{Match: "Page.bringToFront", Action: "fake", Group: "focus", Note: "置前拦截（假成功）"},
+		{Match: "Browser.setWindowBounds", Action: "rewrite", Remove: []string{"bounds.focused"},
+			Group: "focus", Note: "剥离窗口 focused 字段"},
+		{Match: "Emulation.setFocusEmulationEnabled", Action: "rewrite",
+			Group: "focus", Note: "焦点仿真透传（页内 hasFocus 失真来源）"},
+		{Match: "Browser.close", Action: "fake", Group: "base", Note: "基座保护（全体会话共用基础设施）"},
+	}
+}
+
+// PassthroughRewrites 「原生透传」预设 = 仅保留基座保护。
+func PassthroughRewrites() []RewriteRule {
+	return []RewriteRule{DefaultRewrites()[5]}
+}
+
+func validRewrites(list []RewriteRule) error {
+	for i, r := range list {
+		if r.Match == "" {
+			return fmt.Errorf("rewrites[%d].match 不能为空", i)
+		}
+		if r.Action != "rewrite" && r.Action != "fake" {
+			return fmt.Errorf("rewrites[%d].action 必须是 rewrite|fake", i)
+		}
+	}
+	return nil
 }
 
 // Settings 运行时可调参数。
@@ -31,11 +80,11 @@ type Settings struct {
 	DisconnectReapSeconds float64 `json:"disconnect_reap_seconds"`
 	// AllocReapSeconds 分配后从未连接的回收时限（防泄漏）。
 	AllocReapSeconds float64 `json:"alloc_reap_seconds"`
-	// FocusMode 焦点策略：background=不抢焦点；steal=原生行为。
-	FocusMode string `json:"focus_mode"`
 	// PopupPolicy 弹窗策略：close=关闭页面发起的弹窗（openerId 判别，
 	// session 无法操作它们且会劫持活动 tab）；allow=放行。
 	PopupPolicy string `json:"popup_policy"`
+	// Rewrites 上游命令改写规则（顺序执行；默认=「不抢焦点」+ 基座保护）。
+	Rewrites []RewriteRule `json:"rewrites"`
 }
 
 // Defaults 返回默认设置。
@@ -43,8 +92,8 @@ func Defaults() Settings {
 	return Settings{
 		DisconnectReapSeconds: 60.0,
 		AllocReapSeconds:      300.0,
-		FocusMode:             "background",
 		PopupPolicy:           "close",
+		Rewrites:              DefaultRewrites(),
 	}
 }
 
@@ -78,11 +127,17 @@ func load(path string) Settings {
 	if v, ok := raw["alloc_reap_seconds"].(float64); ok {
 		out.AllocReapSeconds = v
 	}
-	if v, ok := raw["focus_mode"].(string); ok && validEnum("focus_mode", v) {
-		out.FocusMode = v
-	}
 	if v, ok := raw["popup_policy"].(string); ok && validEnum("popup_policy", v) {
 		out.PopupPolicy = v
+	}
+	if v, ok := raw["rewrites"].([]any); ok {
+		data, _ := json.Marshal(v)
+		var rules []RewriteRule
+		if err := json.Unmarshal(data, &rules); err == nil && validRewrites(rules) == nil {
+			out.Rewrites = rules
+		} else if err == nil {
+			slog.Warn("settings.json rewrites 校验失败，回落默认规则", "err", validRewrites(rules))
+		}
 	}
 	return out
 }
@@ -107,12 +162,25 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 		if allowed, ok := enumValues[key]; ok {
 			if str, isStr := value.(string); isStr && contains(allowed, str) {
 				switch key {
-				case "focus_mode":
-					current.FocusMode = str
 				case "popup_policy":
 					current.PopupPolicy = str
 				}
 			}
+			continue
+		}
+		if key == "rewrites" {
+			data, err := json.Marshal(value)
+			if err != nil {
+				return Settings{}, fmt.Errorf("rewrites 序列化失败: %v", err)
+			}
+			var rules []RewriteRule
+			if err := json.Unmarshal(data, &rules); err != nil {
+				return Settings{}, fmt.Errorf("rewrites 解析失败: %v", err)
+			}
+			if err := validRewrites(rules); err != nil {
+				return Settings{}, err
+			}
+			current.Rewrites = rules
 			continue
 		}
 		num, ok := value.(float64)
