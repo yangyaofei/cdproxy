@@ -87,6 +87,17 @@
           </td>
         </tr>
         <tr>
+          <td><label for="s-popup">弹窗策略</label></td>
+          <td>
+            <select id="s-popup" x-model="form.popup_policy">
+              <option value="close">关闭（close）</option>
+              <option value="allow">放行（allow）</option>
+            </select>
+            <span class="hint">页面发起的弹窗（window.open / target=_blank）会劫持共享窗口的活动 tab，
+              且会话无法操作它们——close 策略在创建瞬间即回收</span>
+          </td>
+        </tr>
+        <tr>
           <td><label for="s-focus">焦点策略</label></td>
           <td>
             <select id="s-focus" x-model="form.focus_mode">

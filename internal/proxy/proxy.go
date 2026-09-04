@@ -543,7 +543,21 @@ func (p *Proxy) onDsEvent(msg map[string]any) {
 				Method: method, Action: "routed", TargetID: tid, In: interlog.Safe(ti)})
 			p.sendTo(owner, msg)
 		} else if method == "Target.targetCreated" {
-			// 非自有 target 创建 = 页面发起弹窗等浏览器内部行为（上游守卫够不着的通道）
+			// 非自有 target 创建 = 页面发起弹窗等浏览器内部行为（上游守卫够不着：
+			// 不走上游 WS，且会劫持共享窗口的活动 tab）。openerId 是弹窗判别依据
+			// （启动重放的既有 tab 无此字段）。session 无法操作无主弹窗（被
+			// getTargets 过滤），close 策略下立即回收。
+			typ, _ := ti["type"].(string)
+			opener, _ := ti["openerId"].(string)
+			if typ == "page" && opener != "" && p.store.Get().PopupPolicy == "close" {
+				p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: interlog.UnownedKey,
+					Method: method, Action: "popup-close", TargetID: tid, In: interlog.Safe(ti),
+					Delta: "opener=" + opener[:min(12, len(opener))]})
+				if err := p.dsRaw("Target.closeTarget", map[string]any{"targetId": tid}); err != nil {
+					p.log.Error("弹窗关闭失败", "target", tid, "err", err)
+				}
+				return
+			}
 			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: interlog.UnownedKey,
 				Method: method, Action: "unowned", TargetID: tid, In: interlog.Safe(ti)})
 		}

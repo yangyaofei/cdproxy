@@ -7,7 +7,7 @@ function admin() {
     logs: [],
     logOpen: "",
     sessionLogs: [],
-    form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, focus_mode: null },
+    form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, focus_mode: null, popup_policy: null },
     savedAt: "",
     busy: false,
 
@@ -38,6 +38,7 @@ function admin() {
           this.form.disconnect_reap_seconds = snap.settings.disconnect_reap_seconds;
           this.form.alloc_reap_seconds = snap.settings.alloc_reap_seconds;
           this.form.focus_mode = snap.settings.focus_mode;
+          this.form.popup_policy = snap.settings.popup_policy;
         }
       } catch (err) {
         this.healthy = false;
@@ -50,7 +51,8 @@ function admin() {
       return (
         Number(this.form.disconnect_reap_seconds) !== this.status.settings.disconnect_reap_seconds ||
         Number(this.form.alloc_reap_seconds) !== this.status.settings.alloc_reap_seconds ||
-        this.form.focus_mode !== this.status.settings.focus_mode
+        this.form.focus_mode !== this.status.settings.focus_mode ||
+        this.form.popup_policy !== this.status.settings.popup_policy
       );
     },
 
@@ -61,10 +63,12 @@ function admin() {
           disconnect_reap_seconds: Number(this.form.disconnect_reap_seconds),
           alloc_reap_seconds: Number(this.form.alloc_reap_seconds),
           focus_mode: this.form.focus_mode,
+          popup_policy: this.form.popup_policy,
         });
         this.form.disconnect_reap_seconds = updated.disconnect_reap_seconds;
         this.form.alloc_reap_seconds = updated.alloc_reap_seconds;
         this.form.focus_mode = updated.focus_mode;
+        this.form.popup_policy = updated.popup_policy;
         this.savedAt = new Date().toLocaleTimeString();
         await this.refresh();
       } catch (err) {

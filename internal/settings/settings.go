@@ -21,7 +21,8 @@ var minValues = map[string]float64{
 
 // 枚举字段合法值。
 var enumValues = map[string][]string{
-	"focus_mode": {"background", "steal"},
+	"focus_mode":   {"background", "steal"},
+	"popup_policy": {"close", "allow"},
 }
 
 // Settings 运行时可调参数。
@@ -32,6 +33,9 @@ type Settings struct {
 	AllocReapSeconds float64 `json:"alloc_reap_seconds"`
 	// FocusMode 焦点策略：background=不抢焦点；steal=原生行为。
 	FocusMode string `json:"focus_mode"`
+	// PopupPolicy 弹窗策略：close=关闭页面发起的弹窗（openerId 判别，
+	// session 无法操作它们且会劫持活动 tab）；allow=放行。
+	PopupPolicy string `json:"popup_policy"`
 }
 
 // Defaults 返回默认设置。
@@ -40,6 +44,7 @@ func Defaults() Settings {
 		DisconnectReapSeconds: 60.0,
 		AllocReapSeconds:      300.0,
 		FocusMode:             "background",
+		PopupPolicy:           "close",
 	}
 }
 
@@ -76,6 +81,9 @@ func load(path string) Settings {
 	if v, ok := raw["focus_mode"].(string); ok && validEnum("focus_mode", v) {
 		out.FocusMode = v
 	}
+	if v, ok := raw["popup_policy"].(string); ok && validEnum("popup_policy", v) {
+		out.PopupPolicy = v
+	}
 	return out
 }
 
@@ -101,6 +109,8 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 				switch key {
 				case "focus_mode":
 					current.FocusMode = str
+				case "popup_policy":
+					current.PopupPolicy = str
 				}
 			}
 			continue
