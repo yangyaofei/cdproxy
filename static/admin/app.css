@@ -32,7 +32,18 @@ h1 { font-size: 17px; margin: 0; letter-spacing: 0.2px; }
 .health { font-size: 12px; }
 .health.ok { color: var(--ok); }
 .health.bad { color: var(--bad); }
-body > div { max-width: 1180px; margin: 0 auto; padding: 18px 22px 60px; }
+body > div { padding: 14px 20px 50px; }
+.tabs {
+  display: flex; gap: 2px; padding: 0 22px; background: rgba(10,10,16,0.9);
+  border-bottom: 1px solid var(--border-soft);
+  position: sticky; top: 49px; backdrop-filter: blur(6px); z-index: 4;
+}
+.tabs button {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  border-radius: 0; padding: 9px 16px; font-size: 13px; color: var(--muted);
+}
+.tabs button:hover { color: var(--text); border-bottom-color: transparent; }
+.tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
 section {
   background: var(--panel); border: 1px solid var(--border-soft); border-radius: 10px;
   padding: 16px 18px 18px; margin: 0 0 18px;

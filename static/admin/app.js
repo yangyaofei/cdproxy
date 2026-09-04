@@ -13,6 +13,7 @@ function admin() {
   return {
     healthy: false,
     status: null,
+    tab: "sessions",
     logs: [],
     viewSessions: [],
     logOpen: "",

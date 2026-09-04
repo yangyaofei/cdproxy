@@ -16,9 +16,16 @@
         <span x-text="healthy ? '● 服务在线' : '● 服务离线'"></span>
       </div>
     </header>
+    <nav class="tabs">
+      <button :class="tab === 'sessions' ? 'on' : ''" @click="tab = 'sessions'">会话</button>
+      <button :class="tab === 'rules' ? 'on' : ''" @click="tab = 'rules'">规则</button>
+      <button :class="tab === 'keeper' ? 'on' : ''" @click="tab = 'keeper'">基座</button>
+      <button :class="tab === 'settings' ? 'on' : ''" @click="tab = 'settings'">设置</button>
+      <button :class="tab === 'logs' ? 'on' : ''" @click="tab = 'logs'">日志</button>
+    </nav>
 
     <!-- 基座 -->
-    <section>
+    <section x-show="tab === 'keeper'">
       <h2>基座 Chrome</h2>
       <template x-if="status">
         <div>
@@ -36,7 +43,7 @@
     </section>
 
     <!-- 会话 -->
-    <section>
+    <section x-show="tab === 'sessions'">
       <h2>会话 <span class="count" x-text="viewSessions.length"></span></h2>
       <table class="list">
         <thead><tr><th>名称</th><th>状态</th><th>名下 tab</th><th>最近活动</th><th></th></tr></thead>
@@ -110,7 +117,7 @@
     </section>
 
     <!-- 规则 -->
-    <section>
+    <section x-show="tab === 'rules'">
       <h2>改写规则 <span class="hint" style="font-weight:normal">match 方法名（尾部 * 前缀通配）· action: rewrite=改 params 后转发 / fake=假成功不转发 · remove 支持点路径</span></h2>
       <div class="log-toolbar">
         <button class="sm" @click="applyPreset('focus')" :disabled="busy">预设：不抢焦点（默认）</button>
@@ -128,7 +135,7 @@
     </section>
 
     <!-- 设置 -->
-    <section>
+    <section x-show="tab === 'settings'">
       <h2>运行时设置</h2>
       <table class="kv form">
         <tr>
@@ -167,13 +174,13 @@
     </section>
 
     <!-- 日志 -->
-    <section>
+    <section x-show="tab === 'logs'">
       <h2>日志尾部 <button class="sm" @click="loadLogs()" :disabled="busy">刷新</button></h2>
       <pre class="logs" x-text="logs.length ? logs.join('\n') : '（暂无日志）'"></pre>
     </section>
 
     <!-- 危险区 -->
-    <section class="danger-zone">
+    <section class="danger-zone" x-show="tab === 'settings'">
       <h2>停机</h2>
       <button class="danger" @click="shutdown()" :disabled="busy">停止服务</button>
       <span class="hint">基座 Chrome 不受影响（keeper 独立管理，可用 scripts/serve.sh 重新拉起服务）</span>
