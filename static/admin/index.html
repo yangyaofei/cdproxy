@@ -213,7 +213,7 @@
     <section x-show="tab === 'logs'">
       <h2>服务日志
         <button class="sm" @click="loadLogs()" :disabled="busy">刷新</button>
-        <span class="hint">最近 200 行 · slog 结构化解析</span>
+        <span class="hint">最新在前 · 下滑加载更早 · 共 <span x-text="slogTotal"></span> 行</span>
       </h2>
       <div class="logs-wrap">
         <div class="log-scroll">
@@ -231,6 +231,7 @@
             </template>
           </table>
           <div class="log-empty" x-show="!slogParsed.length">（暂无日志）</div>
+          <div id="slogSentinel" class="log-empty" x-show="slogHasMore" x-text="slogLoading ? '加载中…' : '下滑加载更早期日志'"></div>
         </div>
       </div>
     </section>

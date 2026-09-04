@@ -6,7 +6,7 @@
 //	GET  /status                   运行状态（下游/会话/基座/设置）
 //	GET  /settings                 当前设置
 //	PUT  /settings                 合并式更新（422 校验失败）
-//	GET  /logs/tail                服务日志尾部（默认 200 行）
+//	GET  /logs/tail                服务日志分页（n 默认 200 上限 1000，skip 向更早翻页）
 //	POST /sessions                 {"name": ...} 分配会话
 //	POST /sessions/{name}/release  释放会话
 //	POST /keeper/restart           重启基座 Chrome
@@ -18,6 +18,7 @@ package control
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -125,8 +126,18 @@ func (c *Control) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, updated)
 	})
 
-	mux.HandleFunc("GET /logs/tail", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"lines": tailLog(c.logPath, 200)})
+	mux.HandleFunc("GET /logs/tail", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		n, _ := strconv.Atoi(q.Get("n"))
+		if n <= 0 || n > 1000 {
+			n = 200
+		}
+		skip, _ := strconv.Atoi(q.Get("skip"))
+		if skip < 0 {
+			skip = 0
+		}
+		total, lines, hasMore := tailLogPaged(c.logPath, n, skip)
+		writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "total": total, "hasMore": hasMore})
 	})
 
 	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
@@ -178,16 +189,27 @@ func noCache(next http.Handler) http.Handler {
 }
 
 // tailLog 读日志尾部 n 行。
-func tailLog(path string, n int) []string {
+// tailLogPaged 返回日志文件中结束于倒数第 skip 行的 n 行（skip=0 即最新一段）。
+// 返回 total 总行数与 hasMore（更早是否还有），供前端无限下滑分页。
+func tailLogPaged(path string, n, skip int) (int, []string, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return []string{}
+		return 0, []string{}, false
 	}
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
+	if len(lines) == 1 && lines[0] == "" {
+		return 0, []string{}, false
 	}
-	return lines
+	total := len(lines)
+	end := total - skip
+	if end < 0 {
+		end = 0
+	}
+	start := end - n
+	if start < 0 {
+		start = 0
+	}
+	return total, lines[start:end], start > 0
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

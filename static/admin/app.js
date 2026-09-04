@@ -41,7 +41,7 @@ function parseSlogLine(line) {
   const ts = m[1];
   return {
     ts, level: m[2], msg: m[3] !== undefined ? m[3] : (m[4] || ""), rest: (m[5] || "").trim(),
-    timeShort: ts.includes("T") ? ts.split("T")[1] : ts,
+    timeShort: (ts.includes("T") ? ts.split("T")[1] : ts).replace(/([+-]\d{2}:\d{2}|Z)$/, ""),
     day: ts.includes("T") ? ts.split("T")[0] : "",
   };
 }
@@ -60,8 +60,11 @@ function admin() {
     rules: [],
     rulesError: "",
     rulesSavedAt: "",
-    slogLines: [],
     slogParsed: [],
+    slogSkip: 0,
+    slogTotal: 0,
+    slogHasMore: false,
+    slogLoading: false,
     busy: false,
 
     async init() {
@@ -69,6 +72,14 @@ function admin() {
       document.documentElement.dataset.theme = saved;
       await this.refresh();
       setInterval(() => this.refresh(), 5000);
+      this.$nextTick(() => {
+        const el = document.getElementById("slogSentinel");
+        if (el && "IntersectionObserver" in window) {
+          new IntersectionObserver((entries) => {
+            entries.forEach((e) => { if (e.isIntersecting) this.loadOlderLogs(); });
+          }, { rootMargin: "600px" }).observe(el);
+        }
+      });
     },
 
     toggleTheme() {
@@ -258,16 +269,33 @@ function admin() {
       try { return JSON.stringify(v, null, 2); } catch (err) { return String(v); }
     },
 
-    // ── 服务日志（slog 结构化）──
+    // ── 服务日志（最新在前；下滑到底自动加载更早一页）──
     async loadLogs() {
       this.busy = true;
       try {
-        const data = await this.api("GET", "/logs/tail");
-        this.slogLines = data.lines || [];
-        this.slogParsed = this.slogLines.map(parseSlogLine).filter(Boolean);
+        const data = await this.api("GET", "/logs/tail?n=200&skip=0");
+        this.slogTotal = data.total || 0;
+        this.slogHasMore = !!data.hasMore;
+        this.slogSkip = 0;
+        this.slogParsed = (data.lines || []).map(parseSlogLine).filter(Boolean).reverse();
       } catch (err) {
         this.slogParsed = [];
       } finally { this.busy = false; }
+    },
+
+    async loadOlderLogs() {
+      if (this.slogLoading || !this.slogHasMore) return;
+      this.slogLoading = true;
+      try {
+        const skip = this.slogSkip + 200;
+        const data = await this.api("GET", "/logs/tail?n=200&skip=" + skip);
+        this.slogSkip = skip;
+        if (data.total) this.slogTotal = data.total;
+        this.slogHasMore = !!data.hasMore;
+        const older = (data.lines || []).map(parseSlogLine).filter(Boolean).reverse();
+        this.slogParsed = this.slogParsed.concat(older);
+      } catch (err) { /* 失败静默，下次触底重试 */ }
+      finally { this.slogLoading = false; }
     },
 
     async shutdown() {
