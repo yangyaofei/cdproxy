@@ -180,7 +180,7 @@ table.logt tbody tr.sel td { background: var(--accent-soft); }
 /* 服务日志表 */
 table.slogt { table-layout: fixed; width: 100%; }
 table.slogt td { padding: 4px 10px; font-size: 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; overflow-wrap: anywhere; overflow: hidden; }
-table.slogt td.mono { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; }
+table.slogt td.mono { font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 table.slogt tbody tr:hover td { background: var(--panel2); }
 .lvl { display: inline-block; font-size: 10.5px; border-radius: 5px; padding: 0 6px; border: 1px solid var(--chip-border); }
 .lvl.INFO { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }

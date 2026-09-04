@@ -38,8 +38,11 @@ function jsonTree(value, key, depth) {
 function parseSlogLine(line) {
   const m = line.match(/^time=(\S+) level=(\S+) msg=(?:"((?:[^"\\]|\\.)*)"|(\S+)) ?(.*)$/);
   if (!m) return null;
+  const ts = m[1];
   return {
-    ts: m[1], level: m[2], msg: m[3] !== undefined ? m[3] : (m[4] || ""), rest: (m[5] || "").trim(),
+    ts, level: m[2], msg: m[3] !== undefined ? m[3] : (m[4] || ""), rest: (m[5] || "").trim(),
+    timeShort: ts.includes("T") ? ts.split("T")[1] : ts,
+    day: ts.includes("T") ? ts.split("T")[0] : "",
   };
 }
 

@@ -216,13 +216,13 @@
         <span class="hint">最近 200 行 · slog 结构化解析</span>
       </h2>
       <div class="logs-wrap">
-        <div class="log-scroll" style="max-height: 460px">
+        <div class="log-scroll">
           <table class="slogt" x-show="slogParsed.length">
-            <thead><tr><th style="width:200px">时间</th><th style="width:64px">级别</th><th style="width:30%">消息</th><th>属性</th></tr></thead>
+            <thead><tr><th style="width:150px">时间</th><th style="width:64px">级别</th><th style="width:30%">消息</th><th>属性</th></tr></thead>
             <template x-for="(e, i) in slogParsed" :key="i">
               <tbody>
                 <tr>
-                  <td class="mono" x-text="e.ts"></td>
+                  <td class="mono" :title="e.ts" x-text="e.timeShort"></td>
                   <td><span class="lvl" :class="e.level" x-text="e.level"></span></td>
                   <td class="wrap" x-text="e.msg"></td>
                   <td class="wrap mono" style="color: var(--muted)" x-text="e.rest"></td>

@@ -230,12 +230,14 @@ func runServe(args []string) int {
 	return 0
 }
 
+// newLogger 日志只写文件（service.log 是唯一事实源，避免调用方重定向 stderr
+// 到同一文件时出现双份）；文件打不开才退回 stderr。
 func newLogger(logPath string) *slog.Logger {
 	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
-	return slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, file), nil))
+	return slog.New(slog.NewTextHandler(file, nil))
 }
 
 // ── status / stop ────────────────────────────────────────────────
