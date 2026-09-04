@@ -117,12 +117,13 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .logs-wrap { border: 1px solid var(--border-soft); border-radius: 8px; overflow: hidden; }
 .logs-toolbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; flex-wrap: wrap;
                 border-bottom: 1px solid var(--border-soft); background: var(--panel2); }
-.log-scroll { max-height: 400px; overflow: auto; }
+.log-scroll { max-height: 65vh; overflow-y: auto; overflow-x: hidden; }
+table.logt { table-layout: fixed; width: 100%; }
 table.logt th { text-align: left; font-size: 11px; color: var(--muted); font-weight: 500;
   padding: 6px 10px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel2); white-space: nowrap; }
-table.logt td { padding: 4px 10px; font-size: 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
-table.logt td.mono { font-family: var(--mono); white-space: nowrap; }
-table.logt td.wrap { color: var(--muted); word-break: break-all; min-width: 200px; }
+table.logt td { padding: 4px 10px; font-size: 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; overflow: hidden; overflow-wrap: anywhere; }
+table.logt td.mono { font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+table.logt td.wrap { color: var(--muted); }
 table.logt tbody tr { cursor: pointer; }
 table.logt tbody tr:hover td { background: var(--panel2); }
 table.logt tbody tr.sel td { background: var(--accent-soft); }
@@ -144,6 +145,12 @@ table.logt tbody tr.sel td { background: var(--accent-soft); }
 .idchip { font-family: var(--mono); font-size: 11px; color: var(--text); background: var(--chip-bg);
           border: 1px solid var(--chip-border); border-radius: 5px; padding: 0 6px; }
 .arrow { color: var(--muted); margin: 0 3px; }
+
+/* 摘要键值 chips（结构化可视化，换行不溢出） */
+.kvp { display: inline-block; font-family: var(--mono); font-size: 11px; color: var(--muted);
+       background: var(--chip-bg); border: 1px solid var(--chip-border); border-radius: 5px;
+       padding: 0 6px; margin: 1px 4px 1px 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+.kvp b { color: var(--accent); font-weight: 500; }
 
 /* 详情面板 */
 .detail-pane { border-top: 1px solid var(--border); background: var(--code-bg); padding: 12px 14px; }
@@ -171,9 +178,9 @@ table.logt tbody tr.sel td { background: var(--accent-soft); }
 .jt .br { color: var(--muted); }
 
 /* 服务日志表 */
-table.slogt td { padding: 4px 10px; font-size: 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
-table.slogt td.mono { font-family: var(--mono); white-space: nowrap; }
-table.slogt td.wrap { word-break: break-all; }
+table.slogt { table-layout: fixed; width: 100%; }
+table.slogt td { padding: 4px 10px; font-size: 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; overflow-wrap: anywhere; overflow: hidden; }
+table.slogt td.mono { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; }
 table.slogt tbody tr:hover td { background: var(--panel2); }
 .lvl { display: inline-block; font-size: 10.5px; border-radius: 5px; padding: 0 6px; border: 1px solid var(--chip-border); }
 .lvl.INFO { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
@@ -187,8 +194,8 @@ table.slogt tbody tr:hover td { background: var(--panel2); }
         max-height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0; }
 
 /* 规则编辑器 */
-.rules-editor { overflow-x: auto; }
-.rules-editor table { min-width: 860px; }
+.rules-editor { }
+.rules-editor table { table-layout: fixed; width: 100%; }
 .rules-editor th { text-align: left; font-size: 11px; color: var(--muted); padding: 6px 8px;
   border-bottom: 1px solid var(--border); font-weight: 500; white-space: nowrap; }
 .rules-editor td { padding: 4px 6px; border-bottom: 1px solid var(--border-soft); }

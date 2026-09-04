@@ -83,7 +83,7 @@
                   </div>
                   <div class="log-scroll">
                     <table class="logt" x-show="sessionLogs.length">
-                      <thead><tr><th>时间</th><th>向</th><th>Method</th><th>ID</th><th>Action</th><th style="width:40%">摘要</th></tr></thead>
+                      <thead><tr><th style="width:84px">时间</th><th style="width:36px">向</th><th style="width:24%">Method</th><th style="width:150px">ID</th><th style="width:120px">Action</th><th>摘要</th></tr></thead>
                       <template x-for="(e, i) in sessionLogs" :key="i">
                         <tbody>
                           <tr :class="selLog === i ? 'sel' : ''" @click="selLog = (selLog === i ? -1 : i)">
@@ -98,7 +98,7 @@
                             <td><span class="badge" :class="e.action" x-text="e.action || ''"></span>
                                 <span class="badge err-b" x-show="e.status === 'error'" x-text="e.status"></span>
                                 <span class="badge ok-b" x-show="e.status === 'ok'" x-text="e.status"></span></td>
-                            <td class="wrap" x-text="logSummary(e)"></td>
+                            <td class="wrap" x-html="logSummary(e)"></td>
                           </tr>
                           <tr x-show="selLog === i">
                             <td colspan="6" style="padding:0">
@@ -218,7 +218,7 @@
       <div class="logs-wrap">
         <div class="log-scroll" style="max-height: 460px">
           <table class="slogt" x-show="slogParsed.length">
-            <thead><tr><th style="width:190px">时间</th><th style="width:70px">级别</th><th style="width:34%">消息</th><th>属性</th></tr></thead>
+            <thead><tr><th style="width:200px">时间</th><th style="width:64px">级别</th><th style="width:30%">消息</th><th>属性</th></tr></thead>
             <template x-for="(e, i) in slogParsed" :key="i">
               <tbody>
                 <tr>

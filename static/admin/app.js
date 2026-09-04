@@ -229,9 +229,24 @@ function admin() {
     fmtTime(ts) { return ts ? new Date(ts).toLocaleTimeString() : ""; },
 
     logSummary(e) {
-      if (e.delta) return e.delta;
-      if (e.detail) return e.detail;
-      if (e.in !== undefined) return JSON.stringify(e.in);
+      // 摘要：结构化键值 chips（顶层至多 4 个，值截断）——JSON 内容可视化而非字符串
+      const src = e.in !== undefined ? e.in : null;
+      const chips = [];
+      if (src && typeof src === "object" && !Array.isArray(src)) {
+        for (const k of Object.keys(src).slice(0, 4)) {
+          let v = src[k];
+          if (v === null) v = "null";
+          else if (typeof v === "object") v = Array.isArray(v) ? `[${v.length} 项]` : "{…}";
+          v = String(v);
+          if (v.length > 40) v = v.slice(0, 40) + "…";
+          chips.push(`<span class="kvp"><b>${esc(k)}</b>=${esc(v)}</span>`);
+        }
+        const more = Object.keys(src).length - 4;
+        if (more > 0) chips.push(`<span class="kvp">+${more}</span>`);
+        if (chips.length) return chips.join("");
+      }
+      if (e.delta) return esc(e.delta);
+      if (e.detail) return esc(e.detail);
       return "";
     },
 
