@@ -189,6 +189,13 @@
           </td>
         </tr>
         <tr>
+          <td><label for="s-idle">基座空闲关闭（秒）</label></td>
+          <td>
+            <input id="s-idle" type="number" min="0" step="1" x-model="form.keeper_idle_shutdown_seconds">
+            <span class="hint">连续无会话且无人工页面达到该秒数后关闭基座（登录态在磁盘零损失，下次分配冷启动）；0 = 不启用。人工在基座里打开的页面会计入活动</span>
+          </td>
+        </tr>
+        <tr>
           <td><label for="s-popup">弹窗策略</label></td>
           <td>
             <select id="s-popup" x-model="form.popup_policy">

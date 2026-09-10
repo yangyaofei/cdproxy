@@ -162,6 +162,24 @@ func (c *Control) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
 	})
 
+	// POST /keeper/open 人工在基座窗口开页面：无主 tab（不经会话）、前台
+	// （自管理命令不经改写规则，绕过 focus 组的 background 强制）、不受
+	// 会话回收影响；计入基座空闲活动（人工页面在，基座不关）。
+	mux.HandleFunc("POST /keeper/open", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.URL) == "" {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "url 必填"})
+			return
+		}
+		if err := c.proxy.DsRawForControl("Target.createTarget", map[string]any{"url": body.URL}); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "opened", "url": body.URL})
+	})
+
 	mux.HandleFunc("POST /keeper/restart", func(w http.ResponseWriter, _ *http.Request) {
 		if err := c.proxy.RestartKeeper(); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

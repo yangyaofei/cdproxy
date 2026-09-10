@@ -18,7 +18,7 @@ import (
 
 // knownKeys 合法设置键（Update 对未知键显式报错而非静默忽略——配置写错
 // 必须当场暴露，否则调用方以为生效，事后才发现被吞）。
-var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "popup_policy", "rewrites"}
+var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "popup_policy", "rewrites"}
 
 // 各字段的下限（防误配成 0 导致回收风暴）。
 var minValues = map[string]float64{
@@ -89,6 +89,10 @@ type Settings struct {
 	// PopupPolicy 弹窗策略：close=关闭页面发起的弹窗（openerId 判别，
 	// session 无法操作它们且会劫持活动 tab）；allow=放行。
 	PopupPolicy string `json:"popup_policy"`
+	// KeeperIdleShutdownSeconds 基座空闲自动关闭阈值：连续无会话且无人工
+	// 页面达到该秒数后关闭基座 Chrome（登录态在磁盘 profile，零损失），
+	// 下次分配时冷启动。0 = 不启用。
+	KeeperIdleShutdownSeconds float64 `json:"keeper_idle_shutdown_seconds"`
 	// Rewrites 上游命令改写规则（顺序执行；默认=「不抢焦点」+ 基座保护）。
 	Rewrites []RewriteRule `json:"rewrites"`
 }
@@ -99,6 +103,7 @@ func Defaults() Settings {
 		DisconnectReapSeconds: 60.0,
 		AllocReapSeconds:      300.0,
 		PopupPolicy:           "close",
+		KeeperIdleShutdownSeconds: 600.0,
 		Rewrites:              DefaultRewrites(),
 	}
 }
@@ -135,6 +140,9 @@ func load(path string) Settings {
 	}
 	if v, ok := raw["popup_policy"].(string); ok && validEnum("popup_policy", v) {
 		out.PopupPolicy = v
+	}
+	if v, ok := raw["keeper_idle_shutdown_seconds"].(float64); ok {
+		out.KeeperIdleShutdownSeconds = v
 	}
 	if v, ok := raw["rewrites"].([]any); ok {
 		data, _ := json.Marshal(v)
@@ -209,6 +217,13 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 			current.DisconnectReapSeconds = clampMin(num, minValues[key])
 		case "alloc_reap_seconds":
 			current.AllocReapSeconds = clampMin(num, minValues[key])
+		case "keeper_idle_shutdown_seconds":
+			// 0 = 关闭该功能；启用时下限 60s 防抖动
+			if num == 0 {
+				current.KeeperIdleShutdownSeconds = 0
+			} else {
+				current.KeeperIdleShutdownSeconds = clampMin(num, 60)
+			}
 		}
 	}
 	s.settings = current

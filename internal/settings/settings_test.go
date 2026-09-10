@@ -160,3 +160,18 @@ func TestUpdateRejectsUnknownKeys(t *testing.T) {
 		t.Fatalf("合法键不应报错: %v", err)
 	}
 }
+
+func TestKeeperIdleShutdownClampAndDisable(t *testing.T) {
+	s := NewStore(t.TempDir() + "/settings.json")
+	up, err := s.Update(map[string]any{"keeper_idle_shutdown_seconds": 5.0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up.KeeperIdleShutdownSeconds != 60 {
+		t.Fatalf("启用时下限 60，实际 %v", up.KeeperIdleShutdownSeconds)
+	}
+	up, err = s.Update(map[string]any{"keeper_idle_shutdown_seconds": 0.0})
+	if err != nil || up.KeeperIdleShutdownSeconds != 0 {
+		t.Fatalf("0 应原样通过（禁用），实际 %v err=%v", up.KeeperIdleShutdownSeconds, err)
+	}
+}

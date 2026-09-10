@@ -165,6 +165,13 @@ func (st *State) drop(sess *Session) {
 	}
 }
 
+// SessionCount 当前会话数（含未连接的，分配即计数）。
+func (st *State) SessionCount() int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return len(st.sessions)
+}
+
 // FindByToken 按上游连接 token 定位 session。
 func (st *State) FindByToken(token string) *Session {
 	st.mu.Lock()

@@ -21,6 +21,7 @@ import (
 	"strings"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -49,6 +50,107 @@ type Proxy struct {
 	dsWriteMu sync.Mutex    // 下游写串行
 
 	server *http.Server
+
+	idleDown atomic.Bool // 基座被空闲策略有意关闭：抑制自愈重启，等下次分配唤醒
+}
+
+// idleCheckInterval 空闲巡检周期。
+const idleCheckInterval = 30 * time.Second
+
+// startIdleReaper 空闲巡检：连续（阈值内每个周期都满足）无会话且无人工页面
+// 达到 keeper_idle_shutdown_seconds 后，验证式关闭基座。登录态在磁盘 profile
+// 零损失；下次 AllocSession 冷启动唤醒（首次打开多 2~5s 启动延迟）。
+// 人工在基座里打开的页面（无主 tab）计入活动——不会在用户看着时杀掉浏览器。
+func (p *Proxy) startIdleReaper() {
+	go func() {
+		idleSince := time.Time{}
+		for {
+			time.Sleep(idleCheckInterval)
+			threshold := p.store.Get().KeeperIdleShutdownSeconds
+			if threshold <= 0 {
+				idleSince = time.Time{}
+				continue
+			}
+			if p.st.SessionCount() > 0 {
+				idleSince = time.Time{}
+				continue
+			}
+			unowned, err := p.unownedPageCount()
+			if err != nil {
+				// 基座本来就没跑：已经是空闲态，记起点即可
+				if idleSince.IsZero() {
+					idleSince = time.Now()
+				}
+				continue
+			}
+			if unowned > 0 {
+				idleSince = time.Time{}
+				continue
+			}
+			if idleSince.IsZero() {
+				idleSince = time.Now()
+				continue
+			}
+			if time.Since(idleSince) < time.Duration(threshold*float64(time.Second)) {
+				continue
+			}
+			if err := p.cfg.Stop(); err != nil {
+				// 杀不死（不可中断态）：保持连接自愈路径，下轮再试
+				p.log.Error("基座空闲关闭失败（进程无法终止）", "err", err)
+				idleSince = time.Time{}
+				continue
+			}
+			p.idleDown.Store(true)
+			p.mu.Lock()
+			ds := p.ds
+			p.ds = nil
+			p.mu.Unlock()
+			if ds != nil {
+				_ = ds.Close(websocket.StatusGoingAway, "keeper idle shutdown")
+			}
+			idleSince = time.Time{}
+			p.log.Info("基座已空闲关闭（无会话且无人工页面）",
+				"threshold_seconds", threshold, "wake", "下次 AllocSession 冷启动")
+		}
+	}()
+}
+
+// unownedPageCount 统计基座里不属于任何会话的 page 型 target（人工使用信号）。
+func (p *Proxy) unownedPageCount() (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d/json/list", p.cfg.CDPPort), nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var list []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, item := range list {
+		typ, _ := item["type"].(string)
+		if typ != "page" {
+			continue
+		}
+		// 人工活动 = 有真实内容的页面（http/https）。about:blank / data: /
+		// chrome:// 新标签页与测试残留不算——否则一个空白 tab 永久阻止空闲关闭
+		u, _ := item["url"].(string)
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			continue
+		}
+		tid, _ := item["id"].(string)
+		if p.st.OwnerOf(tid) == nil {
+			count++
+		}
+	}
+	return count, nil
 }
 
 // New 构造代理。
@@ -75,6 +177,7 @@ func (p *Proxy) Start() error {
 		}
 	}()
 	p.log.Info("代理 WS 服务已启动", "addr", addr)
+	p.startIdleReaper()
 	return nil
 }
 
@@ -101,6 +204,10 @@ func (p *Proxy) Stop() {
 // 旧 session（旧 token），若返回新生成的 token，daemon 拿来连接会命中
 // 4401 unknown session（close 后立即重开必现）。
 func (p *Proxy) AllocSession(name string) (string, error) {
+	if p.idleDown.Load() {
+		p.idleDown.Store(false)
+		p.log.Info("基座从空闲关闭中唤醒（冷启动）", "session", name)
+	}
 	if err := p.ensureDownstream(); err != nil {
 		return "", err
 	}
@@ -151,6 +258,7 @@ func (p *Proxy) ReleaseSession(name string) {
 // 必须验证旧基座真正死亡才返回成功——杀不死（不可中断内核态，信号无效）
 // 时如实报错，绝不宣称"已重建"。
 func (p *Proxy) RestartKeeper() error {
+	p.idleDown.Store(false)
 	p.mu.Lock()
 	ds := p.ds
 	p.ds = nil
@@ -353,6 +461,9 @@ func (p *Proxy) ensureDownstream() error {
 	if p.ds != nil {
 		return nil
 	}
+	if p.idleDown.Load() && p.st.SessionCount() == 0 {
+		return fmt.Errorf("基座已空闲关闭，等待下次分配唤醒")
+	}
 	wsURL, err := p.cfg.EnsureRunning()
 	if err != nil {
 		return fmt.Errorf("Chrome 基座不可用: %w", err)
@@ -395,7 +506,10 @@ func (p *Proxy) onDownstreamDead(conn *websocket.Conn, reason error) {
 	owned, bound := p.st.ClearOwnership()
 	p.notifyOwnershipCleared(owned, bound)
 	if err := p.ensureDownstream(); err != nil {
-		p.log.Error("下游重建失败", "err", err)
+		// 含"基座已空闲关闭"的预期路径——不算故障
+		if !p.idleDown.Load() {
+			p.log.Error("下游重建失败", "err", err)
+		}
 	}
 }
 
@@ -449,6 +563,11 @@ func (p *Proxy) dsSend(data []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
 	return conn.Write(ctx, websocket.MessageText, data)
+}
+
+// DsRawForControl 管理面直发基座命令（如人工开页面）；不经上游会话与规则。
+func (p *Proxy) DsRawForControl(method string, params map[string]any) error {
+	return p.dsRaw(method, params)
 }
 
 // dsRaw 服务自管理命令（无上游关联，如回收关 tab）。
