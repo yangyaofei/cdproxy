@@ -147,6 +147,9 @@ func (p *Proxy) ReleaseSession(name string) {
 }
 
 // RestartKeeper 重启基座 Chrome 并重建下游（归属全清——重启后 targetId 全失效）。
+// RestartKeeper 重启基座 Chrome 并重建下游（归属全清——重启后 targetId 全失效）。
+// 必须验证旧基座真正死亡才返回成功——杀不死（不可中断内核态，信号无效）
+// 时如实报错，绝不宣称"已重建"。
 func (p *Proxy) RestartKeeper() error {
 	p.mu.Lock()
 	ds := p.ds
@@ -155,7 +158,14 @@ func (p *Proxy) RestartKeeper() error {
 	if ds != nil {
 		_ = ds.Close(websocket.StatusGoingAway, "keeper restart")
 	}
-	p.cfg.Stop()
+	if err := p.cfg.Stop(); err != nil {
+		// 旧 Chrome 杀不死：重建归属通知后如实上抛；下游自愈会重连旧实例
+		//（服务仍可用），但调用方必须知道重启没有发生
+		owned, bound := p.st.ClearOwnership()
+		p.notifyOwnershipCleared(owned, bound)
+		_ = p.ensureDownstream()
+		return err
+	}
 	owned, bound := p.st.ClearOwnership()
 	p.notifyOwnershipCleared(owned, bound)
 	if err := p.ensureDownstream(); err != nil {

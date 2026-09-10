@@ -93,12 +93,27 @@ func (c Config) browserWsURLWithTimeout(timeout time.Duration) (string, error) {
 	return wsURL, nil
 }
 
-// chromePID 精确定位基座 Chrome 的 PID（pgrep + ps 双重校验）。
-func (c Config) chromePID() (int, bool) {
+// chromeRoot Chrome 应用束根路径（macOS 形如 /Applications/Google Chrome.app）。
+// Helper 进程命令行含该前缀但不含主二进制路径，双校验用它。
+func (c Config) chromeRoot() string {
+	if i := strings.Index(c.ChromePath, ".app/"); i >= 0 {
+		return c.ChromePath[:i+4]
+	}
+	return c.ChromePath
+}
+
+// chromePIDs 定位基座 Chrome 的全部 PID。双重校验防止误杀：
+// ①命令行含 user-data-dir 标记 ②命令行含 Chrome 应用束路径——任何 argv 里
+// 恰好带该字符串的非 Chrome 进程（编辑器/tail/其他 agent 的 shell）都不会命中。
+// 主进程与全部 Helper 必须全量返回：只杀首个（可能是 Helper）会留下主进程假活，
+// 重启变成重连。
+func (c Config) chromePIDs() []int {
 	out, err := exec.Command("pgrep", "-f", c.marker()).Output()
 	if err != nil {
-		return 0, false
+		return nil
 	}
+	root := c.chromeRoot()
+	var pids []int
 	for _, line := range strings.Fields(string(out)) {
 		pid, err := strconv.Atoi(line)
 		if err != nil {
@@ -108,11 +123,12 @@ func (c Config) chromePID() (int, bool) {
 		if err != nil {
 			continue
 		}
-		if strings.Contains(string(cmdline), c.marker()) {
-			return pid, true
+		cmd := string(cmdline)
+		if strings.Contains(cmd, c.marker()) && strings.Contains(cmd, root) {
+			pids = append(pids, pid)
 		}
 	}
-	return 0, false
+	return pids
 }
 
 // cleanStaleLocks 清理 stale 单例锁（进程已死但锁残留会阻断启动）。
@@ -128,9 +144,9 @@ func (c Config) EnsureRunning() (string, error) {
 	if wsURL, err := c.BrowserWsURL(); err == nil {
 		return wsURL, nil
 	}
-	if pid, ok := c.chromePID(); ok {
+	if pids := c.chromePIDs(); len(pids) > 0 {
 		// 半死：进程在、端口死 —— 精确回收后重启
-		c.stopPID(pid)
+		c.stopPIDs(pids)
 	}
 	c.cleanStaleLocks()
 	if err := os.MkdirAll(c.ProfileDir, 0o755); err != nil {
@@ -165,33 +181,73 @@ func (c Config) EnsureRunning() (string, error) {
 	return "", fmt.Errorf("Chrome 15s 内未就绪")
 }
 
-// Stop 精确停止基座（SIGTERM → 0.5s → SIGKILL）。
-func (c Config) Stop() bool {
-	pid, ok := c.chromePID()
-	if !ok {
+// Stop 精确停止基座：对全部匹配 PID 先 SIGTERM 后 SIGKILL（宽限各 2s），
+// 并验证死亡。返回 error = 仍有存活进程（通常卡在不可中断内核态 U，
+// 任何信号都无效，只能等内核返回或重启系统）——调用方必须如实上报，
+// 不得宣称"已重启"。
+func (c Config) Stop() error {
+	pids := c.chromePIDs()
+	if len(pids) == 0 {
+		return nil
+	}
+	if alive := c.stopPIDs(pids); len(alive) > 0 {
+		return fmt.Errorf("基座进程无法终止（不可中断内核态 U，信号无效）: %v", alive)
+	}
+	return nil
+}
+
+// stopPIDs 对给定 PID 集合先 TERM 后 KILL（各 2s 宽限），返回仍存活的 PID。
+func (c Config) stopPIDs(pids []int) []int {
+	var procs []*os.Process
+	for _, pid := range pids {
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Signal(syscall.SIGTERM)
+			procs = append(procs, proc)
+		}
+	}
+	if !c.waitForDeath(pids, 2*time.Second) {
+		for _, proc := range procs {
+			_ = proc.Signal(syscall.SIGKILL)
+		}
+		c.waitForDeath(pids, 2*time.Second)
+	}
+	var alive []int
+	for _, pid := range pids {
+		if processAlive(pid) {
+			alive = append(alive, pid)
+		}
+	}
+	return alive
+}
+
+// waitForDeath 轮询等待全部 PID 死亡，全部死亡提前返回 true。
+func (c Config) waitForDeath(pids []int, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for {
+		live := false
+		for _, pid := range pids {
+			if processAlive(pid) {
+				live = true
+				break
+			}
+		}
+		if !live {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// processAlive 进程是否真的活着——僵尸（Z）不算：它不占 CDP 端口不占
+// SingletonLock，功能上已死；父进程未 Wait 前会短暂停留僵尸态。
+func processAlive(pid int) bool {
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
 		return false
 	}
-	c.stopPID(pid)
-	return true
-}
-
-func (c Config) stopPID(pid int) {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return
-	}
-	_ = proc.Signal(syscall.SIGTERM)
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if !processAlive(pid) {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	_ = proc.Signal(syscall.SIGKILL)
-}
-
-func processAlive(pid int) bool {
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "pid=").Output()
-	return err == nil && strings.TrimSpace(string(out)) != ""
+	stat := strings.TrimSpace(string(out))
+	return stat != "" && !strings.HasPrefix(stat, "Z") && !strings.HasPrefix(stat, "z")
 }
