@@ -21,7 +21,6 @@ import (
 	"strings"
 	"net/http"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -47,105 +46,77 @@ type Proxy struct {
 
 	mu        sync.Mutex    // 下游生命周期
 	ds        *websocket.Conn
+	baseWS    string        // 当前基座浏览器级 WS（Stop 验证死亡用）
 	dsWriteMu sync.Mutex    // 下游写串行
 
 	server *http.Server
-
-	idleDown atomic.Bool // 基座被空闲策略有意关闭：抑制自愈重启，等下次分配唤醒
 }
 
 // idleCheckInterval 空闲巡检周期。
 const idleCheckInterval = 30 * time.Second
 
-// startIdleReaper 空闲巡检：连续（阈值内每个周期都满足）无会话且无人工页面
-// 达到 keeper_idle_shutdown_seconds 后，验证式关闭基座。登录态在磁盘 profile
-// 零损失；下次 AllocSession 冷启动唤醒（首次打开多 2~5s 启动延迟）。
-// 人工在基座里打开的页面（无主 tab）计入活动——不会在用户看着时杀掉浏览器。
-func (p *Proxy) startIdleReaper() {
+// startBaseKeepAlive 基座保活心跳：有活动（会话在或人工页面在）时周期性执行
+// get cdp-url——重置 agent-browser 侧基座会话的空闲计时（基座空闲关闭由
+// agent-browser 原生 idle-timeout 执行，proxy 不关基座），顺带在基座意外死亡
+// 且仍有会话时经自动拉起完成自愈。无活动时不跳：让原生空闲计时走到关闭。
+func (p *Proxy) startBaseKeepAlive() {
 	go func() {
-		idleSince := time.Time{}
 		for {
 			time.Sleep(idleCheckInterval)
 			threshold := p.store.Get().KeeperIdleShutdownSeconds
 			if threshold <= 0 {
-				idleSince = time.Time{}
-				continue
+				continue // idleTimeout=0：基座永久驻留，无需心跳
 			}
-			if p.st.SessionCount() > 0 {
-				idleSince = time.Time{}
-				continue
-			}
-			unowned, err := p.unownedPageCount()
-			if err != nil {
-				// 基座本来就没跑：已经是空闲态，记起点即可
-				if idleSince.IsZero() {
-					idleSince = time.Now()
+			active := p.st.SessionCount() > 0
+			if !active && p.dsConnected() {
+				if n, err := p.unownedPageCount(); err == nil && n > 0 {
+					active = true // 人工页面在场（用户正在看）
 				}
-				continue
 			}
-			if unowned > 0 {
-				idleSince = time.Time{}
-				continue
+			if !active {
+				continue // 无活动：不喂计时，agent-browser 原生空闲关闭
 			}
-			if idleSince.IsZero() {
-				idleSince = time.Now()
-				continue
+			if _, err := p.cfg.EnsureRunning(keeper.IdleTimeoutString(threshold)); err != nil {
+				p.log.Error("基座保活心跳失败", "err", err)
 			}
-			if time.Since(idleSince) < time.Duration(threshold*float64(time.Second)) {
-				continue
-			}
-			if err := p.cfg.Stop(); err != nil {
-				// 杀不死（不可中断态）：保持连接自愈路径，下轮再试
-				p.log.Error("基座空闲关闭失败（进程无法终止）", "err", err)
-				idleSince = time.Time{}
-				continue
-			}
-			p.idleDown.Store(true)
-			p.mu.Lock()
-			ds := p.ds
-			p.ds = nil
-			p.mu.Unlock()
-			if ds != nil {
-				_ = ds.Close(websocket.StatusGoingAway, "keeper idle shutdown")
-			}
-			idleSince = time.Time{}
-			p.log.Info("基座已空闲关闭（无会话且无人工页面）",
-				"threshold_seconds", threshold, "wake", "下次 AllocSession 冷启动")
 		}
 	}()
 }
 
+// dsConnected 下游是否连着（心跳活动判定用，不触发连接）。
+func (p *Proxy) dsConnected() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ds != nil
+}
+
 // unownedPageCount 统计基座里不属于任何会话的 page 型 target（人工使用信号）。
+// 经下游 CDP Target.getTargets 查询（agent-browser 启动的基座调试端口随机，
+// HTTP /json/list 端点不可依赖）。
 func (p *Proxy) unownedPageCount() (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("http://127.0.0.1:%d/json/list", p.cfg.CDPPort), nil)
+	msg, err := p.dsCall("Target.getTargets", map[string]any{}, 5*time.Second)
 	if err != nil {
 		return 0, err
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var list []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		return 0, err
-	}
+	result, _ := msg["result"].(map[string]any)
+	infos, _ := result["targetInfos"].([]any)
 	count := 0
-	for _, item := range list {
-		typ, _ := item["type"].(string)
+	for _, item := range infos {
+		ti, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := ti["type"].(string)
 		if typ != "page" {
 			continue
 		}
 		// 人工活动 = 有真实内容的页面（http/https）。about:blank / data: /
 		// chrome:// 新标签页与测试残留不算——否则一个空白 tab 永久阻止空闲关闭
-		u, _ := item["url"].(string)
+		u, _ := ti["url"].(string)
 		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 			continue
 		}
-		tid, _ := item["id"].(string)
+		tid, _ := ti["targetId"].(string)
 		if p.st.OwnerOf(tid) == nil {
 			count++
 		}
@@ -177,7 +148,7 @@ func (p *Proxy) Start() error {
 		}
 	}()
 	p.log.Info("代理 WS 服务已启动", "addr", addr)
-	p.startIdleReaper()
+	p.startBaseKeepAlive()
 	return nil
 }
 
@@ -204,18 +175,19 @@ func (p *Proxy) Stop() {
 // 旧 session（旧 token），若返回新生成的 token，daemon 拿来连接会命中
 // 4401 unknown session（close 后立即重开必现）。
 func (p *Proxy) AllocSession(name string) (string, error) {
-	if p.idleDown.Load() {
-		p.idleDown.Store(false)
-		p.log.Info("基座从空闲关闭中唤醒（冷启动）", "session", name)
-	}
-	if err := p.ensureDownstream(); err != nil {
-		return "", err
-	}
+	// 先建会话再连基座：活动守卫按会话计数放行，顺序反了会把
+	// provider 分配路径整个拒绝（插件报 exited unsuccessfully）
 	token := randomToken()
 	sess, created := p.st.Alloc(name, token)
 	p.log.Info("alloc 会话", "session", name, "token_prefix", sess.Token[:min(8, len(sess.Token))], "reused", !created)
 	p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: name, Method: "AllocSession",
 		Action: "alloc", Detail: fmt.Sprintf("created=%v token_prefix=%s", created, sess.Token[:min(8, len(sess.Token))])})
+	if err := p.ensureDownstream(false); err != nil {
+		if created {
+			p.st.Release(name)
+		}
+		return "", err
+	}
 	if created {
 		// 仅全新会话预开后台 tab；复用路径沿用既有 tab（避免每次 launch 泄漏一个）
 		if err := p.dsCommand(sess, 0, false, "Target.createTarget",
@@ -258,25 +230,25 @@ func (p *Proxy) ReleaseSession(name string) {
 // 必须验证旧基座真正死亡才返回成功——杀不死（不可中断内核态，信号无效）
 // 时如实报错，绝不宣称"已重建"。
 func (p *Proxy) RestartKeeper() error {
-	p.idleDown.Store(false)
 	p.mu.Lock()
 	ds := p.ds
+	old := p.baseWS
 	p.ds = nil
 	p.mu.Unlock()
 	if ds != nil {
 		_ = ds.Close(websocket.StatusGoingAway, "keeper restart")
 	}
-	if err := p.cfg.Stop(); err != nil {
-		// 旧 Chrome 杀不死：重建归属通知后如实上抛；下游自愈会重连旧实例
+	if err := p.cfg.Stop(old); err != nil {
+		// 基座未真死：重建归属通知后如实上抛；下游自愈会重连旧实例
 		//（服务仍可用），但调用方必须知道重启没有发生
 		owned, bound := p.st.ClearOwnership()
 		p.notifyOwnershipCleared(owned, bound)
-		_ = p.ensureDownstream()
+		_ = p.ensureDownstream(true)
 		return err
 	}
 	owned, bound := p.st.ClearOwnership()
 	p.notifyOwnershipCleared(owned, bound)
-	if err := p.ensureDownstream(); err != nil {
+	if err := p.ensureDownstream(true); err != nil {
 		return err
 	}
 	p.log.Info("基座与下游已重建")
@@ -290,8 +262,9 @@ func (p *Proxy) Status() map[string]any {
 	p.mu.Unlock()
 	return map[string]any{
 		"downstream": map[string]any{
-			"connected": dsAlive,
-			"cdp_port":  p.cfg.CDPPort,
+			"connected":    dsAlive,
+			"base_session": p.cfg.Session,
+			"manager":      "agent-browser",
 		},
 		"sessions": p.st.Snapshot(),
 	}
@@ -455,16 +428,18 @@ func (p *Proxy) sendTo(sess *state.Session, msg map[string]any) {
 // ── 下游（Chrome 浏览器级连接）────────────────────────────────────
 
 // ensureDownstream 确保下游连接存在（含 Chrome 基座就绪）。
-func (p *Proxy) ensureDownstream() error {
+func (p *Proxy) ensureDownstream(force bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.ds != nil {
 		return nil
 	}
-	if p.idleDown.Load() && p.st.SessionCount() == 0 {
-		return fmt.Errorf("基座已空闲关闭，等待下次分配唤醒")
+	// 活动守卫：无会话时基座死亡 = 原生空闲关闭/人工退出的预期结果，
+	// 自愈不得复活（否则空闲关闭变成关了又开）；Admin 重启走 force=true
+	if !force && p.st.SessionCount() == 0 {
+		return fmt.Errorf("基座未运行且无活动会话（等待分配唤醒）")
 	}
-	wsURL, err := p.cfg.EnsureRunning()
+	wsURL, err := p.cfg.EnsureRunning(keeper.IdleTimeoutString(p.store.Get().KeeperIdleShutdownSeconds))
 	if err != nil {
 		return fmt.Errorf("Chrome 基座不可用: %w", err)
 	}
@@ -474,6 +449,7 @@ func (p *Proxy) ensureDownstream() error {
 	}
 	conn.SetReadLimit(64 << 20)
 	p.ds = conn
+	p.baseWS = wsURL
 	go p.pingLoop(context.Background(), conn, 20*time.Second)
 	go p.dsRecvLoop(conn)
 	p.log.Info("下游已连接", "ws", wsURL)
@@ -505,10 +481,13 @@ func (p *Proxy) onDownstreamDead(conn *websocket.Conn, reason error) {
 	p.log.Error("下游断开，清空归属并重建", "err", reason)
 	owned, bound := p.st.ClearOwnership()
 	p.notifyOwnershipCleared(owned, bound)
-	if err := p.ensureDownstream(); err != nil {
-		// 含"基座已空闲关闭"的预期路径——不算故障
-		if !p.idleDown.Load() {
+	if err := p.ensureDownstream(false); err != nil {
+		// 无会话时基座死亡（原生空闲关闭/人工退出）= 预期路径，保持关闭；
+		// 有会话才视为故障（心跳/分配会经 agent-browser 自动拉起）
+		if p.st.SessionCount() > 0 {
 			p.log.Error("下游重建失败", "err", err)
+		} else {
+			p.log.Info("基座已退出且无活动会话，保持关闭（下次分配唤醒）")
 		}
 	}
 }
@@ -549,7 +528,7 @@ func (p *Proxy) notifyOwnershipCleared(owned, bound map[*state.Session][]string)
 
 // dsSend 写下游（写锁串行）。
 func (p *Proxy) dsSend(data []byte) error {
-	if err := p.ensureDownstream(); err != nil {
+	if err := p.ensureDownstream(false); err != nil {
 		return err
 	}
 	p.mu.Lock()
@@ -563,6 +542,29 @@ func (p *Proxy) dsSend(data []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
 	return conn.Write(ctx, websocket.MessageText, data)
+}
+
+// dsCall 同步请求基座（自管理命令的应答版）：登记 pending + 等响应。
+func (p *Proxy) dsCall(method string, params map[string]any, timeout time.Duration) (map[string]any, error) {
+	if err := p.ensureDownstream(false); err != nil {
+		return nil, err
+	}
+	ch := make(chan map[string]any, 1)
+	id := p.st.NextCallID(ch, method)
+	if err := p.sendDownstreamCommand(id, method, params); err != nil {
+		p.st.TakePending(id)
+		return nil, err
+	}
+	select {
+	case msg := <-ch:
+		if e, ok := msg["error"].(map[string]any); ok {
+			return msg, fmt.Errorf("基座拒绝 %s: %v", method, e)
+		}
+		return msg, nil
+	case <-time.After(timeout):
+		p.st.TakePending(id)
+		return nil, fmt.Errorf("基座应答超时: %s", method)
+	}
 }
 
 // DsRawForControl 管理面直发基座命令（如人工开页面）；不经上游会话与规则。
@@ -609,8 +611,18 @@ func (p *Proxy) onDownstreamMessage(data []byte) {
 func (p *Proxy) onDsResponse(msg map[string]any) {
 	dsIDf, _ := msg["id"].(float64)
 	entry, ok := p.st.TakePending(int64(dsIDf))
-	if !ok || entry.Sess == nil {
-		return // 未知或自管理命令
+	if !ok {
+		return
+	}
+	if entry.RespCh != nil {
+		select {
+		case entry.RespCh <- msg:
+		default:
+		}
+		return
+	}
+	if entry.Sess == nil {
+		return // 自管理命令（无应答方）
 	}
 	result, _ := msg["result"].(map[string]any)
 	switch entry.Tag {

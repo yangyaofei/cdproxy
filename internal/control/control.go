@@ -82,11 +82,15 @@ func (c *Control) Handler() http.Handler {
 
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		snapshot := c.proxy.Status()
+		alive := false
+		if down, ok := snapshot["downstream"].(map[string]any); ok {
+			alive, _ = down["connected"].(bool)
+		}
 		snapshot["keeper"] = map[string]any{
-			"chrome":      c.keeper.Alive(),
-			"cdp_port":    c.keeper.CDPPort,
-			"profile":     c.keeper.ProfileDir,
-			"chrome_path": c.keeper.ChromePath,
+			"alive":        alive,
+			"base_session": c.keeper.Session,
+			"manager":      "agent-browser",
+			"profile":      c.keeper.ProfileDir,
 		}
 		snapshot["settings"] = c.store.Get()
 		snapshot["version"] = c.version

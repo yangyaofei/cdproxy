@@ -38,10 +38,10 @@
       <template x-if="status">
         <div>
           <table class="kv">
-            <tr><td>状态</td><td><span class="pill" :class="status.keeper.chrome ? 'ok' : 'bad'" x-text="status.keeper.chrome ? '存活' : '未运行'"></span></td></tr>
-            <tr><td>调试端口</td><td><code x-text="status.keeper.cdp_port"></code></td></tr>
+            <tr><td>状态</td><td><span class="pill" :class="status.keeper.alive ? 'ok' : 'bad'" x-text="status.keeper.alive ? '存活' : '未运行'"></span></td></tr>
+            <tr><td>基座持有</td><td><code x-text="`agent-browser 会话 ${status.keeper.base_session}`"></code></td></tr>
             <tr><td>Profile</td><td><code x-text="status.keeper.profile"></code></td></tr>
-            <tr><td>Chrome</td><td><code x-text="status.keeper.chrome_path"></code></td></tr>
+            <tr><td>空闲关闭</td><td><code x-text="status.settings.keeper_idle_shutdown_seconds === 0 ? '禁用' : status.settings.keeper_idle_shutdown_seconds + 's'"></code></td></tr>
             <tr><td>下游连接</td><td><span class="pill" :class="status.downstream.connected ? 'ok' : 'idle'" x-text="status.downstream.connected ? '已连接' : '未连接'"></span></td></tr>
           </table>
           <button class="warn" @click="restartKeeper()" :disabled="busy">重启基座</button>

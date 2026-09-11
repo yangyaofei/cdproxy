@@ -94,6 +94,7 @@ type PendingEntry struct {
 	HasUpID bool
 	Tag     string
 	Method  string // 原始 CDP method（响应日志归属用）
+	RespCh  chan map[string]any // 非空 = 同步调用（dsCall），响应投递到此
 }
 
 // State 全局状态表。
@@ -263,6 +264,15 @@ func (st *State) NextDsID(sess *Session, upID int64, hasUpID bool, tag, method s
 	st.pending[dsID] = PendingEntry{Sess: sess, UpID: upID, HasUpID: hasUpID, Tag: tag, Method: method}
 	st.mu.Unlock()
 	return dsID
+}
+
+// NextCallID 分配一个同步调用的下游 id（响应经 RespCh 投递）。
+func (st *State) NextCallID(ch chan map[string]any, method string) int64 {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	id := st.nextID.Add(1)
+	st.pending[id] = PendingEntry{Method: method, RespCh: ch}
+	return id
 }
 
 // TakePending 响应到达时取回关联（一次性）。

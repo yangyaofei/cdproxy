@@ -1,253 +1,178 @@
-// Package keeper 管理 Chrome 基座：启动/复用/停止本地 Chrome。
+// Package keeper 管理共享基座 Chrome 的生命周期——但不直接管理 Chrome 进程。
 //
-// 与 Python 参考实现 keeper.py 语义对齐：
-//   - 复用：CDP 端口活着（/json/version 有 webSocketDebuggerUrl）直接用
-//   - 半死：进程在但端口死 → 精确 SIGTERM 该 PID 后重启
-//   - 启动：脱离会话（Setsid），stale 锁文件清理，15s 就绪轮询
-//   - 红线：绝不 killall —— 只精确操作 pgrep+ps 双重校验过的 PID
+// 基座由一个长驻的 agent-browser 会话（默认名 ab-keeper）持有：启动、单例锁、
+// 就绪等待、优雅关闭的全部进程事务都是 agent-browser 的原生职责。本包只做三件事：
+//   - EnsureRunning：确保该会话活着并返回基座的浏览器级 WS 地址
+//     （agent-browser get cdp-url，会话死了自动拉起）
+//   - Stop：agent-browser 原生关闭该会话（close），并验证旧基座 WS 真死
+//   - 写出会话专用最小配置（headed + 共享 profile，绝不带 provider——防递归）
+//
+// 两条从历史教训固化的红线：
+//   - 所有对 agent-browser 的调用都用最小环境（HOME/PATH）——provider 的
+//     环境变量会级联进子 daemon（env 优先于 config），无限递归
+//   - 关闭必须验证基座真死（旧 WS 不可连接）才返回成功——杀不掉如实报错，
+//     绝不宣称"已重启"
 package keeper
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
-// Config Chrome 基座配置。
+// Config 基座持有配置。
 type Config struct {
-	ChromePath string // Chrome 可执行文件
-	ProfileDir string // 登录态 profile 目录
-	CDPPort    int    // 远程调试端口
-	Headless   bool
+	AgentBrowser string // agent-browser 可执行文件（默认 PATH 探测）
+	Session      string // 持有基座的会话名（默认 ab-keeper）
+	ConfigPath   string // 会话专用 agent-browser 配置文件（由 WriteConfig 生成）
+	Headed       bool
+	ProfileDir   string // 共享登录态目录（写进 ConfigPath 指向的配置）
 }
 
-// Defaults 默认配置：PATH 探测 → macOS 安装路径；profile 固定共享目录。
+// Defaults 默认配置。
 func Defaults() Config {
-	cfg := Config{
-		ProfileDir: filepath.Join(os.Getenv("HOME"), "agent-browser", "profile"),
-		CDPPort:    9222,
+	agentBrowser := "agent-browser"
+	if p, err := exec.LookPath("agent-browser"); err == nil {
+		agentBrowser = p
 	}
-	for _, name := range []string{"google-chrome", "chromium", "chromium-browser", "google-chrome-stable"} {
-		if p, err := exec.LookPath(name); err == nil {
-			cfg.ChromePath = p
-			return cfg
-		}
+	return Config{
+		AgentBrowser: agentBrowser,
+		Session:      "ab-keeper",
+		Headed:       true,
+		ProfileDir:   filepath.Join(os.Getenv("HOME"), "agent-browser", "profile"),
 	}
-	mac := "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-	if _, err := os.Stat(mac); err == nil {
-		cfg.ChromePath = mac
+}
+
+// WriteConfig 生成会话专用最小配置（内容变化才重写）。
+// 绝不含 provider/plugins——ab-keeper 的 daemon 若继承 provider 配置，
+// 会经插件再拉起自己（无限递归）。
+// idleTimeout 即基座空闲策略，由 agent-browser 原生执行（"0"=禁用）：
+// 消费者活动经 proxy 心跳（get cdp-url）重置计时；阈值修改在基座下次冷启动生效。
+func (c Config) WriteConfig(idleTimeout string) error {
+	if c.ConfigPath == "" {
+		return fmt.Errorf("keeper 配置路径未设置")
 	}
-	return cfg
+	body := fmt.Sprintf(`{
+  "headed": %t,
+  "profile": %q,
+  "idleTimeout": %q
+}
+`, c.Headed, c.ProfileDir, idleTimeout)
+	if old, err := os.ReadFile(c.ConfigPath); err == nil && string(old) == body {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(c.ConfigPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(c.ConfigPath, []byte(body), 0o644)
 }
 
-func (c Config) versionURL() string {
-	return fmt.Sprintf("http://127.0.0.1:%d/json/version", c.CDPPort)
+// IdleTimeoutString 把秒数转成 agent-browser 的 idle-timeout 形式（"0"=禁用）。
+func IdleTimeoutString(seconds float64) string {
+	if seconds <= 0 {
+		return "0"
+	}
+	minutes := int(seconds/60 + 0.9999)
+	if minutes < 1 {
+		minutes = 1
+	}
+	return fmt.Sprintf("%dm", minutes)
 }
 
-func (c Config) marker() string {
-	return "user-data-dir=" + c.ProfileDir
+// isolatedEnv 最小环境：HOME/PATH 之外全剥（防 provider 环境变量级联递归）。
+func isolatedEnv() []string {
+	return []string{
+		"HOME=" + os.Getenv("HOME"),
+		"PATH=" + os.Getenv("PATH"),
+	}
 }
 
-// Alive CDP 端口是否存活（且为浏览器级端点）。
-func (c Config) Alive() bool {
-	_, err := c.browserWsURLWithTimeout(2 * time.Second)
-	return err == nil
-}
-
-// BrowserWsURL 返回浏览器级调试 WS 地址。
-func (c Config) BrowserWsURL() (string, error) {
-	return c.browserWsURLWithTimeout(3 * time.Second)
-}
-
-func (c Config) browserWsURLWithTimeout(timeout time.Duration) (string, error) {
+// runKeeper 执行一条 agent-browser 会话命令（最小环境 + 超时），返回 stdout。
+func (c Config) runKeeper(args []string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.versionURL(), nil)
+	full := append([]string{"--session", c.Session, "--config", c.ConfigPath}, args...)
+	cmd := exec.CommandContext(ctx, c.AgentBrowser, full...)
+	cmd.Env = isolatedEnv()
+	out, err := cmd.Output()
 	if err != nil {
-		return "", err
+		// 带上 stderr：exit status 1 无法定位，stderr 才有 agent-browser 的真实报错
+		detail := ""
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			detail = ": " + strings.TrimSpace(string(ee.Stderr))
+		}
+		return "", fmt.Errorf("agent-browser %s 失败: %w%s", strings.Join(args, " "), err, detail)
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
+	return strings.TrimSpace(string(out)), nil
+}
+
+// EnsureRunning 确保基座活着，返回浏览器级 WS 地址。
+// get cdp-url 在会话/浏览器不存在时由 agent-browser 自动拉起（冷启动数秒）。
+func (c Config) EnsureRunning(idleTimeout string) (string, error) {
+	if err := c.WriteConfig(idleTimeout); err != nil {
+		return "", fmt.Errorf("生成 keeper 配置失败: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("cdp /json/version 状态 %d", resp.StatusCode)
+	// 重试：close 后 daemon 拆除存在竞态，紧随的重启可能撞上尚未释放的
+	// 单例/套接字——3 次×2s 内基本都能过
+	var out string
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(2 * time.Second)
+		}
+		out, lastErr = c.runKeeper([]string{"get", "cdp-url"}, 60*time.Second)
+		if lastErr == nil {
+			break
+		}
 	}
-	var payload map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", err
+	if lastErr != nil {
+		return "", fmt.Errorf("基座就绪失败: %w", lastErr)
 	}
-	wsURL, _ := payload["webSocketDebuggerUrl"].(string)
-	if wsURL == "" {
-		return "", fmt.Errorf("cdp 响应缺 webSocketDebuggerUrl")
+	wsURL := strings.TrimSpace(out)
+	if !strings.HasPrefix(wsURL, "ws://") && !strings.HasPrefix(wsURL, "wss://") {
+		return "", fmt.Errorf("get cdp-url 未返回 WS 地址: %q", wsURL[:min(80, len(wsURL))])
 	}
 	return wsURL, nil
 }
 
-// chromeRoot Chrome 应用束根路径（macOS 形如 /Applications/Google Chrome.app）。
-// Helper 进程命令行含该前缀但不含主二进制路径，双校验用它。
-func (c Config) chromeRoot() string {
-	if i := strings.Index(c.ChromePath, ".app/"); i >= 0 {
-		return c.ChromePath[:i+4]
+// Stop 原生关闭基座（agent-browser session close），并验证 oldWS 真死。
+// 返回 error = 关闭后旧基座仍可连接（Chrome 卡在不可中断态等），调用方必须
+// 如实上报，绝不宣称"已重启"。本包不做信号升级——进程事务是 agent-browser 的职责。
+func (c Config) Stop(oldWS string) error {
+	if _, err := c.runKeeper([]string{"close"}, 30*time.Second); err != nil {
+		return fmt.Errorf("基座关闭失败: %w", err)
 	}
-	return c.ChromePath
-}
-
-// chromePIDs 定位基座 Chrome 的全部 PID。双重校验防止误杀：
-// ①命令行含 user-data-dir 标记 ②命令行含 Chrome 应用束路径——任何 argv 里
-// 恰好带该字符串的非 Chrome 进程（编辑器/tail/其他 agent 的 shell）都不会命中。
-// 主进程与全部 Helper 必须全量返回：只杀首个（可能是 Helper）会留下主进程假活，
-// 重启变成重连。
-func (c Config) chromePIDs() []int {
-	out, err := exec.Command("pgrep", "-f", c.marker()).Output()
-	if err != nil {
-		return nil
-	}
-	root := c.chromeRoot()
-	var pids []int
-	for _, line := range strings.Fields(string(out)) {
-		pid, err := strconv.Atoi(line)
-		if err != nil {
-			continue
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if !wsReachable(oldWS) {
+			return nil
 		}
-		cmdline, err := exec.Command("ps", "-p", line, "-o", "command=").Output()
-		if err != nil {
-			continue
-		}
-		cmd := string(cmdline)
-		if strings.Contains(cmd, c.marker()) && strings.Contains(cmd, root) {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
-}
-
-// cleanStaleLocks 清理 stale 单例锁（进程已死但锁残留会阻断启动）。
-func (c Config) cleanStaleLocks() {
-	for _, name := range []string{"SingletonLock", "SingletonCookie", "SingletonSocket"} {
-		_ = os.RemoveAll(filepath.Join(c.ProfileDir, name))
-	}
-}
-
-// EnsureRunning 确保基座在跑：活着复用；半死精确停止后重启；冷启动。
-// 返回浏览器级 WS 地址。
-func (c Config) EnsureRunning() (string, error) {
-	if wsURL, err := c.BrowserWsURL(); err == nil {
-		return wsURL, nil
-	}
-	if pids := c.chromePIDs(); len(pids) > 0 {
-		// 半死：进程在、端口死 —— 精确回收后重启
-		c.stopPIDs(pids)
-	}
-	c.cleanStaleLocks()
-	if err := os.MkdirAll(c.ProfileDir, 0o755); err != nil {
-		return "", fmt.Errorf("创建 profile 目录失败: %w", err)
-	}
-	args := []string{
-		"--remote-debugging-port=" + strconv.Itoa(c.CDPPort),
-		"--user-data-dir=" + c.ProfileDir,
-		"--no-first-run",
-		"--no-default-browser-check",
-		"--disable-session-crashed-bubble",
-		"--hide-crash-restore-bubble",
-	}
-	if c.Headless {
-		args = append(args, "--headless=new")
-	}
-	cmd := exec.Command(c.ChromePath, args...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.Stdin = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // 脱离服务进程组，服务退出不连坐
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("Chrome 启动失败: %w", err)
-	}
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if wsURL, err := c.BrowserWsURL(); err == nil {
-			return wsURL, nil
+		if time.Now().After(deadline) {
+			return fmt.Errorf("关闭后基座仍可连接（Chrome 未真死）: %s", oldWS)
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
-	return "", fmt.Errorf("Chrome 15s 内未就绪")
 }
 
-// Stop 精确停止基座：对全部匹配 PID 先 SIGTERM 后 SIGKILL（宽限各 2s），
-// 并验证死亡。返回 error = 仍有存活进程（通常卡在不可中断内核态 U，
-// 任何信号都无效，只能等内核返回或重启系统）——调用方必须如实上报，
-// 不得宣称"已重启"。
-func (c Config) Stop() error {
-	pids := c.chromePIDs()
-	if len(pids) == 0 {
-		return nil
+// wsReachable 尝试连接浏览器级 WS：连得上=活着。
+func wsReachable(wsURL string) bool {
+	if wsURL == "" {
+		return false
 	}
-	if alive := c.stopPIDs(pids); len(alive) > 0 {
-		return fmt.Errorf("基座进程无法终止（不可中断内核态 U，信号无效）: %v", alive)
-	}
-	return nil
-}
-
-// stopPIDs 对给定 PID 集合先 TERM 后 KILL（各 2s 宽限），返回仍存活的 PID。
-func (c Config) stopPIDs(pids []int) []int {
-	var procs []*os.Process
-	for _, pid := range pids {
-		if proc, err := os.FindProcess(pid); err == nil {
-			_ = proc.Signal(syscall.SIGTERM)
-			procs = append(procs, proc)
-		}
-	}
-	if !c.waitForDeath(pids, 2*time.Second) {
-		for _, proc := range procs {
-			_ = proc.Signal(syscall.SIGKILL)
-		}
-		c.waitForDeath(pids, 2*time.Second)
-	}
-	var alive []int
-	for _, pid := range pids {
-		if processAlive(pid) {
-			alive = append(alive, pid)
-		}
-	}
-	return alive
-}
-
-// waitForDeath 轮询等待全部 PID 死亡，全部死亡提前返回 true。
-func (c Config) waitForDeath(pids []int, within time.Duration) bool {
-	deadline := time.Now().Add(within)
-	for {
-		live := false
-		for _, pid := range pids {
-			if processAlive(pid) {
-				live = true
-				break
-			}
-		}
-		if !live {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-// processAlive 进程是否真的活着——僵尸（Z）不算：它不占 CDP 端口不占
-// SingletonLock，功能上已死；父进程未 Wait 前会短暂停留僵尸态。
-func processAlive(pid int) bool {
-	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	if err != nil {
 		return false
 	}
-	stat := strings.TrimSpace(string(out))
-	return stat != "" && !strings.HasPrefix(stat, "Z") && !strings.HasPrefix(stat, "z")
+	_ = conn.Close(websocket.StatusNormalClosure, "probe")
+	return true
 }

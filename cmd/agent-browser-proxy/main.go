@@ -184,16 +184,13 @@ func runServe(args []string) int {
 	}
 	defer func() { _ = os.Remove(pidPath) }()
 
-	// keeper 配置
+	// keeper 配置（基座由 agent-browser 会话持有——见 keeper 包说明）
 	kcfg := keeper.Defaults()
-	if opts.chrome != "" {
-		kcfg.ChromePath = opts.chrome
-	}
 	if opts.profile != "" {
 		kcfg.ProfileDir = opts.profile
 	}
-	kcfg.CDPPort = opts.cdpPort
-	kcfg.Headless = opts.headless
+	kcfg.Headed = !opts.headless
+	kcfg.ConfigPath = filepath.Join(opts.dataDir, "keeper-config.json")
 
 	store := settings.NewStore(filepath.Join(opts.dataDir, "settings.json"))
 	ilg := interlog.New(filepath.Join(opts.dataDir, "logs"))
