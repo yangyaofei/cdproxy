@@ -7,7 +7,9 @@
 //   - 重映射：下游自增 id ↔ (session, 上游原始 id, tag)
 //   - 焦点：background 模式下 createTarget 强制后台、activate/bringToFront 假成功
 //   - 回收：断连宽限（容忍 daemon 重启）+ 分配未连兜底
-//   - 自愈：下游断开重建 + 归属全清（Chrome 重启后 targetId 全部失效）
+//   - 生命线：下游 CDP 断开时什么都不做（不自愈）——基座生命周期归
+//     ab-keeper（agent-browser 原生 idle-timeout/close/restart），
+//     （重）连基座的唯一入口是 provider 分配路径与 Admin 重启
 package proxy
 
 import (
@@ -76,11 +78,33 @@ func (p *Proxy) startBaseKeepAlive() {
 			if !active {
 				continue // 无活动：不喂计时，agent-browser 原生空闲关闭
 			}
+			// 只喂活着的基座（探活拨号，绝不拉起——拉起是 provider 的职责）
+			p.mu.Lock()
+			ws := p.baseWS
+			p.mu.Unlock()
+			if !p.wsAlive(ws) {
+				continue
+			}
 			if _, err := p.cfg.EnsureRunning(keeper.IdleTimeoutString(threshold)); err != nil {
 				p.log.Error("基座保活心跳失败", "err", err)
 			}
 		}
 	}()
+}
+
+// wsAlive 探测基座 WS 是否可连接（只读探活，绝不触发启动）。
+func (p *Proxy) wsAlive(wsURL string) bool {
+	if wsURL == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close(websocket.StatusNormalClosure, "probe")
+	return true
 }
 
 // dsConnected 下游是否连着（心跳活动判定用，不触发连接）。
@@ -182,7 +206,20 @@ func (p *Proxy) AllocSession(name string) (string, error) {
 	p.log.Info("alloc 会话", "session", name, "token_prefix", sess.Token[:min(8, len(sess.Token))], "reused", !created)
 	p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: name, Method: "AllocSession",
 		Action: "alloc", Detail: fmt.Sprintf("created=%v token_prefix=%s", created, sess.Token[:min(8, len(sess.Token))])})
-	if err := p.ensureDownstream(false); err != nil {
+	wsURL, err := p.cfg.EnsureRunning(keeper.IdleTimeoutString(p.store.Get().KeeperIdleShutdownSeconds))
+	if err != nil {
+		if created {
+			p.st.Release(name)
+		}
+		return "", err
+	}
+	// 基座 WS 变化（Chrome 被重启/重拉）= 旧归属全部失效：清归属并合成
+	// 原生等价的销毁事件；URL 未变（瞬断重连）则归属仍然有效，不惊动会话
+	if wsURL != p.baseWS {
+		owned, bound := p.st.ClearOwnership()
+		p.notifyOwnershipCleared(owned, bound)
+	}
+	if err := p.connectDownstream(wsURL); err != nil {
 		if created {
 			p.st.Release(name)
 		}
@@ -239,16 +276,17 @@ func (p *Proxy) RestartKeeper() error {
 		_ = ds.Close(websocket.StatusGoingAway, "keeper restart")
 	}
 	if err := p.cfg.Stop(old); err != nil {
-		// 基座未真死：重建归属通知后如实上抛；下游自愈会重连旧实例
-		//（服务仍可用），但调用方必须知道重启没有发生
-		owned, bound := p.st.ClearOwnership()
-		p.notifyOwnershipCleared(owned, bound)
-		_ = p.ensureDownstream(true)
+		// 基座未真死：如实报错（此刻下游已断，行为等同断开——什么都不做）
 		return err
 	}
 	owned, bound := p.st.ClearOwnership()
 	p.notifyOwnershipCleared(owned, bound)
-	if err := p.ensureDownstream(true); err != nil {
+	// 重启的后半段"重新打开"走 agent-browser 原生 get cdp-url（线 1）
+	wsURL, err := p.cfg.EnsureRunning(keeper.IdleTimeoutString(p.store.Get().KeeperIdleShutdownSeconds))
+	if err != nil {
+		return err
+	}
+	if err := p.connectDownstream(wsURL); err != nil {
 		return err
 	}
 	p.log.Info("基座与下游已重建")
@@ -324,6 +362,16 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 	upIDf, hasID := msg["id"].(float64)
 	// in 快照：规则改写前的原始 params（Safe 重建结构，不受后续 in-place 改写影响）
 	inSnap := interlog.Safe(params)
+
+	// 下游已死：立即回 CDP 错误（不让 daemon 挂等），消费者据此走 provider
+	// 重新分配——自愈不在命令路径上发生
+	if !p.dsConnected() {
+		p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
+			UpID: msg2UpID(upIDf, hasID), Action: "no-downstream", In: inSnap,
+			Delta: "rejected（下游未连接，等待 provider 分配唤醒）"})
+		p.reject(sess, upIDf, hasID, "基座未连接（基座未运行，请重新分配会话）")
+		return
+	}
 
 	// 越权守卫：attach/close 只允许操作自己名下 target（多租户完整性，结构化不可配）
 	if method == "Target.attachToTarget" || method == "Target.closeTarget" {
@@ -428,28 +476,29 @@ func (p *Proxy) sendTo(sess *state.Session, msg map[string]any) {
 // ── 下游（Chrome 浏览器级连接）────────────────────────────────────
 
 // ensureDownstream 确保下游连接存在（含 Chrome 基座就绪）。
-func (p *Proxy) ensureDownstream(force bool) error {
+// connectDownstream 连接到给定基座 WS。
+// 仅 AllocSession 与 Admin 重启允许调用——这是全系统唯二触碰基座连接的地方。
+func (p *Proxy) connectDownstream(wsURL string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.ds != nil {
-		return nil
+	if p.ds != nil && p.baseWS == wsURL {
+		p.mu.Unlock()
+		return nil // 已连着同一基座
 	}
-	// 活动守卫：无会话时基座死亡 = 原生空闲关闭/人工退出的预期结果，
-	// 自愈不得复活（否则空闲关闭变成关了又开）；Admin 重启走 force=true
-	if !force && p.st.SessionCount() == 0 {
-		return fmt.Errorf("基座未运行且无活动会话（等待分配唤醒）")
-	}
-	wsURL, err := p.cfg.EnsureRunning(keeper.IdleTimeoutString(p.store.Get().KeeperIdleShutdownSeconds))
-	if err != nil {
-		return fmt.Errorf("Chrome 基座不可用: %w", err)
+	old := p.ds
+	p.ds = nil
+	p.mu.Unlock()
+	if old != nil {
+		_ = old.Close(websocket.StatusGoingAway, "reconnect")
 	}
 	conn, _, err := websocket.Dial(context.Background(), wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("下游连接失败: %w", err)
 	}
 	conn.SetReadLimit(64 << 20)
+	p.mu.Lock()
 	p.ds = conn
 	p.baseWS = wsURL
+	p.mu.Unlock()
 	go p.pingLoop(context.Background(), conn, 20*time.Second)
 	go p.dsRecvLoop(conn)
 	p.log.Info("下游已连接", "ws", wsURL)
@@ -478,18 +527,10 @@ func (p *Proxy) onDownstreamDead(conn *websocket.Conn, reason error) {
 	if !same {
 		return // 已被主动替换（如 RestartKeeper），无需处理
 	}
-	p.log.Error("下游断开，清空归属并重建", "err", reason)
-	owned, bound := p.st.ClearOwnership()
-	p.notifyOwnershipCleared(owned, bound)
-	if err := p.ensureDownstream(false); err != nil {
-		// 无会话时基座死亡（原生空闲关闭/人工退出）= 预期路径，保持关闭；
-		// 有会话才视为故障（心跳/分配会经 agent-browser 自动拉起）
-		if p.st.SessionCount() > 0 {
-			p.log.Error("下游重建失败", "err", err)
-		} else {
-			p.log.Info("基座已退出且无活动会话，保持关闭（下次分配唤醒）")
-		}
-	}
+	// CDP 断开 = 什么都不做：不自愈、不重启、不清归属、不拉基座。
+	// 归属清理与合成通知由下一条 provider 分配路径按"基座 WS 是否变化"决定；
+	// 全系统仅有的（重）连接入口是 AllocSession 与 Admin 重启。
+	p.log.Info("下游 CDP 断开（保持现状，等待 provider 分配唤醒）", "err", reason)
 }
 
 // notifyOwnershipCleared 下游重建导致归属全清后，向受影响会话合成原生等价
@@ -528,14 +569,11 @@ func (p *Proxy) notifyOwnershipCleared(owned, bound map[*state.Session][]string)
 
 // dsSend 写下游（写锁串行）。
 func (p *Proxy) dsSend(data []byte) error {
-	if err := p.ensureDownstream(false); err != nil {
-		return err
-	}
 	p.mu.Lock()
 	conn := p.ds
 	p.mu.Unlock()
 	if conn == nil {
-		return fmt.Errorf("下游不可用")
+		return fmt.Errorf("下游未连接（基座未运行，等待分配唤醒）")
 	}
 	p.dsWriteMu.Lock()
 	defer p.dsWriteMu.Unlock()
@@ -546,9 +584,6 @@ func (p *Proxy) dsSend(data []byte) error {
 
 // dsCall 同步请求基座（自管理命令的应答版）：登记 pending + 等响应。
 func (p *Proxy) dsCall(method string, params map[string]any, timeout time.Duration) (map[string]any, error) {
-	if err := p.ensureDownstream(false); err != nil {
-		return nil, err
-	}
 	ch := make(chan map[string]any, 1)
 	id := p.st.NextCallID(ch, method)
 	if err := p.sendDownstreamCommand(id, method, params); err != nil {
