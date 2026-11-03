@@ -3,7 +3,8 @@
 // 基座由一个长驻的 agent-browser 会话（默认名 ab-keeper）持有：启动、单例锁、
 // 就绪等待、优雅关闭的全部进程事务都是 agent-browser 的原生职责。本包只做三件事：
 //   - EnsureRunning：确保该会话活着并返回基座的浏览器级 WS 地址
-//     （agent-browser get cdp-url，会话死了自动拉起）
+//     （get cdp-url 纯查询探测；浏览器不在时由 open about:blank 冷启动。
+//     agent-browser 0.41 起 get cdp-url 不再自动拉起，页面命令仍会）
 //   - Stop：agent-browser 原生关闭该会话（close），并验证旧基座 WS 真死
 //   - 写出会话专用最小配置（headed + 共享 profile，绝不带 provider——防递归）
 //
@@ -115,7 +116,9 @@ func (c Config) runKeeper(args []string, timeout time.Duration) (string, error) 
 }
 
 // EnsureRunning 确保基座活着，返回浏览器级 WS 地址。
-// get cdp-url 在会话/浏览器不存在时由 agent-browser 自动拉起（冷启动数秒）。
+// 探测-冷启动两段式：get cdp-url 是零副作用纯查询（agent-browser 0.41 起
+// 浏览器不在时不再自动拉起，直接报 Browser not launched），探测失败即用
+// 页面命令 open about:blank 冷启动（daemon+浏览器仍会自动拉起），再取地址。
 func (c Config) EnsureRunning(idleTimeout string) (string, error) {
 	if err := c.WriteConfig(idleTimeout); err != nil {
 		return "", fmt.Errorf("生成 keeper 配置失败: %w", err)
@@ -127,6 +130,17 @@ func (c Config) EnsureRunning(idleTimeout string) (string, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			time.Sleep(2 * time.Second)
+		}
+		out, lastErr = c.runKeeper([]string{"get", "cdp-url"}, 60*time.Second)
+		if lastErr == nil {
+			break
+		}
+		// 探测失败=浏览器不在（或瞬断）：open 冷启动后重取地址。
+		// open 只作用于 keeper 会话自己的 about:blank 标签页，
+		// 不触碰消费者会话的页面；浏览器已在时不会走到这条路径，无标签页泄漏。
+		if _, oerr := c.runKeeper([]string{"open", "about:blank"}, 60*time.Second); oerr != nil {
+			lastErr = fmt.Errorf("open 冷启动失败: %w", oerr)
+			continue
 		}
 		out, lastErr = c.runKeeper([]string{"get", "cdp-url"}, 60*time.Second)
 		if lastErr == nil {

@@ -77,8 +77,13 @@ Admin 页（GET /）                    keeper：Chrome @127.0.0.1:9222（profil
 - macOS + uv（Python ≥3.12）；Chrome 默认 `/Applications/Google Chrome.app/.../Google Chrome`
 - 端口约定：9222（Chrome）/ 9224（控制面）/ 9225（代理 WS），均可 CLI 覆盖
 - 运行数据（日志/settings/pid）一律在仓库 `var/`（已 gitignore）；**禁用系统 /tmp**
-- agent-browser 0.36.0 实测基线：close 不回调 provider（回收靠断连触发）、
-  plugin 信封 session 在嵌套 `request` 层
+- agent-browser 版本基线（实测）：
+  - 0.36.0：close 不回调 provider（回收靠断连触发）、plugin 信封 session
+    在嵌套 `request` 层
+  - 0.41.1（2026-11 实测）：`get cdp-url` 变纯查询，浏览器不在时报
+    `Browser not launched` 不再自动拉起；页面命令（open 等）仍全冷自愈
+    （CLI 自动拉 daemon，daemon 自动拉浏览器）。keeper.EnsureRunning 已改
+    探测-冷启动两段式适配
 
 ## 5. 开发命令
 
@@ -86,9 +91,14 @@ Go 主实现（cd 仓库根）：
 
 ```bash
 CGO_ENABLED=0 go build -ldflags="-s -w" -o var/agent-browser-proxy ./cmd/agent-browser-proxy
+codesign --force --sign - var/agent-browser-proxy
 go vet ./... && go test ./...     # 门禁
 var/agent-browser-proxy serve     # 运行（status/stop 同入口）
 ```
+
+`codesign` 步骤必需：`-s -w` 剥符号后 Go 写入的 ad-hoc 签名失配，不重签名
+的二进制会被 macOS 内核在 exec 时 SIGKILL（CODESIGNING Invalid Signature，
+rc=137 且零输出，崩溃报告在 ~/Library/Logs/DiagnosticReports/）。
 
 Python 参考实现（语义基准，行为对齐依据）：
 
