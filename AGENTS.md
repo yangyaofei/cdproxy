@@ -41,7 +41,7 @@ Admin 页（GET /）                    keeper：Chrome @127.0.0.1:9222（profil
 |------|------|
 | 基座（keeper） | 共享 Chrome 实例，`~/agent-browser/profile` 承载登录态 |
 | 上游 | agent-browser daemon 到代理的 WS 连接（每 session 一条，token 凭证） |
-| 下游 | 代理到 Chrome 的单条浏览器级 WS（全体共享，id 重映射在此发生）；`--downstream extension` 时为 cdp-ext 扩展的反向拨出 WS（`GET /ext?token=`），归属/拦截规则对上游完全透明一致 |
+| 下游 | 代理到浏览器的连接，**双链路常开并存**：chrome=按需 dial keeper 基座（9222，id 重映射在此发生）；extension=cdp-ext 扩展反向拨入 `GET /ext?token=`（常开待命）。会话在分配时按 settings.downstream_mode 定格绑定一种形态，之后切设置不影响存量会话（平滑切换） |
 | 归属（ownership） | tab（targetId）属于创建它的 session；getTargets 只见自己的 |
 | 回收（reap） | 断连 60s / 分配后未连接 300s（运行时设置可调）→ 关名下 tab 摘会话 |
 | 焦点策略（focus_mode） | background（默认）：createTarget 强制 background + activateTarget/bringToFront 假成功不转发，操作不抢用户焦点；steal=原生 |
@@ -94,7 +94,8 @@ CGO_ENABLED=0 go build -ldflags="-s -w" -o var/agent-browser-proxy ./cmd/agent-b
 codesign --force --sign - var/agent-browser-proxy
 go vet ./... && go test ./...     # 门禁
 var/agent-browser-proxy serve     # 运行（status/stop 同入口）
-# 扩展下游模式：--downstream extension --ext-token dev --control-port 9234 --ws-port 9235
+# 双下游常开：chrome 按需拉起；/ext 等扩展回连。
+# 新会话默认下游 = settings.downstream_mode（Admin 页/PUT /settings 在线可切）。
 ```
 
 `codesign` 步骤必需：`-s -w` 剥符号后 Go 写入的 ad-hoc 签名失配，不重签名
@@ -130,7 +131,7 @@ Admin 页：服务起来后开 `http://127.0.0.1:9224/`（状态/会话释放/�
 |----|------|------|--------|
 | 单元 | `tests/unit/`（state / settings 纯逻辑）+ `go test ./...` | 无 | 每次改动 |
 | 冒烟 | `scripts/smoke_test.py` 六项判定（`ABP_CONTROL` 可换端口） | 服务 + 真实 Chrome | 改 proxy/keeper 后必跑 |
-| 扩展冒烟 | `scripts/ext_smoke_test.py`（六项同判，扩展下游） | ext 模式服务 + 浏览器装 cdp-ext | 改扩展/proxy 转发后必跑 |
+| 扩展冒烟 | `scripts/ext_smoke_test.py`（T0–T7：含在线切 downstream_mode 与平滑切换语义，服务需 /ext 可达 + 浏览器装 cdp-ext） | 服务 + 浏览器装 cdp-ext | 改扩展/proxy 转发后必跑 |
 | Playwright E2E | `scripts/ext_playwright_e2e.mjs`（connectOverCDP 零改动客户端全链路） | 同上 | 改会话语义/时序后必跑 |
 | 并发压测 | `scripts/concurrency_test.sh`（3 校验流 + 1 churn 流四路并行，零串扰判定） | 服务 + 真实 Chrome | 改转发/焦点/回收语义后必跑 |
 | 浏览器级 | agent-browser 实连（`--config examples/agent-browser-config.json`） | 全链路 | 接入相关改动 |

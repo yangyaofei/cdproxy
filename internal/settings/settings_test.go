@@ -73,6 +73,37 @@ func TestRewritesInvalidFallsBackToDefaults(t *testing.T) {
 	}
 }
 
+func TestDownstreamModeAndExtToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{"downstream_mode":"extension","ext_token":"tok-1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := NewStore(path)
+	if s.Get().DownstreamMode != "extension" || s.Get().ExtToken != "tok-1" {
+		t.Fatalf("加载异常: mode=%s token=%s", s.Get().DownstreamMode, s.Get().ExtToken)
+	}
+	// 非法枚举回落默认 chrome；空 token 忽略
+	updated, err := s.Update(map[string]any{"downstream_mode": "bogus", "ext_token": "   "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.DownstreamMode != "extension" || updated.ExtToken != "tok-1" {
+		t.Fatalf("非法值应被忽略保持原值: mode=%s token=%s", updated.DownstreamMode, updated.ExtToken)
+	}
+	updated, err = s.Update(map[string]any{"downstream_mode": "chrome", "ext_token": "tok-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.DownstreamMode != "chrome" || updated.ExtToken != "tok-2" {
+		t.Fatalf("合法更新未生效: mode=%s token=%s", updated.DownstreamMode, updated.ExtToken)
+	}
+	// 默认值
+	fresh := NewStore(filepath.Join(t.TempDir(), "none.json"))
+	if fresh.Get().DownstreamMode != "chrome" || fresh.Get().ExtToken != "dev" {
+		t.Fatalf("默认应为 chrome/dev: %+v", fresh.Get())
+	}
+}
+
 func TestUpdatePersistsAndApplies(t *testing.T) {
 	store, path := newStore(t)
 	updated, err := store.Update(map[string]any{"alloc_reap_seconds": 120.0})

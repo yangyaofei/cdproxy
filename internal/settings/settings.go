@@ -18,7 +18,7 @@ import (
 
 // knownKeys 合法设置键（Update 对未知键显式报错而非静默忽略——配置写错
 // 必须当场暴露，否则调用方以为生效，事后才发现被吞）。
-var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "popup_policy", "rewrites"}
+var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "popup_policy", "rewrites", "downstream_mode", "ext_token"}
 
 // 各字段的下限（防误配成 0 导致回收风暴）。
 var minValues = map[string]float64{
@@ -28,7 +28,8 @@ var minValues = map[string]float64{
 
 // 枚举字段合法值。
 var enumValues = map[string][]string{
-	"popup_policy": {"close", "allow"},
+	"popup_policy":    {"close", "allow"},
+	"downstream_mode": {"chrome", "extension"},
 }
 
 // RewriteRule 上游命令改写规则。
@@ -95,6 +96,13 @@ type Settings struct {
 	KeeperIdleShutdownSeconds float64 `json:"keeper_idle_shutdown_seconds"`
 	// Rewrites 上游命令改写规则（顺序执行；默认=「不抢焦点」+ 基座保护）。
 	Rewrites []RewriteRule `json:"rewrites"`
+	// DownstreamMode 新会话的默认下游形态：chrome=keeper 管理的基座 Chrome；
+	// extension=cdp-ext 扩展反向回连的用户宿主浏览器。运行时可切，仅影响
+	// 之后的新分配——存量会话继续绑定原下游直至自然结束（平滑语义）。
+	DownstreamMode string `json:"downstream_mode"`
+	// ExtToken /ext 反向入口的准入令牌（扩展 options 页配同一值）。
+	// 空串 = 不校验（仅回环监听，与控制面同信任级）。
+	ExtToken string `json:"ext_token"`
 }
 
 // Defaults 返回默认设置。
@@ -105,6 +113,8 @@ func Defaults() Settings {
 		PopupPolicy:           "close",
 		KeeperIdleShutdownSeconds: 600.0,
 		Rewrites:              DefaultRewrites(),
+		DownstreamMode:        "chrome",
+		ExtToken:              "dev",
 	}
 }
 
@@ -153,6 +163,12 @@ func load(path string) Settings {
 			slog.Warn("settings.json rewrites 校验失败，回落默认规则", "err", validRewrites(rules))
 		}
 	}
+	if v, ok := raw["downstream_mode"].(string); ok && validEnum("downstream_mode", v) {
+		out.DownstreamMode = v
+	}
+	if v, ok := raw["ext_token"].(string); ok && strings.TrimSpace(v) != "" {
+		out.ExtToken = strings.TrimSpace(v)
+	}
 	return out
 }
 
@@ -189,6 +205,17 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 				switch key {
 				case "popup_policy":
 					current.PopupPolicy = str
+				case "downstream_mode":
+					current.DownstreamMode = str
+				}
+			}
+			continue
+		}
+		if key == "ext_token" {
+			if str, isStr := value.(string); isStr {
+				str = strings.TrimSpace(str)
+				if str != "" {
+					current.ExtToken = str
 				}
 			}
 			continue

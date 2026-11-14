@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
-"""extension 模式端到端冒烟测试：与 smoke_test.py 同一套六项判定，
+"""extension 下游端到端冒烟测试：与 smoke_test.py 同一套六项判定，
 但下游不是 keeper 基座，而是 ext/cdp-ext 扩展反向回连的用户宿主 Chrome。
 
 前置（与本脚本解耦，测试者自行保证）：
-  1. 装有 cdp-ext 的 Chrome 已运行（自动测试：Playwright Chromium +
-     --load-extension=ext/cdp-ext，无任何调试端口）
-  2. 本服务已以 extension 模式运行，例如：
-     var/agent-browser-proxy serve --downstream extension --ext-token dev \
-         --control-port 9234 --ws-port 9235 --data-dir var/ext
+  1. 装有 cdp-ext 的 Chrome 已运行（自动测试：Playwright Chromium 经
+     CDP Extensions.loadUnpacked 加载，无任何调试端口）
+  2. 本服务已运行（/ext 常开；downstream_mode 不限，脚本会自行切换）：
+     var/agent-browser-proxy serve --control-port 9234 --ws-port 9235 --data-dir var/ext
+
+T0 会把 downstream_mode 切到 extension（走 Admin 同款 PUT /settings 路径，
+顺带验证在线切换）；测试结束切回 chrome。
 
 判定（与 smoke_test.py 逐条对齐）：
-  T0 前置：下游已连且 mode=extension
+  T0 前置：扩展已回连 + 在线切到 extension 生效
   T1 两会话 getTargets 完全隔离（各只见自己预开的 tab）
   T2 各自 createTarget 后仍隔离
   T3 attach + Runtime.evaluate 全链路（6*7=42）
   T4 越权 closeTarget 被拒（error 响应）
   T5 release 后名下 tab 被关（宿主浏览器里真的关掉）
   T6 Browser.close 被拦截（宿主是用户浏览器，绝不许代理会话杀死）
+  T7 切回 chrome 后：extension 存量会话不受影响（平滑切换语义）
 """
 
 import asyncio
@@ -44,6 +47,18 @@ def http_post(path: str, body: dict) -> dict:
         return json.loads(resp.read())
 
 
+def http_put(path: str, body: dict) -> dict:
+    """同步 PUT 控制面（settings 在线切换）。"""
+    req = urllib.request.Request(
+        CONTROL + path,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
 def http_get(path: str) -> dict:
     """同步 GET 控制面。"""
     with urllib.request.urlopen(CONTROL + path, timeout=10) as resp:
@@ -60,9 +75,16 @@ class Client:
 
     async def call(self, method: str, params: dict | None = None, timeout: float = 15) -> dict:
         """发命令等响应（事件先入队）。"""
+        return await self.session_call(None, method, params, timeout)
+
+    async def session_call(self, session_id: str | None, method: str, params: dict | None = None, timeout: float = 15) -> dict:
+        """发命令（可带 sessionId）等响应（事件先入队）。"""
         self._id += 1
         cid = self._id
-        await self.ws.send(json.dumps({"id": cid, "method": method, "params": params or {}}))
+        msg: dict = {"id": cid, "method": method, "params": params or {}}
+        if session_id:
+            msg["sessionId"] = session_id
+        await self.ws.send(json.dumps(msg))
         while True:
             raw = await asyncio.wait_for(self.ws.recv(), timeout=timeout)
             msg = json.loads(raw)
@@ -89,13 +111,15 @@ class Client:
 
 
 async def main() -> int:
-    """跑七项判定（T0 前置 + 六项语义），全过返回 0。"""
-    # T0 前置：extension 下游在场
+    """跑八项判定（T0 前置 + 六项语义 + T7 切换语义），全过返回 0。"""
+    # T0 前置：扩展已回连 + 在线切到 extension（走 Admin 同款路径）
     status = http_get("/status")
     down = status.get("downstream", {})
-    assert down.get("mode") == "extension", f"T0 失败: 下游形态不是 extension: {down}"
-    assert down.get("connected") is True, f"T0 失败: 扩展未回连（先启动宿主 Chrome）: {down}"
-    print("T0 ✓ extension 下游已回连")
+    ext = down.get("extension", {})
+    assert ext.get("connected") is True, f"T0 失败: 扩展未回连（先启动宿主 Chrome）: {down}"
+    updated = http_put("/settings", {"downstream_mode": "extension"})
+    assert updated.get("downstream_mode") == "extension", f"T0 失败: 在线切换未生效: {updated}"
+    print("T0 ✓ 扩展已回连 + downstream_mode 已在线切到 extension")
 
     a = http_post("/sessions", {"name": f"ext-a-{RUN_ID}"})
     b = http_post("/sessions", {"name": f"ext-b-{RUN_ID}"})
@@ -170,6 +194,25 @@ async def main() -> int:
         alive = await cb.call("Browser.getVersion")
         assert "result" in alive, f"T6 失败: 下游无响应: {alive}"
         print("T6 ✓ Browser.close 被拦截（宿主保护生效，浏览器仍存活）")
+
+        # T7 平滑切换：切回 chrome 后，extension 存量会话继续可用
+        # （新分配才会走 chrome；此处不真分配 chrome 会话——那会拉起 keeper 基座，
+        #  chrome 路径由 smoke_test.py 在独立实例覆盖）
+        http_put("/settings", {"downstream_mode": "chrome"})
+        status = http_get("/status")
+        assert status["downstream"]["default_mode"] == "chrome", "T7 失败: 默认形态未切回"
+        sess_list = status["sessions"]
+        ext_sess = [s for s in sess_list if s.get("downstream") == "extension"]
+        assert ext_sess, f"T7 失败: 会话列表缺失 extension 绑定: {sess_list}"
+        # 页面会话命令（带 sessionId）继续走 extension 下游——root 级命令本就
+        # 只支持浏览器级（Target.*/Browser.*），不能用无 sessionId 的 evaluate
+        b_first = next(iter(tb))
+        att = await cb.call("Target.attachToTarget", {"targetId": b_first, "flatten": True})
+        sid = att["result"]["sessionId"]
+        ping = await cb.session_call(sid, "Runtime.evaluate", {"expression": "1+1", "returnByValue": True})
+        assert ping.get("result", {}).get("result", {}).get("value") == 2, f"T7 失败: 切换后存量会话不可用: {ping}"
+        print("T7 ✓ 切回 chrome 后 extension 存量会话不受影响（绑定{}）".format(
+            ", ".join(s["name"][-6:] for s in ext_sess)))
 
     print("\n全部通过 ✅")
     return 0

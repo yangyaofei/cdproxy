@@ -9,7 +9,7 @@ import (
 
 func alloc(t *testing.T, st *State, name string) *Session {
 	t.Helper()
-	s, _ := st.Alloc(name, "token-"+name)
+	s, _ := st.Alloc(name, "token-"+name, "chrome")
 	return s
 }
 
@@ -27,7 +27,7 @@ func TestAllocFreshSession(t *testing.T) {
 func TestAllocSameNameUnconnectedReuses(t *testing.T) {
 	st := New()
 	s1 := alloc(t, st, "a")
-	s2, _ := st.Alloc("a", "token-a2")
+	s2, _ := st.Alloc("a", "token-a2", "chrome")
 	if s1 != s2 {
 		t.Fatal("未连接应复用同一 session")
 	}
@@ -37,8 +37,8 @@ func TestAllocReuseKeepsOriginalToken(t *testing.T) {
 	// 不变量：复用路径保留原 token——AllocSession 返回的连接 URL 以
 	// sess.Token 拼接，若此处换新 token，daemon 重连必命中 4401。
 	st := New()
-	s1, _ := st.Alloc("a", "tok-1")
-	s2, _ := st.Alloc("a", "tok-2")
+	s1, _ := st.Alloc("a", "tok-1", "chrome")
+	s2, _ := st.Alloc("a", "tok-2", "chrome")
 	if s1 != s2 {
 		t.Fatal("未连接应复用")
 	}
@@ -58,7 +58,7 @@ func TestAllocSameNameConnectedAlsoReuses(t *testing.T) {
 	st := New()
 	s1 := alloc(t, st, "a")
 	fakeWS(s1)
-	s2, created := st.Alloc("a", "token-a2")
+	s2, created := st.Alloc("a", "token-a2", "chrome")
 	if s1 != s2 || created {
 		t.Fatal("同名一律复用，不新建")
 	}
@@ -98,7 +98,7 @@ func TestClearOwnershipReturnsSnapshot(t *testing.T) {
 	st.OwnTarget(b, "tb")
 	st.BindDsSession(a, "dsa")
 	st.BindDsSession(b, "dsb")
-	owned, bound := st.ClearOwnership()
+	owned, bound := st.ClearOwnershipFor("chrome")
 	if len(owned[a]) != 1 || owned[a][0] != "ta" {
 		t.Fatalf("期望 owned[a]=[ta]，实际 %v", owned[a])
 	}
@@ -110,6 +110,52 @@ func TestClearOwnershipReturnsSnapshot(t *testing.T) {
 	}
 	if len(a.OwnedTargets()) != 0 || len(b.OwnedTargets()) != 0 {
 		t.Fatal("session 名下应清空")
+	}
+}
+
+func TestClearOwnershipForOnlyTouchesKind(t *testing.T) {
+	st := New()
+	chr, _ := st.Alloc("chr", "t-chr", "chrome")
+	ext, _ := st.Alloc("ext", "t-ext", "extension")
+	st.OwnTarget(chr, "t-chrome-tab")
+	st.OwnTarget(ext, "t-ext-tab")
+	st.BindDsSession(chr, "ds-chrome")
+	st.BindDsSession(ext, "ds-ext")
+
+	owned, bound := st.ClearOwnershipFor("extension")
+	if len(owned) != 1 || len(owned[ext]) != 1 || owned[ext][0] != "t-ext-tab" {
+		t.Fatalf("extension 清理应只含 ext 会话，实际 %v", owned)
+	}
+	if len(bound) != 1 || len(bound[ext]) != 1 {
+		t.Fatalf("extension 绑定清理应只含 ext 会话，实际 %v", bound)
+	}
+	if st.OwnerOf("t-chrome-tab") != chr || st.SessionOfDs("ds-chrome") != chr {
+		t.Fatal("chrome 侧归属不应被 extension 清理牵连")
+	}
+	if st.OwnerOf("t-ext-tab") != nil || st.SessionOfDs("ds-ext") != nil {
+		t.Fatal("extension 侧应已清空")
+	}
+}
+
+func TestDetachSessionTargetsAndDownstreamBinding(t *testing.T) {
+	st := New()
+	a, _ := st.Alloc("a", "t-a", "chrome")
+	if a.Downstream() != "chrome" {
+		t.Fatalf("期望下游绑定 chrome，实际 %s", a.Downstream())
+	}
+	st.OwnTarget(a, "t1")
+	st.OwnTarget(a, "t2")
+	st.BindDsSession(a, "ds1")
+	tids, sids := st.DetachSessionTargets(a)
+	if len(tids) != 2 || len(sids) != 1 {
+		t.Fatalf("期望 detach 2 target + 1 session，实际 %d/%d", len(tids), len(sids))
+	}
+	if st.OwnerOf("t1") != nil || st.SessionOfDs("ds1") != nil || len(a.OwnedTargets()) != 0 {
+		t.Fatal("detach 后归属与绑定应清空")
+	}
+	a.SetDownstream("extension")
+	if a.Downstream() != "extension" {
+		t.Fatal("SetDownstream 未生效")
 	}
 }
 
@@ -182,7 +228,7 @@ func TestConcurrentAllocAndPending(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s, _ := st.Alloc("race", "token-race")
+			s, _ := st.Alloc("race", "token-race", "chrome")
 			st.NextDsID(s, 1, true, "", "")
 			st.OwnTarget(s, "tid")
 		}()

@@ -88,6 +88,8 @@ CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleas
 | `disconnect_reap_seconds` | 60 | 上游断连后的回收宽限（容忍 daemon 重启） |
 | `alloc_reap_seconds` | 300 | 分配后从未连接的回收时限（防泄漏） |
 | `focus_mode` | background | 焦点策略：background=不抢用户焦点（createTarget 强制后台 + activateTarget/bringToFront 拦截假成功）；steal=原生 |
+| `downstream_mode` | chrome | 新会话默认下游：chrome=共享基座；extension=cdp-ext 扩展宿主浏览器。**在线可切**，只影响新分配，存量会话继续用原下游 |
+| `ext_token` | dev | `/ext` 反向入口准入令牌（须与扩展 options 页一致） |
 
 修改渠道：Admin 页（即改即生效）或 `PUT /settings`；持久化到 `var/settings.json`。
 **单文件设置，无数据库**。
@@ -139,31 +141,42 @@ CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleas
 
 ## 扩展下游（cdp-ext）
 
-`--downstream chrome` 之外的另一种下游：不启动 keeper Chrome，而是由装在
-**用户日常浏览器**里的 MV3 扩展（`ext/cdp-ext/`）反向拨出 WS 充当下游。适用于
-"没有可被调试的 Chrome"的场景——Chrome 136 起 `--remote-debugging-port` 对默认
-profile 失效，扩展用 `chrome.debugger` API 走官方通道，无命令行开关要求。
+双下游**常开并存**：`/ext` 反向入口永远注册，装了 cdp-ext 的用户日常浏览器
+随时回连待命；chrome 基座链路照常按需拉起。`settings.downstream_mode`
+决定新会话走哪条（Admin 页在线切换——只影响新分配，存量会话继续用原下游
+直到自然结束，平滑无感）。适用于"没有可被调试的 Chrome"的场景——
+Chrome 136 起 `--remote-debugging-port` 对默认 profile 失效，扩展走
+`chrome.debugger` 官方通道，无命令行开关要求。
 
 ```
-agent-browser daemon ──WS 9235/cdp/<token>──► proxy ◄──反向拨出 WS 9235/ext?token=── cdp-ext(SW)
-                                                                   │ chrome.debugger（26 个 CDP 域）
-                                                                   ▼
-                                                      用户日常 Chrome 的各 tab
+agent-browser daemon ──WS 9225/cdp/<token>──► proxy ─┬─ 按需 dial ──► keeper 基座 Chrome（chrome 会话）
+                                                     └─ 常开待命 ◄── 反向拨出 WS /ext?token= ── cdp-ext(SW)
+                                                                          │ chrome.debugger（26 个 CDP 域）
+                                                                          ▼
+                                                             用户日常 Chrome 的各 tab
 ```
+
+用户侧一次性安装：Chrome 加载 `ext/cdp-ext/`（开发者模式→加载已解压），
+扩展 options 页把 relay 指到 `ws://127.0.0.1:9225/ext`、token 与
+`settings.ext_token` 一致。切换示例：
 
 ```bash
-var/agent-browser-proxy serve --downstream extension --ext-token dev \
-  --control-port 9234 --ws-port 9235 --data-dir var/ext
+curl -X PUT http://127.0.0.1:9224/settings \
+  -H 'Content-Type: application/json' -d '{"downstream_mode":"extension"}'
 ```
 
-用户侧一次性安装：Chrome 加载 `ext/cdp-ext/`（开发者模式→加载已解压），扩展
-options 页可改 relay 地址与 token。语义与 chrome 模式完全一致（归属隔离/越权
-拒绝/焦点策略/基座保护/断连回收），差异只有三点：
+双下游语义与单下游完全一致（归属隔离/越权拒绝/焦点策略/基座保护/断连
+回收），差异只有三点：
 
 - `Browser.close` 由扩展层拒绝（宿主是用户自己的浏览器，双保险）
 - 浏览器级命令面为仿真（Target.* + Browser.getVersion/setDownloadBehavior），
   未知命令诚实报错；页面会话命令全部透传
 - 一 tab 一 debugger：用户正开着 DevTools 的 tab 无法 attach（诚实报错）
+
+两链路隔离规则：会话在分配时定格绑定一种形态；扩展回连只清 extension 侧
+归属（chrome 会话不受牵连），基座重建只清 chrome 侧；事件路由校验
+"来源链路 == 会话绑定"（双浏览器 targetId 撞车防护）。`/keeper/restart`
+只动 chrome 基座；无基座时退化为复位扩展连接（扩展自行重连）。
 
 扩展内建**虚拟会话多路复用**：一个物理 `chrome.debugger` attach 上可叠加多个
 虚拟 CDP 会话（对齐真浏览器端点每连接独立会话），代理侧以
@@ -182,8 +195,9 @@ tab 挂调试横幅）。响应回带 sessionId、attachedToTarget/detachedFromT
 
 已验证（扩展下游，Playwright connectOverCDP 零改动接入）：连接/页面发现/
 setContent/evaluate/content/screenshot/newPage/page.close/newCDPSession/click
-全链路通过；下游重启后扩展自动重连、会话自愈（`scripts/ext_smoke_test.py`
-六项 + `scripts/ext_playwright_e2e.mjs`）。
+全链路通过；下游重启后扩展自动重连、会话自愈；downstream_mode 在线切换
+（`scripts/ext_smoke_test.py` T0–T7 + `scripts/ext_playwright_e2e.mjs`）；
+双下游同时在线（chrome 会话与 extension 会话并存，互不牵连）。
 
 ## 已知限制（v0.1.0）
 

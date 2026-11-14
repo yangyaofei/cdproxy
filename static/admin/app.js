@@ -55,7 +55,7 @@ function admin() {
     logOpen: "",
     sessionLogs: [],
     selLog: -1,
-    form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, popup_policy: null },
+    form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, popup_policy: null, downstream_mode: null, ext_token: null },
     savedAt: "",
     rules: [],
     rulesError: "",
@@ -115,6 +115,8 @@ function admin() {
           this.form.disconnect_reap_seconds = snap.settings.disconnect_reap_seconds;
           this.form.alloc_reap_seconds = snap.settings.alloc_reap_seconds;
           this.form.popup_policy = snap.settings.popup_policy;
+          this.form.downstream_mode = snap.settings.downstream_mode;
+          this.form.ext_token = snap.settings.ext_token;
           this.rules = JSON.parse(JSON.stringify(snap.settings.rewrites || []));
         }
         if (!this.slogParsed.length) this.loadLogs();
@@ -130,7 +132,9 @@ function admin() {
       return (
         Number(this.form.disconnect_reap_seconds) !== this.status.settings.disconnect_reap_seconds ||
         Number(this.form.alloc_reap_seconds) !== this.status.settings.alloc_reap_seconds ||
-        this.form.popup_policy !== this.status.settings.popup_policy
+        this.form.popup_policy !== this.status.settings.popup_policy ||
+        this.form.downstream_mode !== this.status.settings.downstream_mode ||
+        this.form.ext_token !== this.status.settings.ext_token
       );
     },
 
@@ -141,10 +145,14 @@ function admin() {
           disconnect_reap_seconds: Number(this.form.disconnect_reap_seconds),
           alloc_reap_seconds: Number(this.form.alloc_reap_seconds),
           popup_policy: this.form.popup_policy,
+          downstream_mode: this.form.downstream_mode,
+          ext_token: this.form.ext_token,
         });
         this.form.disconnect_reap_seconds = updated.disconnect_reap_seconds;
         this.form.alloc_reap_seconds = updated.alloc_reap_seconds;
         this.form.popup_policy = updated.popup_policy;
+        this.form.downstream_mode = updated.downstream_mode;
+        this.form.ext_token = updated.ext_token;
         this.savedAt = new Date().toLocaleTimeString();
         await this.refresh();
       } catch (err) {

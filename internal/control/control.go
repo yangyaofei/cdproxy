@@ -82,24 +82,19 @@ func (c *Control) Handler() http.Handler {
 
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		snapshot := c.proxy.Status()
+		// keeper 区块只描述 chrome 基座（extension 信息在 downstream.extension）
 		alive := false
-		mode := "chrome"
 		if down, ok := snapshot["downstream"].(map[string]any); ok {
-			alive, _ = down["connected"].(bool)
-			mode, _ = down["mode"].(string)
+			if chrome, ok := down["chrome"].(map[string]any); ok {
+				alive, _ = chrome["connected"].(bool)
+			}
 		}
-		keeperSection := map[string]any{
+		snapshot["keeper"] = map[string]any{
 			"alive":        alive,
 			"base_session": c.keeper.Session,
 			"manager":      "agent-browser",
 			"profile":      c.keeper.ProfileDir,
 		}
-		if mode == "extension" {
-			// extension 模式：宿主浏览器属用户，无 keeper 概念
-			keeperSection["manager"] = "cdp-ext 扩展（用户宿主浏览器）"
-			keeperSection["profile"] = nil
-		}
-		snapshot["keeper"] = keeperSection
 		snapshot["settings"] = c.store.Get()
 		snapshot["version"] = c.version
 		snapshot["recent_sessions"] = c.ilg.Recent(50)

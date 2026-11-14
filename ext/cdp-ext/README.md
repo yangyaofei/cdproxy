@@ -13,13 +13,16 @@ proxy(9235 /ext?token=…) ◄──反向拨出（SW 发起）── 本扩展 
 
 1. `chrome://extensions` → 开发者模式 → 加载已解压的扩展程序 → 选本目录
 2. 扩展选项页（或 `chrome.storage.local`）配置：
-   - `relayUrl`：默认 `ws://127.0.0.1:9235/ext`
-   - `token`：默认 `dev`（须与服务 `--ext-token` 一致）
-3. 服务端：`var/agent-browser-proxy serve --downstream extension --ext-token dev
-   --control-port 9234 --ws-port 9235 --data-dir var/ext`
+   - `relayUrl`：默认 `ws://127.0.0.1:9235/ext`（生产指向 `ws://127.0.0.1:9225/ext`）
+   - `token`：默认 `dev`（须与服务 `settings.ext_token` 一致）
+3. 服务端正常运行即可（`/ext` 常开注册，无需任何启动参数）；
+   切新会话到扩展宿主浏览器：Admin 页改「新会话下游」或
+   `curl -X PUT http://127.0.0.1:9224/settings -H 'Content-Type: application/json' \
+     -d '{"downstream_mode":"extension"}'`
 
-扩展自动重连（指数退避 + 0.5 分钟 alarm 兜底唤醒 MV3 SW）；重连即重建全部
-会话状态（proxy 同刻清归属并合成销毁事件）。
+扩展自动重连（指数退避 + 0.5 分钟 alarm 兜底唤醒 MV3 SW）；重连即重建
+extension 侧会话状态（proxy 同刻清该侧归属并合成销毁事件，chrome 会话
+不受牵连）。
 
 ## 仿真的浏览器级命令
 
@@ -47,7 +50,7 @@ proxy(9235 /ext?token=…) ◄──反向拨出（SW 发起）── 本扩展 
 - `createTarget` 应答须毫秒级（alloc 预开是 fire-and-forget，慢了归属记录
   输给客户端 getTargets）
 
-回归：`scripts/ext_smoke_test.py`（六项语义）+ `scripts/ext_playwright_e2e.mjs`
+回归：`scripts/ext_smoke_test.py`（T0–T7）+ `scripts/ext_playwright_e2e.mjs`
 （connectOverCDP 全链路），改 sw.js 后用 `scripts/load_ext_via_cdp.mjs` 重载再测。
 
 ## 已知边界

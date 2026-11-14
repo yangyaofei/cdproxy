@@ -42,10 +42,12 @@
             <tr><td>基座持有</td><td><code x-text="`agent-browser 会话 ${status.keeper.base_session}`"></code></td></tr>
             <tr><td>Profile</td><td><code x-text="status.keeper.profile"></code></td></tr>
             <tr><td>空闲关闭</td><td><code x-text="status.settings.keeper_idle_shutdown_seconds === 0 ? '禁用' : status.settings.keeper_idle_shutdown_seconds + 's'"></code></td></tr>
-            <tr><td>下游连接</td><td><span class="pill" :class="status.downstream.connected ? 'ok' : 'idle'" x-text="status.downstream.connected ? '已连接' : '未连接'"></span></td></tr>
+            <tr><td>chrome 下游</td><td><span class="pill" :class="status.downstream.chrome.connected ? 'ok' : 'idle'" x-text="status.downstream.chrome.connected ? '已连接' : '未连接'"></span></td></tr>
+            <tr><td>extension 下游</td><td><span class="pill" :class="status.downstream.extension.connected ? 'ok' : 'idle'" x-text="status.downstream.extension.connected ? '已回连' : '未回连'"></span></td></tr>
+            <tr><td>新会话默认</td><td><code x-text="status.downstream.default_mode"></code></td></tr>
           </table>
           <button class="warn" @click="restartKeeper()" :disabled="busy">重启基座</button>
-          <span class="hint">重启会断开所有会话（daemon 自动重连重新分配）</span>
+          <span class="hint">重启只动 chrome 基座（extension 会话不受影响）；无基座时退化为复位扩展连接</span>
         </div>
       </template>
     </section>
@@ -203,6 +205,23 @@
               <option value="allow">放行（allow）</option>
             </select>
             <span class="hint">页面发起的弹窗会劫持共享窗口的活动 tab，且会话无法操作它们——close 在创建瞬间即回收</span>
+          </td>
+        </tr>
+        <tr>
+          <td><label for="s-dsmode">新会话下游</label></td>
+          <td>
+            <select id="s-dsmode" x-model="form.downstream_mode">
+              <option value="chrome">chrome（共享基座 Chrome）</option>
+              <option value="extension">extension（cdp-ext 扩展宿主浏览器）</option>
+            </select>
+            <span class="hint">在线可切，只影响之后的新分配——存量会话继续用原下游直到自然结束</span>
+          </td>
+        </tr>
+        <tr>
+          <td><label for="s-exttoken">扩展令牌</label></td>
+          <td>
+            <input id="s-exttoken" type="text" x-model="form.ext_token" spellcheck="false">
+            <span class="hint">/ext 反向入口准入令牌，须与 cdp-ext 扩展 options 页配置一致；改后扩展需重连</span>
           </td>
         </tr>
       </table>

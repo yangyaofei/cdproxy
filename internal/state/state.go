@@ -29,7 +29,22 @@ type Session struct {
 	ownedTargets  map[string]struct{}
 	connected     bool
 	ws            *websocket.Conn
-	autoAttach    bool // root 级 Target.setAutoAttach(autoAttach=true) 已启用
+	autoAttach    bool   // root 级 Target.setAutoAttach(autoAttach=true) 已启用
+	downstream    string // 会话绑定的下游形态：chrome | extension（分配时定格）
+}
+
+// Downstream 返回会话绑定的下游形态（chrome | extension）。
+func (s *Session) Downstream() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.downstream
+}
+
+// SetDownstream 设置会话下游形态（仅分配路径调用：新建或未连接复用改绑）。
+func (s *Session) SetDownstream(kind string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.downstream = kind
 }
 
 // AutoAttach 返回 root 级自动附着标志。
@@ -138,14 +153,15 @@ func New() *State {
 //
 // 连接的接管由 WS 层 supersede 完成（新连接顶替旧连接），会话对象与
 // token 保持稳定——daemon 重开时会连续多次 launch，replace 语义会制造
-// 连接孤儿与 tab 泄漏。返回值 created 表示是否全新创建。
-func (st *State) Alloc(name string, token string) (*Session, bool) {
+// 连接孤儿与 tab 泄漏。downstream 记录会话绑定的下游形态（分配时由
+// proxy 按当前设置传入）。返回值 created 表示是否全新创建。
+func (st *State) Alloc(name string, token string, downstream string) (*Session, bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if existing, ok := st.sessions[name]; ok {
 		return existing, false
 	}
-	sess := &Session{Name: name, Token: token, ownedTargets: map[string]struct{}{}}
+	sess := &Session{Name: name, Token: token, ownedTargets: map[string]struct{}{}, downstream: downstream}
 	st.sessions[name] = sess
 	st.byToken[token] = sess
 	return sess, true
@@ -202,28 +218,52 @@ func (st *State) IsCurrent(sess *Session) bool {
 	return st.sessions[sess.Name] == sess
 }
 
-// ClearOwnership 清空全部归属（下游重建时调用），并返回清理前快照：
+// ClearOwnershipFor 清空指定形态下游上的全部归属（该下游重建时调用——
+// 另一形态的会话不受牵连），并返回清理前快照：
 // owned = session → 名下 targetId 列表；bound = session → 绑定的下游
 // sessionId 列表。供 proxy 合成 targetDestroyed / detachedFromTarget 通知
 // ——原生 Chrome 中 tab 消亡必推送事件，代理保持上游连接存活（自愈价值）
 // 就必须补齐等价可见反应，否则 daemon 持陈旧 pin 表现为「成功但无效」。
-func (st *State) ClearOwnership() (owned map[*Session][]string, bound map[*Session][]string) {
+func (st *State) ClearOwnershipFor(kind string) (owned map[*Session][]string, bound map[*Session][]string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	owned = make(map[*Session][]string, len(st.targetOwn))
+	owned = map[*Session][]string{}
+	bound = map[*Session][]string{}
 	for tid, sess := range st.targetOwn {
+		if sess.Downstream() != kind {
+			continue
+		}
 		owned[sess] = append(owned[sess], tid)
+		delete(st.targetOwn, tid)
+		delete(sess.ownedTargets, tid)
 	}
-	bound = make(map[*Session][]string, len(st.dsSession))
 	for sid, sess := range st.dsSession {
+		if sess.Downstream() != kind {
+			continue
+		}
 		bound[sess] = append(bound[sess], sid)
+		delete(st.dsSession, sid)
 	}
-	for _, sess := range st.sessions {
-		sess.ownedTargets = map[string]struct{}{}
-	}
-	st.targetOwn = map[string]*Session{}
-	st.dsSession = map[string]*Session{}
 	return owned, bound
+}
+
+// DetachSessionTargets 静默清掉单个会话的全部归属与绑定（返回快照，不发
+// 合成事件——调用方保证此刻无人监听，如未连接会话的下游改绑）。
+func (st *State) DetachSessionTargets(sess *Session) (tids []string, sids []string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for tid := range sess.ownedTargets {
+		tids = append(tids, tid)
+		delete(st.targetOwn, tid)
+	}
+	sess.ownedTargets = map[string]struct{}{}
+	for sid, s := range st.dsSession {
+		if s == sess {
+			sids = append(sids, sid)
+			delete(st.dsSession, sid)
+		}
+	}
+	return tids, sids
 }
 
 // OwnTarget 登记 tab 归属（创建响应到达时调用）。
@@ -319,9 +359,10 @@ func (st *State) Snapshot() []map[string]any {
 	out := make([]map[string]any, 0, len(st.sessions))
 	for _, sess := range st.sessions {
 		out = append(out, map[string]any{
-			"name":      sess.Name,
-			"connected": sess.Connected(),
-			"targets":   len(sess.ownedTargets),
+			"name":       sess.Name,
+			"connected":  sess.Connected(),
+			"targets":    len(sess.ownedTargets),
+			"downstream": sess.Downstream(),
 		})
 	}
 	return out
