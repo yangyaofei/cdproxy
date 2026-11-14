@@ -87,9 +87,15 @@ CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleas
 |---|---|---|
 | `disconnect_reap_seconds` | 60 | 上游断连后的回收宽限（容忍 daemon 重启） |
 | `alloc_reap_seconds` | 300 | 分配后从未连接的回收时限（防泄漏） |
-| `focus_mode` | background | 焦点策略：background=不抢用户焦点（createTarget 强制后台 + activateTarget/bringToFront 拦截假成功）；steal=原生 |
+| `keeper_idle_shutdown_seconds` | 600 | 基座空闲自动关闭阈值（0 = 不启用） |
+| `rewrites` | 不抢焦点+基座保护 | 上游命令改写规则（命令向守卫） |
 | `downstream_mode` | chrome | 新会话默认下游：chrome=共享基座；extension=cdp-ext 扩展宿主浏览器。**在线可切**，只影响新分配，存量会话继续用原下游 |
 | `ext_token` | dev | `/ext` 反向入口准入令牌（须与扩展 options 页一致） |
+
+> 原则：proxy 是单向阀门——命令向（agent→浏览器）可守卫改写，事件向
+> （浏览器→agent）只过滤转发、**永不回写**。曾有的 `popup_policy`（监听
+> 浏览器侧 targetCreated 关"弹窗"）因违反此原则已移除：extension 模式下
+> 用户手动开 tab 同样带 openerTabId，会被误杀（生产事故实证）。
 
 修改渠道：Admin 页（即改即生效）或 `PUT /settings`；持久化到 `var/settings.json`。
 **单文件设置，无数据库**。

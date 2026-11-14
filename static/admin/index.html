@@ -80,7 +80,7 @@
                     <span class="hint" style="margin-left:auto">
                       <span class="badge up">上行</span> <span class="badge down">下行</span>
                       <span class="badge rewritten">改写</span> <span class="badge focus-guard">焦点拦截</span>
-                      <span class="badge base-guard">基座保护</span> <span class="badge popup-close">弹窗回收</span>
+                      <span class="badge base-guard">基座保护</span>
                     </span>
                   </div>
                   <div class="log-scroll">
@@ -195,16 +195,6 @@
           <td>
             <input id="s-idle" type="number" min="0" step="1" x-model="form.keeper_idle_shutdown_seconds">
             <span class="hint">连续无会话且无人工页面达到该秒数后关闭基座（登录态在磁盘零损失，下次分配冷启动）；0 = 不启用。人工在基座里打开的页面会计入活动</span>
-          </td>
-        </tr>
-        <tr>
-          <td><label for="s-popup">弹窗策略</label></td>
-          <td>
-            <select id="s-popup" x-model="form.popup_policy">
-              <option value="close">关闭（close）</option>
-              <option value="allow">放行（allow）</option>
-            </select>
-            <span class="hint">页面发起的弹窗会劫持共享窗口的活动 tab，且会话无法操作它们——close 在创建瞬间即回收</span>
           </td>
         </tr>
         <tr>

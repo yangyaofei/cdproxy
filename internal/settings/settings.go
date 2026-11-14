@@ -18,7 +18,7 @@ import (
 
 // knownKeys 合法设置键（Update 对未知键显式报错而非静默忽略——配置写错
 // 必须当场暴露，否则调用方以为生效，事后才发现被吞）。
-var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "popup_policy", "rewrites", "downstream_mode", "ext_token"}
+var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "rewrites", "downstream_mode", "ext_token"}
 
 // 各字段的下限（防误配成 0 导致回收风暴）。
 var minValues = map[string]float64{
@@ -28,7 +28,6 @@ var minValues = map[string]float64{
 
 // 枚举字段合法值。
 var enumValues = map[string][]string{
-	"popup_policy":    {"close", "allow"},
 	"downstream_mode": {"chrome", "extension"},
 }
 
@@ -87,9 +86,6 @@ type Settings struct {
 	DisconnectReapSeconds float64 `json:"disconnect_reap_seconds"`
 	// AllocReapSeconds 分配后从未连接的回收时限（防泄漏）。
 	AllocReapSeconds float64 `json:"alloc_reap_seconds"`
-	// PopupPolicy 弹窗策略：close=关闭页面发起的弹窗（openerId 判别，
-	// session 无法操作它们且会劫持活动 tab）；allow=放行。
-	PopupPolicy string `json:"popup_policy"`
 	// KeeperIdleShutdownSeconds 基座空闲自动关闭阈值：连续无会话且无人工
 	// 页面达到该秒数后关闭基座 Chrome（登录态在磁盘 profile，零损失），
 	// 下次分配时冷启动。0 = 不启用。
@@ -110,7 +106,6 @@ func Defaults() Settings {
 	return Settings{
 		DisconnectReapSeconds: 60.0,
 		AllocReapSeconds:      300.0,
-		PopupPolicy:           "close",
 		KeeperIdleShutdownSeconds: 600.0,
 		Rewrites:              DefaultRewrites(),
 		DownstreamMode:        "chrome",
@@ -147,9 +142,6 @@ func load(path string) Settings {
 	}
 	if v, ok := raw["alloc_reap_seconds"].(float64); ok {
 		out.AllocReapSeconds = v
-	}
-	if v, ok := raw["popup_policy"].(string); ok && validEnum("popup_policy", v) {
-		out.PopupPolicy = v
 	}
 	if v, ok := raw["keeper_idle_shutdown_seconds"].(float64); ok {
 		out.KeeperIdleShutdownSeconds = v
@@ -203,8 +195,6 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 		if allowed, ok := enumValues[key]; ok {
 			if str, isStr := value.(string); isStr && contains(allowed, str) {
 				switch key {
-				case "popup_policy":
-					current.PopupPolicy = str
 				case "downstream_mode":
 					current.DownstreamMode = str
 				}

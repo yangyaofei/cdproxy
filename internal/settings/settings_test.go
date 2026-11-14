@@ -18,7 +18,7 @@ func TestMissingFileReturnsDefaults(t *testing.T) {
 	got := s.Get()
 	want := Defaults()
 	if got.DisconnectReapSeconds != want.DisconnectReapSeconds || got.AllocReapSeconds != want.AllocReapSeconds ||
-		got.PopupPolicy != want.PopupPolicy || len(got.Rewrites) != len(want.Rewrites) {
+		len(got.Rewrites) != len(want.Rewrites) {
 		t.Fatalf("期望默认值，实际 %+v", got)
 	}
 }
@@ -187,8 +187,8 @@ func TestUpdateRejectsUnknownKeys(t *testing.T) {
 	if _, err := s.Update(map[string]any{"focus_mode": "steal"}); err == nil {
 		t.Fatal("未知键必须报错（静默吞掉会让调用方误以为已生效）")
 	}
-	if _, err := s.Update(map[string]any{"popup_policy": "allow"}); err != nil {
-		t.Fatalf("合法键不应报错: %v", err)
+	if _, err := s.Update(map[string]any{"popup_policy": "close"}); err == nil {
+		t.Fatal("popup_policy 已移除（事件向永不回写），作为未知键必须报错")
 	}
 }
 

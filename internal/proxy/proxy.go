@@ -1200,21 +1200,11 @@ func (p *Proxy) onDsEvent(msg map[string]any, kind string) {
 				Method: method, Action: "routed", TargetID: tid, In: interlog.Safe(ti)})
 			p.sendTo(owner, msg)
 		} else if method == "Target.targetCreated" {
-			// 非自有 target 创建 = 页面发起弹窗等浏览器内部行为（上游守卫够不着：
-			// 不走上游 WS，且会劫持共享窗口的活动 tab）。openerId 是弹窗判别依据
-			// （启动重放的既有 tab 无此字段）。session 无法操作无主弹窗（被
-			// getTargets 过滤），close 策略下立即回收。
-			typ, _ := ti["type"].(string)
-			opener, _ := ti["openerId"].(string)
-			if typ == "page" && opener != "" && p.store.Get().PopupPolicy == "close" {
-				p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: interlog.UnownedKey,
-					Method: method, Action: "popup-close", TargetID: tid, In: interlog.Safe(ti),
-					Delta: "opener=" + opener[:min(12, len(opener))]})
-				if err := p.dsRaw(kind, "Target.closeTarget", map[string]any{"targetId": tid}); err != nil {
-					p.log.Error("弹窗关闭失败", "target", tid, "err", err)
-				}
-				return
-			}
+			// 非自有 target 创建（用户手动开 tab / 页面 window.open / 浏览器内部
+			// 行为）只记录，不采取任何动作——proxy 是单向阀门：命令向可守卫改写，
+			// 事件向只过滤转发，**永不因浏览器侧事件对浏览器回写**。
+			// （历史上的 popup-close 策略违反此原则：extension 模式下用户手动开
+			// tab 也会带 openerTabId，被误判为"会话弹窗"秒关——生产事故实证。）
 			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: interlog.UnownedKey,
 				Method: method, Action: "unowned", TargetID: tid, In: interlog.Safe(ti)})
 		}
