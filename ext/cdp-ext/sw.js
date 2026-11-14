@@ -31,6 +31,13 @@ const DEFAULT_RELAY = "ws://127.0.0.1:9235/ext";
 const DEFAULT_TOKEN = "dev";
 const HEARTBEAT_MS = 20_000; // 同时是 SW 保活间隔（须 <30s）
 const ATTACH_STORAGE_KEY = "cdpExtAttachedTargets"; // chrome.storage.session
+// 会话表持久化（chrome.storage.session：SW 重启存活、浏览器重启清空——
+// 恰好是「虚拟会话应随 SW 世代延续还是消亡」的正确语义）。MV3 SW 会被
+// Chrome 随时终止（内存压力/生命周期上限），无持久化时一次终止即蒸发全部
+// 虚拟会话，proxy 侧全量清归属 + 合成销毁事件，客户端在跑的命令全部报
+// 「未知 sessionId」。
+const STATE_KEY = "cdpExtState";
+// ── 状态表 ─────────────────────────────────────────────────────────
 
 // ── 标签组（可见性 = 组成员）─────────────────────────────────────
 // 每个会话一个 "ab: <session>" 彩色组：扩展创建的 tab 自动入组；用户把
@@ -213,7 +220,26 @@ function connect() {
     sock.onopen = async () => {
       backoffMs = 500;
       console.info("[cdp-ext] 已连上 proxy:", url);
-      await resetState();
+      const restored = await loadPersistedState();
+      await refreshTargets();
+      if (restored) {
+        // SW 世代延续：会话表原位恢复，restore 让 proxy 跳过清归属/合成销毁；
+        // 物理 attach 属于扩展而非 SW 实例，SW 重启不死——校验一遍，失效的
+        // （如用户手动停过调试）重新挂上。
+        // tabId 回填：持久化里缺失的（旧格式/浏览器重启换了 tab）按 target 映射补
+        for (const [, s] of sessions) {
+          if (s.tabId === undefined && !s.browser) s.tabId = tabByTarget.get(s.targetId);
+        }
+        await verifyAttached();
+        send({
+          abCtl: "restore",
+          sessions: [...sessions.entries()].map(([sid, s]) => ({
+            sid, targetId: s.targetId, browser: !!s.browser,
+          })),
+        });
+      } else {
+        await resetState();
+      }
       await rebuildGroupMaps();
       scheduleReconcile(0);
       startHeartbeat();
@@ -243,6 +269,62 @@ function connect() {
 
 function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+// ── 会话表持久化 ───────────────────────────────────────────────────
+// 每次会话表变更立即写透 chrome.storage.session（串行链防并发交错）。
+// 不可用防抖：MV3 SW 在事件间隙会近乎立即挂起，挂起会冻结计时器——
+// 防抖窗口内的写入在 SW 被杀时直接丢失（实测复现：attach 后 1s 状态仍未
+// 落盘）。写透后 SW 重启 loadPersistedState() 原位恢复，重连时经 restore
+// 控制消息让 proxy 跳过「清归属 + 合成销毁」，命令流对 SW 重启无感。
+let persistChain = Promise.resolve();
+function persistStateSoon() {
+  persistChain = persistChain
+    .then(async () => {
+      const st = serializeState();
+      await chrome.storage.session.set({ [STATE_KEY]: st });
+    })
+    .catch(() => { /* 存储不可用：退化为旧的无持久化行为 */ });
+}
+
+function serializeState() {
+  const sess = {};
+  for (const [sid, s] of sessions) {
+    sess[sid] = { targetId: s.targetId, tabId: s.tabId, browser: !!s.browser };
+  }
+  const roots = {};
+  for (const [tid, set] of rootsByTarget) roots[tid] = [...set];
+  const children = {};
+  for (const [dsSid, c] of childByDsSid) {
+    const byParent = {};
+    for (const [p, child] of c.byParent) byParent[p] = child;
+    children[dsSid] = { targetId: c.targetId, byParent };
+  }
+  return { sidSeq, rootAutoAttach, sessions: sess, roots, children, attached: [...attached.keys()] };
+}
+
+async function loadPersistedState() {
+  try {
+    const got = await chrome.storage.session.get(STATE_KEY);
+    const st = got[STATE_KEY];
+    if (!st) return false;
+    sidSeq = st.sidSeq || 0;
+    rootAutoAttach = !!st.rootAutoAttach;
+    for (const [sid, s] of Object.entries(st.sessions || {})) {
+      sessions.set(sid, { targetId: s.targetId, tabId: s.tabId, browser: !!s.browser, children: new Map() });
+    }
+    for (const [tid, sids] of Object.entries(st.roots || {})) {
+      rootsByTarget.set(tid, new Set(sids));
+    }
+    for (const [dsSid, c] of Object.entries(st.children || {})) {
+      childByDsSid.set(dsSid, { targetId: c.targetId, byParent: new Map(Object.entries(c.byParent || {})) });
+    }
+    for (const tid of st.attached || []) attached.set(tid, {});
+    return true;
+  } catch (err) {
+    console.warn("[cdp-ext] 持久化恢复异常（按冷启动处理）", err && err.message);
+    return false;
+  }
 }
 
 // ── 组对账（sync 控制消息）────────────────────────────────────────
@@ -316,6 +398,10 @@ function stopHeartbeat() {
 }
 
 // resetState 新连接的干净起点：清会话表，detach 上一 SW 世代 attach 过的 tab。
+// resetState 冷启动的干净起点（浏览器重启/无持久化状态）：清会话表并
+// detach 上一世代 attach 过的 tab。
+// 注意：SW 普通重启不走这里（loadPersistedState 命中 → restore 原位续接，
+// 物理 attach 属于扩展不随 SW 死，无需 detach）。
 async function resetState() {
   sessions.clear();
   rootsByTarget.clear();
@@ -334,14 +420,21 @@ async function resetState() {
     chrome.debugger.detach(target).catch(() => {});
   }
   await chrome.storage.session.set({ [ATTACH_STORAGE_KEY]: [] });
+  await chrome.storage.session.set({ [STATE_KEY]: null });
 }
 
-async function rememberAttach(target) {
-  const got = await chrome.storage.session.get(ATTACH_STORAGE_KEY);
-  const list = got[ATTACH_STORAGE_KEY] || [];
-  if (!list.some((t) => t.targetId === target.targetId || t.tabId === target.tabId)) {
-    list.push(target);
-    await chrome.storage.session.set({ [ATTACH_STORAGE_KEY]: list });
+// verifyAttached 恢复后校验物理 attach 仍有效（用户可能经 chrome://extensions
+// 手动停过调试）：发一条廉价命令探活，失效的重挂。
+async function verifyAttached() {
+  for (const targetId of [...attached.keys()]) {
+    try {
+      await chrome.debugger.sendCommand({ targetId }, "Target.getTargetInfo", {});
+    } catch {
+      try {
+        const tabId = tabByTarget.get(targetId);
+        await chrome.debugger.attach({ targetId, tabId }, "1.3");
+      } catch { attached.delete(targetId); }
+    }
   }
 }
 
@@ -467,11 +560,13 @@ async function onRootCommand(id, method, params) {
       // 再在其上 attachToTarget 页面。命令面等价 root（见 onSessionCommand）。
       const ourSid = `E${++sidSeq}`;
       sessions.set(ourSid, { targetId: "browser", tabId: undefined, children: new Map(), browser: true });
+      persistStateSoon();
       respond(id, { sessionId: ourSid });
       return;
     }
     case "Target.setAutoAttach": {
       rootAutoAttach = !!params.autoAttach;
+      persistStateSoon();
       if (rootAutoAttach) {
         // 直连场景（未经 proxy）：对全部 page 各建一个虚拟会话；经 proxy 时
         // 该命令被 proxy 拦截改写（只 attach 该会话拥有的 target），不会到达这里。
@@ -553,6 +648,20 @@ async function onSessionCommand(id, sid, method, params) {
     return;
   }
 
+  // 页面会话：物理 attach 可能处于软休眠（用户点过横幅「取消」）——先懒重挂
+  // 再透传。重挂失败（DevTools 占用 / tab 已关）如实报错，客户端可见明确原因。
+  try {
+    await ensureAttached(sess.targetId, sess.tabId);
+  } catch (err) {
+    return send({
+      id, sessionId: sid,
+      error: {
+        code: -32000,
+        message: `cdp-ext: 会话 ${sid} 处于休眠，重新附加 ${sess.targetId} 失败` +
+          `（tab 已关或被 DevTools 占用）: ${err && err.message ? err.message : String(err)}`,
+      },
+    });
+  }
   const target = sess.dsChildSid
     ? { tabId: sess.tabId, sessionId: sess.dsChildSid }
     : { tabId: sess.tabId };
@@ -566,6 +675,26 @@ async function onSessionCommand(id, sid, method, params) {
 
 // ── attach / detach ────────────────────────────────────────────────
 
+// ensureAttached 确保某 target 的物理 debugger attach 在场（懒重挂）：
+// 用户点横幅「取消」后会话转入软休眠（见 onBrowserDetach），下一条命令到达
+// 时在此重新 attach——横幅重现即「又有活儿在干」的正确反馈。失败（用户开着
+// DevTools / tab 已关）如实抛错由调用方转达客户端。
+async function ensureAttached(targetId, tabId) {
+  if (attached.has(targetId)) return;
+  const debuggee = tabId !== undefined ? { tabId } : { targetId };
+  try {
+    await chrome.debugger.attach(debuggee, "1.3");
+  } catch (err) {
+    // 状态与现实赛跑的兜底：attach 报「已附加」说明物理层其实在场（如 SW
+    // 恢复的 attached 表滞后），视作在场继续——其余错误（DevTools 占用/tab
+    // 已关）原样抛出。
+    const msg = (err && err.message) || String(err);
+    if (!/already attached/i.test(msg)) throw err;
+  }
+  attached.set(targetId, { tabId });
+  persistStateSoon();
+}
+
 // attachTarget 对 target 建立一个「虚拟会话」并回发 attachedToTarget；返回 ourSid。
 // 物理层 chrome.debugger 每 tab 只允许一个 attach——多客户端复用同一 target
 // 时在物理 attach 上叠加多个虚拟会话（与真浏览器端点每连接独立会话语义对齐），
@@ -574,16 +703,12 @@ async function attachTarget(targetId, parentSid) {
   const tabId = tabByTarget.get(targetId);
   const ti = await targetInfoOf(targetId);
   if (!ti) throw new Error(`target ${targetId} 不存在`);
-  if (!attached.has(targetId)) {
-    const debuggee = tabId !== undefined ? { tabId } : { targetId };
-    await chrome.debugger.attach(debuggee, "1.3");
-    await rememberAttach(debuggee);
-    attached.set(targetId, { tabId });
-  }
+  await ensureAttached(targetId, tabId);
   const ourSid = `E${++sidSeq}`;
   sessions.set(ourSid, { targetId, tabId, children: new Map() });
   if (!rootsByTarget.has(targetId)) rootsByTarget.set(targetId, new Set());
   rootsByTarget.get(targetId).add(ourSid);
+  persistStateSoon();
   // 会话内 attach（如 attachToBrowserTarget 会话上的 attachToTarget）：
   // 事件嵌套发给该会话（顶层 sessionId=父），不广播浏览器级——真 Chrome
   // 如此，广播会让 Playwright 的浏览器级处理器重复注册 target 而断言。
@@ -607,8 +732,8 @@ async function detachSession(ourSid) {
     attached.delete(sess.targetId);
     const debuggee = sess.tabId !== undefined ? { tabId: sess.tabId } : { targetId: sess.targetId };
     await chrome.debugger.detach(debuggee).catch(() => {});
-    await forgetAttach(sess);
   }
+  persistStateSoon();
   send({ method: "Target.detachedFromTarget", params: { sessionId: ourSid, targetId: sess.targetId } });
 }
 
@@ -626,14 +751,7 @@ async function dropTarget(targetId, { notify = true } = {}) {
   }
   rootsByTarget.delete(targetId);
   attached.delete(targetId);
-}
-
-async function forgetAttach(sess) {
-  const got = await chrome.storage.session.get(ATTACH_STORAGE_KEY);
-  const list = (got[ATTACH_STORAGE_KEY] || []).filter(
-    (t) => t.targetId !== sess.targetId && t.tabId !== sess.tabId
-  );
-  await chrome.storage.session.set({ [ATTACH_STORAGE_KEY]: list });
+  persistStateSoon();
 }
 
 // ── chrome.debugger 事件 → CDP 事件 ─────────────────────────────────
@@ -654,6 +772,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
         if (parent) parent.children.delete(source.sessionId);
       }
       childByDsSid.delete(source.sessionId);
+      persistStateSoon();
       return;
     }
     for (const childOur of rec.byParent.values()) {
@@ -688,6 +807,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
         sessionId: ourSid,
       });
     }
+    persistStateSoon();
     return;
   }
   if (method === "Target.detachedFromTarget") {
@@ -704,6 +824,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
         if (parent) parent.children.delete(dsSid);
       }
       childByDsSid.delete(dsSid);
+      persistStateSoon();
     }
     return;
   }
@@ -712,14 +833,43 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   }
 });
 
-// onDetach：Chrome 侧主动断开调试（tab 关闭 / 用户开 DevTools / 手动取消）
-chrome.debugger.onDetach.addListener(async (source, reason) => {
+// onBrowserDetach 浏览器侧断开调试的处理主体（onDetach 监听器调用；测试经
+// sw_eval 直接调用以复现「用户点取消」路径）。区分两种语义：
+// - target_closed：tab 本身没了 → 真死，dropTarget 撤全部会话并补 targetDestroyed
+// - 其余（用户点横幅「取消」/ 开 DevTools 接管）：软休眠——只摘物理 attach，
+//   虚拟会话表原样保留，**不向客户端发任何事件**（「取消」= 用户的真实意图
+//   「现在别烦我」，静默到下一条命令到达时懒重挂，见 ensureAttached）。
+//   休眠期间该 target 的子会话（OOPIF/worker，随物理 attach 生死）一并失效。
+async function onBrowserDetach(targetId, reason) {
+  if (!targetId) return;
+  if (reason === "target_closed") {
+    await dropTarget(targetId);
+    send({ method: "Target.targetDestroyed", params: { targetId } });
+    return;
+  }
+  attached.delete(targetId);
+  // 休眠即物理 attach 死：其下的真实子会话（dsSid）全部失效，清账防串扰
+  for (const [dsSid, rec] of [...childByDsSid]) {
+    if (rec.targetId === targetId) {
+      for (const parentOur of rec.byParent.keys()) {
+        const parent = sessions.get(parentOur);
+        if (parent) parent.children.delete(dsSid);
+      }
+      childByDsSid.delete(dsSid);
+    }
+  }
+  for (const ourSid of rootsByTarget.get(targetId) || []) {
+    const s = sessions.get(ourSid);
+    if (s) s.children.clear();
+  }
+  persistStateSoon();
+  console.info("[cdp-ext] 调试被浏览器侧断开，会话软休眠（下一条命令自动重挂）", targetId, reason);
+}
+
+chrome.debugger.onDetach.addListener((source, reason) => {
   const targetId =
     (targetByTab.get(source.tabId) || {}).targetId || source.targetId;
-  if (targetId) await dropTarget(targetId);
-  if (reason === "target_closed" && targetId) {
-    send({ method: "Target.targetDestroyed", params: { targetId } });
-  }
+  onBrowserDetach(targetId, reason);
 });
 
 // ── chrome.tabs 事件 → Target 生命周期事件 ──────────────────────────
@@ -802,4 +952,5 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
+chrome.action?.onClicked?.addListener(connect); // 手动唤醒口：扩展被刷新后点工具栏图标即重连
 connect(); // SW 每次唤醒都尝试连接（已连接则幂等返回）

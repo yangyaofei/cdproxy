@@ -82,6 +82,9 @@ type Proxy struct {
 	mu       sync.Mutex // 双下游链路生命周期
 	chrome   *dsLink    // keeper 基座链路（按需建立）
 	ext      *dsLink    // cdp-ext 扩展链路（回连采纳，常开待命）
+	// extAdoptGen 扩展采纳代次：每次采纳 +1；restore 到达也 +1（作废待定的
+	// 延迟清账）。采纳后延迟清账的计时器以自己看到的代次为凭，代次已变则放弃。
+	extAdoptGen uint64
 
 	server *http.Server
 }
@@ -649,8 +652,10 @@ func (p *Proxy) sendTo(sess *state.Session, msg map[string]any) {
 
 // handleExtension 扩展反向入口（常开注册，GET /ext?token=...）：
 // ext/cdp-ext 扩展拨入即被采纳为 extension 下游（顶替旧扩展连接）。
-// 每次采纳视为该下游更换：extension 侧归属全清 + 合成销毁事件（扩展侧重连
-// 时会话表同样重建，双方一致）；chrome 侧归属不受牵连。令牌不匹配回 401，
+// 采纳后延迟 2s 清账：SW 世代延续的扩展会在窗口内发 restore 续接（会话表
+// 经 chrome.storage.session 持久化，sid 不变，proxy 侧归属/绑定从未失效，
+// 无需重绑）；超时未收到才是冷启动（浏览器重启/新装），清 extension 归属
+// 并合成销毁，双方状态一致。chrome 侧归属不受牵连。令牌不匹配回 401，
 // 扩展侧按退避重试。令牌取自 settings.ext_token。
 func (p *Proxy) handleExtension(w http.ResponseWriter, r *http.Request) {
 	token := p.store.Get().ExtToken
@@ -676,10 +681,25 @@ func (p *Proxy) handleExtension(w http.ResponseWriter, r *http.Request) {
 	if old != nil {
 		_ = old.conn.Close(websocket.StatusGoingAway, "superseded by new extension connection")
 	}
-	// 采纳即该下游更换（扩展会话表已重建，旧 targetId 一概不可信）——只清
-	// extension 形态的归属
-	owned, bound := p.st.ClearOwnershipFor(dsExtension)
-	p.notifyOwnershipCleared(owned, bound)
+	// 采纳后不立即清账：扩展可能是 SW 世代延续（会话表经 chrome.storage.session
+	// 持久化，重连即发 restore 续接）。给 2s 窗口——窗口内收到 restore 则跳过
+	// 清归属（见 onExtRestore）；超时未到才是真正的冷启动（浏览器重启/新装），
+	// 清 extension 归属并合成销毁，双方状态一致。
+	p.mu.Lock()
+	p.extAdoptGen++
+	gen := p.extAdoptGen
+	p.mu.Unlock()
+	time.AfterFunc(2*time.Second, func() {
+		p.mu.Lock()
+		stale := p.extAdoptGen != gen
+		p.mu.Unlock()
+		if stale {
+			return // restore 已续接，或已被更新的采纳取代
+		}
+		owned, bound := p.st.ClearOwnershipFor(dsExtension)
+		p.notifyOwnershipCleared(owned, bound)
+		p.log.Info("扩展冷启动确认（无 restore），extension 归属已清")
+	})
 	go p.pingLoop(r.Context(), conn, 20*time.Second)
 	p.log.Info("扩展已回连（成为 extension 下游）")
 	go p.dsRecvLoop(link)
@@ -946,9 +966,27 @@ func (p *Proxy) onExtControl(msg map[string]any) {
 	switch ctl {
 	case "sync":
 		p.onExtSync(msg)
+	case "restore":
+		p.onExtRestore(msg)
 	default:
 		p.log.Warn("未知扩展控制消息", "abCtl", ctl)
 	}
+}
+
+// onExtRestore SW 世代延续续接：扩展经 chrome.storage.session 持久化恢复了
+// 会话表（sid 不变）后回连上报。proxy 侧归属与 sid 绑定在整个 SW 重启期间
+// 从未失效——无需重绑，只需作废采纳时挂起的延迟清账计时器即可；命令流对
+// SW 重启完全无感。上报的 sessions 仅作日志核对（与本地绑定数不一致时警告，
+// 组对账与回收路径会自行收敛差异）。
+func (p *Proxy) onExtRestore(msg map[string]any) {
+	p.mu.Lock()
+	p.extAdoptGen++ // 作废待定的延迟清账
+	p.mu.Unlock()
+	n := 0
+	if items, ok := msg["sessions"].([]any); ok {
+		n = len(items)
+	}
+	p.log.Info("扩展 restore 续接（跳过清归属，sid 绑定原样有效）", "sessions", n)
 }
 
 // onExtSync 组成员全量对账：扩展定期/事件驱动上报每个会话组的当前成员

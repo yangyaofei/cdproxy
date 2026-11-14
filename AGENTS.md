@@ -133,6 +133,7 @@ Admin 页：服务起来后开 `http://127.0.0.1:9224/`（状态/会话释放/�
 | 单元 | `tests/unit/`（state / settings 纯逻辑）+ `go test ./...` | 无 | 每次改动 |
 | 冒烟 | `scripts/smoke_test.py` 六项判定（`ABP_CONTROL` 可换端口） | 服务 + 真实 Chrome | 改 proxy/keeper 后必跑 |
 | 扩展冒烟 | `scripts/ext_smoke_test.py`（T0–T7：含在线切 downstream_mode 与平滑切换语义，服务需 /ext 可达 + 浏览器装 cdp-ext） | 服务 + 浏览器装 cdp-ext | 改扩展/proxy 转发后必跑 |
+| 韧性 E2E | `scripts/ext_restart_test.mjs`（R1–R3：SW target 关闭→持久化+restore 同 sid 续接；模拟点「取消」软休眠→懒重挂；死 sid 诚实报错，16 项） | 同上 + 浏览器带调试端口 | 改 sw.js 会话表/持久化/休眠语义后必跑 |
 | 标签组 E2E | `scripts/ext_group_test.mjs`（G1–G5：自动入组/拖入 adopt/借用保护/拖出 revoke/释放归还；SW eval 模拟用户组操作） | 同上 + 浏览器带调试端口 | 改组/adopt/借用语义后必跑 |
 | Playwright E2E | `scripts/ext_playwright_e2e.mjs`（connectOverCDP 零改动客户端全链路） | 同上 | 改会话语义/时序后必跑 |
 | 并发压测 | `scripts/concurrency_test.sh`（3 校验流 + 1 churn 流四路并行，零串扰判定） | 服务 + 真实 Chrome | 改转发/焦点/回收语义后必跑 |

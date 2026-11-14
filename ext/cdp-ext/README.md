@@ -53,10 +53,40 @@ extension 侧会话状态（proxy 同刻清该侧归属并合成销毁事件，c
 回归：`scripts/ext_smoke_test.py`（T0–T7）+ `scripts/ext_playwright_e2e.mjs`
 （connectOverCDP 全链路），改 sw.js 后用 `scripts/load_ext_via_cdp.mjs` 重载再测。
 
+## 会话韧性（SW 死亡 / 用户点「取消」）
+
+MV3 的 Service Worker 随时可能被 Chrome 终止（内存压力/生命周期上限），物理
+debugger attach 属于扩展不随 SW 死——需要救的只有内存里的虚拟会话表。三层姿态：
+
+| 层 | 机制 |
+|---|---|
+| 保活 | 20s 心跳 + 0.5min alarm（Chrome 周期下限 30s） |
+| 快速复活 | 断线指数退避重连 + alarm 兜底唤醒（SW 死后 ≤30s 必回连） |
+| 无感恢复 | 会话表**变更即写透** `chrome.storage.session`（STATE_KEY，串行链防交错）；SW 重启 `loadPersistedState` 原位恢复（sid/tabId 不变）→ `{"abCtl":"restore"}` 通知 proxy 跳过「清归属+合成销毁」→ 同 sid 命令照常 |
+
+两个踩过的坑（此处留碑，勿回头）：
+
+- **不可用防抖写**：MV3 SW 在事件间隙近乎立即挂起，挂起冻结计时器——防抖
+  窗口内的写入随 SW 死亡直接丢失（实测 attach 后 1s 状态仍未落盘）。必须
+  变更即写。
+- **runtime.reload 连 alarms 一起清**：手动刷新扩展后 SW 无唤醒源。兜底：
+  工具栏图标点按即重连（`chrome.action.onClicked` → connect）。
+
+用户点横幅「取消」= 软休眠（lazy re-attach，用户提出的语义）：
+
+| 时刻 | 行为 |
+|---|---|
+| 点「取消」/ DevTools 接管 | 物理 attach 摘除，会话表保留，**不发任何事件**（「取消」=「现在别烦我」，静默） |
+| 下一条会话命令 | 自动重挂 → 横幅重现（有活儿在干的正确反馈）→ 命令照常 |
+| 休眠中 tab 被关 | 诚实报错 `未知 sessionId`，不复活死 target |
+| 重挂失败（DevTools 占用） | 明确报错（关 DevTools 即恢复） |
+
 ## 已知边界
 
 - 一 tab 一 debugger：用户开着 DevTools 的 tab attach 诚实报错；attach 后 tab
-  顶部有「扩展程序已开始调试此浏览器」横幅（detach 即消）
+  顶部有「扩展程序已开始调试此浏览器」横幅（detach 即消；休眠即消、下一条
+  命令重现）
+- 休眠/重启会杀死该 target 的子会话（OOPIF/worker 随物理 attach 生死，不持久化）
 - heap/CPU profiler 等浏览器级域不可用（chrome.debugger 未开放）
 - 下载路径解析受限（`page.download()` 事件流动，落盘按宿主默认行为）
 

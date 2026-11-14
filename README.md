@@ -226,3 +226,9 @@ setContent/evaluate/content/screenshot/newPage/page.close/newCDPSession/click
   为假成功，下载按宿主默认行为；精确控制需 chrome.downloads，不在 CDP 层补偿）
 - 扩展下游：heap/CPU profiler 等浏览器级域不可用（chrome.debugger 未开放，
   诚实报错）；agent/Playwright 常规自动化面 ≈95% 覆盖
+- 扩展下游：SW 被 Chrome 回收后 ≤30s 内自动回连续接（会话表持久化 + restore，
+  同 sid 无感）；手动刷新扩展会连 alarms 一起清掉——点一下工具栏图标立即重连
+- 扩展下游：用户点调试横幅「取消」后会话软休眠（无事件、无报错），下一条
+  命令自动重挂（横幅重现）；休眠中 tab 被关则诚实报错
+- v2 设计方向（未实施）：会话句柄层（E 编号 ↔ target 映射）从 SW 迁到 proxy
+  （sid 编码 targetId），扩展退化为无状态适配器，持久化垫片可整体移除
