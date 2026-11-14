@@ -59,3 +59,25 @@ extension 侧会话状态（proxy 同刻清该侧归属并合成销毁事件，c
   顶部有「扩展程序已开始调试此浏览器」横幅（detach 即消）
 - heap/CPU profiler 等浏览器级域不可用（chrome.debugger 未开放）
 - 下载路径解析受限（`page.download()` 事件流动，落盘按宿主默认行为）
+
+## 标签组：组成员 = 会话可见性
+
+会话名下 tab 自动归入 Chrome 原生彩色组 `ab: <会话名>`（proxy 在
+createTarget 夹带 `abSession` 私有参数，扩展消费后剥离；响应回带
+`abGroup` 字段供测试断言）。
+
+| 用户操作（原生） | 扩展/proxy 行为 |
+|---|---|
+| 拖自己的 tab 进组 | 防抖 sync 对账 → proxy `AdoptTarget`（借入：可见+可操作+closeTarget 假成功保护） |
+| 拖出组 / 移除出组 | sync 对账 → `revokeTarget`：合成 detachedFromTarget+targetDestroyed，解除归属，tab 留在用户手里 |
+| 会话 closeTarget 借入 tab | 假成功 + `return` 控制（移出组+detach，可再次拖入） |
+| 会话 release/回收 | 自建 tab 关闭；借入 tab `release` 控制移出组保持打开 |
+
+实现要点（改组语义前必读）：对账是**全量 sync 差分**（事件驱动
+tabs.onUpdated{groupId}/onMoved/tabGroups.* + 0.5min alarm 兜底，300ms 防抖，
+幂等）；入组按会话名串行化（`groupChain`，防 preopen 与 createTarget 并发
+建出同名双组）；组绑定缓存空时按标题重绑（`groupFor`，防 SW 重启后绑定
+悬空导致对账误判全量收回）；SW 存活窗口外事件由 alarm 兜底对账自愈。
+
+**代码更新后**：已安装的未打包扩展不会自动重读磁盘——chrome://extensions
+里点该扩展的刷新按钮（测试环境用全新 profile + load_ext_via_cdp）。

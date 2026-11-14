@@ -185,6 +185,26 @@ tab 挂调试横幅）。响应回带 sessionId、attachedToTarget/detachedFromT
 事件带 browserContextId/targetId、事件先于 setAutoAttach/createTarget 响应
 送达——这些时序/字段细节是 Playwright connectOverCDP 的硬要求，均有测试锁定。
 
+### 标签组：组成员 = 会话可见性
+
+扩展把每个会话的 tab 自动归入 Chrome 原生彩色标签组 `ab: <会话名>`（颜色按
+会话名散列）。用户与 agent 的边界从"逻辑隔离"升级为**可见的物理边界**：
+
+| 用户操作（Chrome 原生） | 语义 |
+|---|---|
+| 把自己的 tab 拖进会话组 | adopt：交给该会话（可见、可操作、**不可真关**） |
+| 把 tab 拖出组 / 从组中移除 | revoke：收回，会话立即失去可见性（合成销毁事件） |
+| 折叠/展开组 | 纯视觉，无协议语义 |
+
+配套保护规则：
+
+- **借用保护**：会话对借入 tab 发 `Target.closeTarget` → 假成功 + 自动归还
+  （合成销毁事件），tab 绝不会被真关——"不弄坏我东西"的硬边界
+- **会话释放**：自建 tab 关闭；借入 tab 移出组、保持打开，回到用户手里
+- **对账自愈**：组成员变化经防抖全量 sync（事件驱动 + alarm 兜底），proxy
+  归属表差分 adopt/revoke，幂等，漏事件可自愈
+- 组绑定按标题重建（SW 重启恢复）；入组按会话名串行化（防并发双组）
+
 ## 已验证（真实 agent-browser 0.36.0）
 
 - 双 session 并发：URL/eval/tab list 完全隔离，互不可见

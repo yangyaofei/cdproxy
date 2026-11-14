@@ -316,8 +316,11 @@ func (p *Proxy) AllocSession(name string) (string, error) {
 	}
 	if preopen {
 		// 仅全新（或改绑）会话预开后台 tab；复用路径沿用既有 tab（避免每次 launch 泄漏一个）
-		if err := p.dsCommand(sess, 0, false, "Target.createTarget",
-			map[string]any{"url": "about:blank", "background": true}, "create"); err != nil {
+		preopenParams := map[string]any{"url": "about:blank", "background": true}
+		if mode == dsExtension {
+			preopenParams["abSession"] = name // 扩展据此归组
+		}
+		if err := p.dsCommand(sess, 0, false, "Target.createTarget", preopenParams, "create"); err != nil {
 			p.log.Error("预开 tab 失败（会话仍可用，首个命令会开新 tab）", "session", name, "err", err)
 		}
 		p.scheduleReap(sess, p.store.Get().AllocReapSeconds)
@@ -325,27 +328,39 @@ func (p *Proxy) AllocSession(name string) (string, error) {
 	return fmt.Sprintf("ws://127.0.0.1:%d/cdp/%s", p.wsPort, sess.Token), nil
 }
 
-// ReleaseSession 释放会话并尽力关闭其名下 tab（fire-and-forget，按会话
-// 绑定的下游发送）。会话身份终点：同时关闭其上游连接——原生等价反应
-// （浏览器消亡连接必断），daemon 立即感知 session 已过期，而不是持有僵尸
-// 连接继续「成功」收发。
+// ReleaseSession 释放会话：非借用 tab 尽力关闭（fire-and-forget，按会话
+// 绑定的下游发送）；借用的归还（保持打开，通知扩展移出会话组）。会话身份
+// 终点：同时关闭其上游连接——原生等价反应（浏览器消亡连接必断），daemon
+// 立即感知 session 已过期，而不是持有僵尸连接继续「成功」收发。
 func (p *Proxy) ReleaseSession(name string) {
 	defer p.ilog.DetachFile(name)
-	sess, targets := p.st.Release(name)
+	sess, targets, adopted := p.st.Release(name)
 	if sess == nil {
 		return
 	}
 	kind := sess.Downstream()
+	adoptedSet := map[string]struct{}{}
+	for _, tid := range adopted {
+		adoptedSet[tid] = struct{}{}
+	}
 	closed := 0
 	for _, tid := range targets {
+		if _, isAdopted := adoptedSet[tid]; isAdopted {
+			continue // 借用 tab 归还，不关
+		}
 		if err := p.dsRaw(kind, "Target.closeTarget", map[string]any{"targetId": tid}); err != nil {
 			p.log.Error("关 tab 失败", "target", tid, "err", err)
 		} else {
 			closed++
 		}
 	}
+	if len(adopted) > 0 {
+		// 归还：扩展把借出 tab 移出会话组（保持打开，回到用户普通 tab 列）
+		p.sendExtControl(map[string]any{"abCtl": "release", "session": name, "adopted": adopted})
+	}
 	if len(targets) > 0 {
-		p.log.Info("会话已释放", "session", name, "tabs_total", len(targets), "tabs_closed", closed)
+		p.log.Info("会话已释放", "session", name, "tabs_total", len(targets),
+			"tabs_closed", closed, "tabs_returned", len(adopted))
 	}
 	if conn := sess.WS(); conn != nil {
 		_ = conn.Close(4401, "session released")
@@ -493,6 +508,22 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 		}
 	}
 
+	// 借用保护：用户交出（adopt）的 tab 不许会话真关——closeTarget 语义降级
+	// 为「归还」：假成功应答 + 合成销毁事件 + 解除归属 + 通知扩展移出会话组。
+	// tab 留在用户手里（这是「不弄坏我东西」的边界）。
+	if method == "Target.closeTarget" {
+		if tid, _ := params["targetId"].(string); tid != "" && p.st.TargetAdopted(tid) {
+			p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
+				UpID: msg["id"], Action: "adopted-guard", In: inSnap,
+				Delta: "假成功 + 归还（borrowed tab 不关闭）", TargetID: tid})
+			p.fakeSuccess(sess, upIDf, hasID, method)
+			p.revokeTarget(sess, tid, "会话关闭借用 tab（转为归还）")
+			// 单 tab 归还（≠会话结束，不拆组绑定，之后仍可再拖入 adopt）
+			p.sendExtControl(map[string]any{"abCtl": "return", "session": sess.Name, "adopted": []string{tid}})
+			return
+		}
+	}
+
 	// setAutoAttach 拦截改写：不透传下游。真浏览器端点会 attach 全部 target
 	// （含他人名下与用户自己的 tab——extension 模式会给用户日常浏览器所有
 	// tab 挂上调试横幅，chrome 模式则破坏多会话隔离）。归属是 proxy 的知识，
@@ -531,6 +562,13 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 	}
 	delta := outcome.Delta
 	action := outcome.Action
+
+	// 扩展下游：createTarget 夹带会话名（私有参数，扩展据此把新 tab 归入
+	// "ab: <会话>" 标签组后剥离，不进 chrome.tabs API）。chrome 下游不带
+	// ——真 Chrome 忽略未知字段，但基座浏览器无需分组（无用户混用场景）。
+	if kind == dsExtension && method == "Target.createTarget" {
+		params["abSession"] = sess.Name
+	}
 
 	// 处理标签（响应到达时做归属/绑定/过滤）
 	var tag string
@@ -871,11 +909,130 @@ func (p *Proxy) onDownstreamMessage(data []byte, kind string) {
 	if err := json.Unmarshal(data, &msg); err != nil || msg == nil {
 		return
 	}
+	if kind == dsExtension {
+		if _, ok := msg["abCtl"]; ok {
+			p.onExtControl(msg)
+			return
+		}
+	}
 	if _, ok := msg["id"]; ok {
 		p.onDsResponse(msg)
 	} else if _, ok := msg["method"]; ok {
 		p.onDsEvent(msg, kind)
 	}
+}
+
+// ── 扩展控制通道（标签组 adopt / revoke）─────────────────────────
+//
+// 用户交互面是 Chrome 原生标签组：扩展把会话名下的 tab 归入 "ab: <会话>"
+// 组；用户把 tab 拖进组 = adopt（交给该会话），拖出组 = revoke（收回）。
+// 扩展监听组成员变化，经 /ext WS 发控制消息到这里；代理保持归属表为唯一
+// 路由事实，组只是用户侧的编辑表面。
+
+// sendExtControl 向扩展下游发一条控制消息（非 CDP 帧，abCtl 键区分）。
+func (p *Proxy) sendExtControl(v map[string]any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	if err := p.dsSend(dsExtension, data); err != nil {
+		p.log.Warn("扩展控制消息发送失败", "ctl", v["abCtl"], "err", err)
+	}
+}
+
+// onExtControl 扩展发来的控制消息分发。
+func (p *Proxy) onExtControl(msg map[string]any) {
+	ctl, _ := msg["abCtl"].(string)
+	switch ctl {
+	case "sync":
+		p.onExtSync(msg)
+	default:
+		p.log.Warn("未知扩展控制消息", "abCtl", ctl)
+	}
+}
+
+// onExtSync 组成员全量对账：扩展定期/事件驱动上报每个会话组的当前成员
+// （用户拖进拖出组是唯一变化来源，Chrome 原生操作面）。代理以归属表为
+// 事实做差分：组内多出的 → adopt（借入，closeTarget 保护）；组内少了的 →
+// revoke（收回可见性，合成销毁事件，tab 留在用户手里）。幂等：无差分时
+// 无动作，反复 sync 无副作用。
+func (p *Proxy) onExtSync(msg map[string]any) {
+	name, _ := msg["session"].(string)
+	sess := p.st.FindByName(name)
+	if sess == nil || sess.Downstream() != dsExtension {
+		return // 会话已结束（release 控制消息另行通知扩展清组）
+	}
+	desired := map[string]struct{}{}
+	for _, tid := range asStringSlice(msg["targetIds"]) {
+		desired[tid] = struct{}{}
+	}
+	// 1) 组内少了 → 收回
+	for _, tid := range sess.OwnedTargets() {
+		if _, in := desired[tid]; !in {
+			p.revokeTarget(sess, tid, "用户移出会话组")
+		}
+	}
+	// 2) 组内多出 → 借入（已属其他会话的拒绝——组间转移由上一步 revoke 先行）
+	var adopted, denied []string
+	for tid := range desired {
+		owner := p.st.OwnerOf(tid)
+		if owner == sess {
+			continue
+		}
+		if owner != nil {
+			denied = append(denied, tid)
+			continue
+		}
+		p.st.AdoptTarget(sess, tid)
+		adopted = append(adopted, tid)
+	}
+	if len(adopted) > 0 || len(denied) > 0 {
+		p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: name,
+			Method: "abCtl.sync", Action: "group-diff",
+			Detail: fmt.Sprintf("adopted=%d revoked-auto denied=%d", len(adopted), len(denied))})
+		p.log.Info("会话组对账", "session", name, "adopted", len(adopted), "denied", len(denied))
+		if len(denied) > 0 {
+			p.sendExtControl(map[string]any{"abCtl": "adoptDenied", "session": name, "targetIds": denied})
+		}
+	}
+}
+
+// revokeTarget 收回一个 target 的可见性：向持有会话合成原生等价事件
+// （detachedFromTarget×其名下全部下游会话 + targetDestroyed），解除归属。
+// tab 本身不动（已回到用户手里）。
+func (p *Proxy) revokeTarget(sess *state.Session, targetID string, reason string) {
+	for _, sid := range p.st.SidsOfTarget(targetID) {
+		p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
+			Method: "Target.detachedFromTarget", Action: "synthetic",
+			Detail: reason, TargetID: targetID})
+		p.sendTo(sess, map[string]any{
+			"method": "Target.detachedFromTarget",
+			"params": map[string]any{"sessionId": sid, "targetId": targetID},
+		})
+	}
+	p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
+		Method: "Target.targetDestroyed", Action: "synthetic",
+		TargetID: targetID, Detail: reason})
+	p.sendTo(sess, map[string]any{
+		"method": "Target.targetDestroyed",
+		"params": map[string]any{"targetId": targetID},
+	})
+	p.st.DropTarget(targetID)
+}
+
+// asStringSlice JSON any → []string。
+func asStringSlice(v any) []string {
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // onDsResponse 响应：取回 pending → tag 加工 → 回传原 session 原始 id。
@@ -909,7 +1066,7 @@ func (p *Proxy) onDsResponse(msg map[string]any) {
 		}
 	case "attach":
 		if sid, _ := result["sessionId"].(string); sid != "" {
-			p.st.BindDsSession(entry.Sess, sid)
+			p.st.BindDsSession(entry.Sess, sid, "")
 		}
 	case "gettargets":
 		if infos, ok := result["targetInfos"].([]any); ok {
@@ -980,7 +1137,7 @@ func (p *Proxy) onDsEvent(msg map[string]any, kind string) {
 		tid, _ := ti["targetId"].(string)
 		sid, _ := params["sessionId"].(string)
 		if owner := p.st.OwnerOf(tid); owner != nil && owner.Downstream() == kind && sid != "" {
-			p.st.BindDsSession(owner, sid)
+			p.st.BindDsSession(owner, sid, tid)
 			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: owner.Name,
 				Method: method, Action: "routed", TargetID: tid, In: interlog.Safe(ti)})
 			p.sendTo(owner, msg)

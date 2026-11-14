@@ -32,9 +32,111 @@ const DEFAULT_TOKEN = "dev";
 const HEARTBEAT_MS = 20_000; // 同时是 SW 保活间隔（须 <30s）
 const ATTACH_STORAGE_KEY = "cdpExtAttachedTargets"; // chrome.storage.session
 
+// ── 标签组（可见性 = 组成员）─────────────────────────────────────
+// 每个会话一个 "ab: <session>" 彩色组：扩展创建的 tab 自动入组；用户把
+// 自己的 tab 拖进组 = 交给该会话，拖出 = 收回。组成员变化经 sync 控制消息
+// 与 proxy 归属表对账（幂等，事件驱动 + alarm 兜底，漏事件可自愈）。
+const GROUP_PREFIX = "ab: ";
+const GROUP_COLORS = ["red", "yellow", "green", "cyan", "blue", "purple", "pink", "orange"];
+let reconcileTimer = null;
+
+function groupColorFor(name) {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return GROUP_COLORS[h % GROUP_COLORS.length];
+}
+
+// SW 重启后组表重建：按标题前缀识别会话组（标题是稳定契约）
+async function rebuildGroupMaps() {
+  try {
+    const groups = await chrome.tabGroups.query({});
+    for (const g of groups) {
+      if (g.title && g.title.startsWith(GROUP_PREFIX)) {
+        sessionGroups.set(g.title.slice(GROUP_PREFIX.length), g.id);
+      }
+    }
+  } catch { /* tabGroups 权限缺失等，静默降级为不分组 */ }
+}
+
+async function addToGroupInner(sessionName, tabId) {
+  try {
+    let groupId = sessionGroups.get(sessionName);
+    if (groupId === undefined) {
+      // 缓存缺失（SW 被 MV3 重启过）：按标题找回既有组，防重复建组
+      const found = await chrome.tabGroups.query({ title: GROUP_PREFIX + sessionName });
+      if (found.length) {
+        groupId = found[0].id;
+        // 并发竞态残留的同名空组：把残留组里的 tab 并回第一个组（组空后
+        // Chrome 自动清理），保证一会话一组
+        if (found.length > 1) {
+          for (const g of found.slice(1)) {
+            const stray = await chrome.tabs.query({ groupId: g.id });
+            if (stray.length) {
+              await chrome.tabs.group({ tabIds: stray.map((t) => t.id), groupId });
+            }
+          }
+        }
+      }
+    }
+    if (groupId !== undefined) {
+      await chrome.tabs.group({ tabIds: [tabId], groupId });
+      sessionGroups.set(sessionName, groupId);
+      return;
+    }
+    const tab = await chrome.tabs.get(tabId);
+    groupId = await chrome.tabs.group({
+      tabIds: [tabId],
+      createProperties: { windowId: tab.windowId },
+    });
+    await chrome.tabGroups.update(groupId, {
+      title: GROUP_PREFIX + sessionName,
+      color: groupColorFor(sessionName),
+    });
+    sessionGroups.set(sessionName, groupId);
+  } catch (e) {
+    console.warn("[cdp-ext] 入组失败（不影响功能，仅无视觉分组）", sessionName, e);
+  }
+}
+
+// addToGroup 按会话名串行化：preopen（fire-and-forget）与客户端 createTarget
+// 可能并发入组，缓存检查→建组是多步异步，不串行会各建一个组（同名双组，
+// sessionGroups 绑到空组 → 对账永远查不到成员）。
+const groupChain = new Map(); // 会话名 → 进行中的入组 Promise
+function addToGroup(sessionName, tabId) {
+  const run = (groupChain.get(sessionName) || Promise.resolve())
+    .catch(() => {})
+    .then(() => addToGroupInner(sessionName, tabId));
+  groupChain.set(sessionName, run);
+  run.finally(() => {
+    if (groupChain.get(sessionName) === run) groupChain.delete(sessionName);
+  });
+  return run;
+}
+
+// groupFor 会话组解析（reconcile 用）：优先缓存绑定；缓存组已空时按标题
+// 重绑（防历史竞态/用户删组后重建导致的空绑定——空绑定会让对账误判全量
+// 收回）。
+async function groupFor(sessionName) {
+  const cached = sessionGroups.get(sessionName);
+  if (cached !== undefined) {
+    const inG = await chrome.tabs.query({ groupId: cached });
+    if (inG.length) return cached;
+  }
+  const byTitle = await chrome.tabGroups.query({ title: GROUP_PREFIX + sessionName });
+  for (const g of byTitle) {
+    const ts = await chrome.tabs.query({ groupId: g.id });
+    if (ts.length) {
+      sessionGroups.set(sessionName, g.id);
+      return g.id;
+    }
+  }
+  return undefined;
+}
+
 let ws = null;
 let backoffMs = 500;
 let heartbeatTimer = null;
+const sessionGroups = new Map(); // 会话名 → groupId（SW 重启按组标题重建）
 
 // ── 会话表 ─────────────────────────────────────────────────────────
 // ourSid → 会话；root 键（targetId）与 childDsSid 各有反向索引。
@@ -112,6 +214,8 @@ function connect() {
       backoffMs = 500;
       console.info("[cdp-ext] 已连上 proxy:", url);
       await resetState();
+      await rebuildGroupMaps();
+      scheduleReconcile(0);
       startHeartbeat();
     };
     sock.onmessage = (ev) => {
@@ -121,7 +225,8 @@ function connect() {
       } catch {
         return;
       }
-      if (msg && msg.id !== undefined) onCommand(msg);
+      if (msg && msg.id !== undefined) return onCommand(msg);
+      if (msg && msg.abCtl !== undefined) return onControl(msg);
     };
     sock.onclose = () => {
       if (ws !== sock) return;
@@ -138,6 +243,67 @@ function connect() {
 
 function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+// ── 组对账（sync 控制消息）────────────────────────────────────────
+// 组成员 = 会话可见集。浏览器侧 tabs/tabGroups 事件驱动 + alarm 兜底，
+// 防抖合并后把每个会话组的当前成员全量上报，proxy 差分 adopt/revoke。
+
+function scheduleReconcile(delayMs = 300) {
+  if (reconcileTimer !== null) clearTimeout(reconcileTimer);
+  reconcileTimer = setTimeout(async () => {
+    reconcileTimer = null;
+    if (!ws || ws.readyState !== WebSocket.OPEN || sessionGroups.size === 0) return;
+    try {
+      await refreshTargets();
+      for (const [sessionName] of sessionGroups) {
+        const groupId = await groupFor(sessionName);
+        if (groupId === undefined) continue;
+        const tabs = await chrome.tabs.query({ groupId });
+        const targetIds = tabs
+          .map((t) => (targetByTab.get(t.id) || {}).targetId)
+          .filter(Boolean);
+        send({ abCtl: "sync", session: sessionName, targetIds });
+      }
+    } catch (e) {
+      console.warn("[cdp-ext] 组对账失败", e);
+    }
+  }, delayMs);
+}
+
+// onControl proxy → 扩展的控制消息。
+async function onControl(msg) {
+  switch (msg.abCtl) {
+    case "return": {
+      // 单个借出 tab 归还（会话仍活着）：移出会话组 + 清该 target 的虚拟
+      // 会话与物理 attach；组绑定保留（用户可再次拖入 adopt）
+      await ungroupAdopted(msg.adopted || []);
+      for (const tid of msg.adopted || []) await dropTarget(tid);
+      break;
+    }
+    case "release": {
+      // 会话结束：借出的 tab 移出组（保持打开，归还用户）；扩展侧清理
+      // 这些 target 的虚拟会话与物理 attach（proxy 已向会话合成销毁事件）
+      await ungroupAdopted(msg.adopted || []);
+      for (const tid of msg.adopted || []) await dropTarget(tid);
+      sessionGroups.delete(msg.session);
+      break;
+    }
+    case "adoptDenied":
+      // 已属其他会话却出现在本组（理论少见：组间转移的正常路径是先 revoke）
+      console.warn("[cdp-ext] adopt 被拒（tab 属其他会话）", msg.targetIds);
+      break;
+  }
+}
+
+// ungroupAdopted 把借出 tab 移出会话组（tab 保持打开，回到用户普通 tab 列）。
+async function ungroupAdopted(targetIds) {
+  const tabIds = targetIds
+    .map((tid) => tabByTarget.get(tid))
+    .filter((x) => x !== undefined);
+  if (tabIds.length) {
+    try { await chrome.tabs.ungroup(tabIds); } catch { /* tab 已关等 */ }
+  }
 }
 
 function startHeartbeat() {
@@ -160,6 +326,7 @@ async function resetState() {
   idEcho.clear();
   rootAutoAttach = false;
   sidSeq = 0;
+  sessionGroups.clear(); // 组映射随后 rebuildGroupMaps() 按浏览器现状重建
   await refreshTargets();
   const got = await chrome.storage.session.get(ATTACH_STORAGE_KEY);
   const attachedList = got[ATTACH_STORAGE_KEY] || [];
@@ -243,6 +410,7 @@ async function onRootCommand(id, method, params) {
       return;
     }
     case "Target.createTarget": {
+      const sessionName = params.abSession || null; // proxy 夹带的会话名（私有参数）
       const tab = await chrome.tabs.create({
         url: params.url || "about:blank",
         active: !params.background,
@@ -257,7 +425,12 @@ async function onRootCommand(id, method, params) {
         targetId = (targetByTab.get(tab.id) || {}).targetId;
       }
       if (!targetId) return respondErr(id, "cdp-ext: 新 tab 的 targetId 解析超时");
-      respond(id, { targetId });
+      if (sessionName) {
+        await addToGroup(sessionName, tab.id);
+        respond(id, { targetId, abGroup: GROUP_PREFIX + sessionName });
+      } else {
+        respond(id, { targetId });
+      }
       if (rootAutoAttach) await attachTarget(targetId);
       return;
     }
@@ -577,6 +750,7 @@ chrome.tabs.onCreated.addListener((tab) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.groupId !== undefined || changeInfo.windowId !== undefined) scheduleReconcile();
   const entry = targetByTab.get(tabId);
   if (!entry) return;
   if (changeInfo.url) entry.url = changeInfo.url;
@@ -598,6 +772,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   const entry = targetByTab.get(tabId);
+  scheduleReconcile();
   if (!entry) return;
   targetByTab.delete(tabId);
   tabByTarget.delete(entry.targetId);
@@ -606,11 +781,23 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   });
 });
 
+// 组成员变化的原生入口：拖入/拖出组、跨窗口移动、组更名/解散
+chrome.tabs.onMoved.addListener(() => scheduleReconcile());
+chrome.tabs.onDetached.addListener(() => scheduleReconcile());
+chrome.tabs.onAttached.addListener(() => scheduleReconcile());
+if (chrome.tabGroups) {
+  chrome.tabGroups.onUpdated.addListener(() => scheduleReconcile());
+  chrome.tabGroups.onRemoved.addListener(() => scheduleReconcile());
+}
+
 // ── 生命周期入口 ────────────────────────────────────────────────────
 
 chrome.alarms.create("cdp-ext-keepalive", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "cdp-ext-keepalive" && !ws) connect();
+  if (alarm.name === "cdp-ext-keepalive") {
+    if (!ws) connect();
+    scheduleReconcile(0); // 兜底对账（SW 沉睡期间的变化自愈）
+  }
 });
 
 chrome.runtime.onStartup.addListener(connect);

@@ -75,7 +75,7 @@ func TestReleaseReturnsTargetsAndCleans(t *testing.T) {
 	s := alloc(t, st, "a")
 	st.OwnTarget(s, "t1")
 	st.OwnTarget(s, "t2")
-	sess, targets := st.Release("a")
+	sess, targets, _ := st.Release("a")
 	if sess == nil || sess.Name != "a" {
 		t.Fatalf("期望返回原 session，实际 %v", sess)
 	}
@@ -96,8 +96,8 @@ func TestClearOwnershipReturnsSnapshot(t *testing.T) {
 	b := alloc(t, st, "b")
 	st.OwnTarget(a, "ta")
 	st.OwnTarget(b, "tb")
-	st.BindDsSession(a, "dsa")
-	st.BindDsSession(b, "dsb")
+	st.BindDsSession(a, "dsa", "")
+	st.BindDsSession(b, "dsb", "")
 	owned, bound := st.ClearOwnershipFor("chrome")
 	if len(owned[a]) != 1 || owned[a][0] != "ta" {
 		t.Fatalf("期望 owned[a]=[ta]，实际 %v", owned[a])
@@ -119,8 +119,8 @@ func TestClearOwnershipForOnlyTouchesKind(t *testing.T) {
 	ext, _ := st.Alloc("ext", "t-ext", "extension")
 	st.OwnTarget(chr, "t-chrome-tab")
 	st.OwnTarget(ext, "t-ext-tab")
-	st.BindDsSession(chr, "ds-chrome")
-	st.BindDsSession(ext, "ds-ext")
+	st.BindDsSession(chr, "ds-chrome", "")
+	st.BindDsSession(ext, "ds-ext", "")
 
 	owned, bound := st.ClearOwnershipFor("extension")
 	if len(owned) != 1 || len(owned[ext]) != 1 || owned[ext][0] != "t-ext-tab" {
@@ -137,15 +137,45 @@ func TestClearOwnershipForOnlyTouchesKind(t *testing.T) {
 	}
 }
 
-func TestDetachSessionTargetsAndDownstreamBinding(t *testing.T) {
+func TestAdoptRevokeAndBorrowedRelease(t *testing.T) {
 	st := New()
+	a, _ := st.Alloc("a", "t-a", "extension")
+	// 创建的 tab 与借用的 tab
+	st.OwnTarget(a, "created-1")
+	st.AdoptTarget(a, "borrowed-1")
+	if !st.TargetAdopted("borrowed-1") || st.TargetAdopted("created-1") {
+		t.Fatal("adopted 标记错误")
+	}
+	// sid→target 追踪：revoke 反查依据
+	st.BindDsSession(a, "ds-b1", "borrowed-1")
+	sids := st.SidsOfTarget("borrowed-1")
+	if len(sids) != 1 || sids[0] != "ds-b1" {
+		t.Fatalf("SidsOfTarget 应返回 [ds-b1]，实际 %v", sids)
+	}
+	// release 返回全集 + adopted 子集（调用方关 created、归还 borrowed）
+	_, targets, adopted := st.Release("a")
+	if len(targets) != 2 || len(adopted) != 1 || adopted[0] != "borrowed-1" {
+		t.Fatalf("release 快照错误: targets=%v adopted=%v", targets, adopted)
+	}
+	// DropTarget 清 sid 关联
+	st2 := New()
+	b, _ := st2.Alloc("b", "t-b", "extension")
+	st2.AdoptTarget(b, "x")
+	st2.BindDsSession(b, "ds-x", "x")
+	st2.DropTarget("x")
+	if len(st2.SidsOfTarget("x")) != 0 || st2.OwnerOf("x") != nil {
+		t.Fatal("DropTarget 应清归属与 sid 关联")
+	}
+}
+
+func TestDetachSessionTargetsAndDownstreamBinding(t *testing.T) {	st := New()
 	a, _ := st.Alloc("a", "t-a", "chrome")
 	if a.Downstream() != "chrome" {
 		t.Fatalf("期望下游绑定 chrome，实际 %s", a.Downstream())
 	}
 	st.OwnTarget(a, "t1")
 	st.OwnTarget(a, "t2")
-	st.BindDsSession(a, "ds1")
+	st.BindDsSession(a, "ds1", "")
 	tids, sids := st.DetachSessionTargets(a)
 	if len(tids) != 2 || len(sids) != 1 {
 		t.Fatalf("期望 detach 2 target + 1 session，实际 %d/%d", len(tids), len(sids))
@@ -160,7 +190,7 @@ func TestDetachSessionTargetsAndDownstreamBinding(t *testing.T) {
 }
 
 func TestReleaseUnknownNameIsNoop(t *testing.T) {
-	if sess, targets := New().Release("ghost"); sess != nil || targets != nil {
+	if sess, targets, _ := New().Release("ghost"); sess != nil || targets != nil {
 		t.Fatal("未知名应为 no-op")
 	}
 }
@@ -181,7 +211,7 @@ func TestOwnership(t *testing.T) {
 func TestDsSessionBinding(t *testing.T) {
 	st := New()
 	s := alloc(t, st, "a")
-	st.BindDsSession(s, "sid-1")
+	st.BindDsSession(s, "sid-1", "")
 	if st.SessionOfDs("sid-1") != s {
 		t.Fatal("绑定/查询失败")
 	}
@@ -194,7 +224,7 @@ func TestDsSessionBinding(t *testing.T) {
 func TestReleaseClearsDsBindings(t *testing.T) {
 	st := New()
 	s := alloc(t, st, "a")
-	st.BindDsSession(s, "sid-1")
+	st.BindDsSession(s, "sid-1", "")
 	st.Release("a")
 	if st.SessionOfDs("sid-1") != nil {
 		t.Fatal("释放应清除 ds 绑定")

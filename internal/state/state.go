@@ -27,6 +27,7 @@ type Session struct {
 
 	mu            sync.Mutex // 守护以下字段
 	ownedTargets  map[string]struct{}
+	adopted       map[string]struct{} // 用户交出（adopt）的 tab：release 时归还而非关闭
 	connected     bool
 	ws            *websocket.Conn
 	autoAttach    bool   // root 级 Target.setAutoAttach(autoAttach=true) 已启用
@@ -135,6 +136,7 @@ type State struct {
 	byToken    map[string]*Session          // token → session
 	targetOwn  map[string]*Session          // targetId → session
 	dsSession  map[string]*Session          // 下游 sessionId → session
+	sidTarget  map[string]string            // 下游 sessionId → targetId（revoke 反查）
 	pending    map[int64]PendingEntry       // 下游命令 id → 关联
 }
 
@@ -145,6 +147,7 @@ func New() *State {
 		byToken:   map[string]*Session{},
 		targetOwn: map[string]*Session{},
 		dsSession: map[string]*Session{},
+		sidTarget: map[string]string{},
 		pending:   map[int64]PendingEntry{},
 	}
 }
@@ -161,25 +164,31 @@ func (st *State) Alloc(name string, token string, downstream string) (*Session, 
 	if existing, ok := st.sessions[name]; ok {
 		return existing, false
 	}
-	sess := &Session{Name: name, Token: token, ownedTargets: map[string]struct{}{}, downstream: downstream}
+	sess := &Session{Name: name, Token: token,
+		ownedTargets: map[string]struct{}{}, adopted: map[string]struct{}{}, downstream: downstream}
 	st.sessions[name] = sess
 	st.byToken[token] = sess
 	return sess, true
 }
 
-// Release 释放 session，返回 session（不存在则 nil）与其名下 target 列表。
-// 调用方负责关 tab 与关闭其上游连接（原生等价：浏览器消亡连接必断，
-// 否则 daemon 持僵尸连接继续收发，表现为释放后仍可用）。
-func (st *State) Release(name string) (*Session, []string) {
+// Release 释放 session，返回 session（不存在则 nil）、名下 target 列表与
+// 其中借用（adopted）子集。调用方负责：非借用的关 tab、借用的归还（保持
+// 打开）+ 关闭其上游连接（原生等价：浏览器消亡连接必断，否则 daemon 持
+// 僵尸连接继续收发，表现为释放后仍可用）。
+func (st *State) Release(name string) (*Session, []string, []string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	sess, ok := st.sessions[name]
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
 	targets := sess.OwnedTargets()
+	adopted := make([]string, 0, len(sess.adopted))
+	for tid := range sess.adopted {
+		adopted = append(adopted, tid)
+	}
 	st.drop(sess)
-	return sess, targets
+	return sess, targets, adopted
 }
 
 // drop 摘除 session 并清理全部关联（调用方持锁）。
@@ -190,9 +199,11 @@ func (st *State) drop(sess *Session) {
 		delete(st.targetOwn, tid)
 	}
 	sess.ownedTargets = map[string]struct{}{}
+	sess.adopted = map[string]struct{}{}
 	for sid, s := range st.dsSession {
 		if s == sess {
 			delete(st.dsSession, sid)
+			delete(st.sidTarget, sid)
 		}
 	}
 }
@@ -209,6 +220,13 @@ func (st *State) FindByToken(token string) *Session {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return st.byToken[token]
+}
+
+// FindByName 按会话名定位 session（扩展控制通道用）。
+func (st *State) FindByName(name string) *Session {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.sessions[name]
 }
 
 // IsCurrent 该 session 是否仍是同名注册者（防旧实例误触发回收）。
@@ -243,6 +261,7 @@ func (st *State) ClearOwnershipFor(kind string) (owned map[*Session][]string, bo
 		}
 		bound[sess] = append(bound[sess], sid)
 		delete(st.dsSession, sid)
+		delete(st.sidTarget, sid)
 	}
 	return owned, bound
 }
@@ -257,10 +276,12 @@ func (st *State) DetachSessionTargets(sess *Session) (tids []string, sids []stri
 		delete(st.targetOwn, tid)
 	}
 	sess.ownedTargets = map[string]struct{}{}
+	sess.adopted = map[string]struct{}{}
 	for sid, s := range st.dsSession {
 		if s == sess {
 			sids = append(sids, sid)
 			delete(st.dsSession, sid)
+			delete(st.sidTarget, sid)
 		}
 	}
 	return tids, sids
@@ -272,6 +293,28 @@ func (st *State) OwnTarget(sess *Session, targetID string) {
 	defer st.mu.Unlock()
 	sess.ownedTargets[targetID] = struct{}{}
 	st.targetOwn[targetID] = sess
+}
+
+// AdoptTarget 登记用户交出（adopt）的 tab：归属 + 借用标记（release 时
+// 归还而非关闭）。
+func (st *State) AdoptTarget(sess *Session, targetID string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	sess.ownedTargets[targetID] = struct{}{}
+	sess.adopted[targetID] = struct{}{}
+	st.targetOwn[targetID] = sess
+}
+
+// TargetAdopted 该 tab 是否为用户借出（closeTarget 保护判定用）。
+func (st *State) TargetAdopted(targetID string) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	sess, ok := st.targetOwn[targetID]
+	if !ok {
+		return false
+	}
+	_, adopted := sess.adopted[targetID]
+	return adopted
 }
 
 // OwnerOf 查询 tab 归属。
@@ -287,15 +330,26 @@ func (st *State) DropTarget(targetID string) {
 	defer st.mu.Unlock()
 	if sess, ok := st.targetOwn[targetID]; ok {
 		delete(sess.ownedTargets, targetID)
+		delete(sess.adopted, targetID)
 		delete(st.targetOwn, targetID)
+	}
+	for sid, tid := range st.sidTarget {
+		if tid == targetID {
+			delete(st.sidTarget, sid)
+		}
 	}
 }
 
-// BindDsSession 绑定下游 attach sessionId → session（事件路由依据）。
-func (st *State) BindDsSession(sess *Session, dsSessionID string) {
+// BindDsSession 绑定下游 attach sessionId → session（事件路由依据），
+// 同时记录 sessionId → targetId（revoke 时反查该 tab 的全部下游会话）。
+// targetId 可为空（响应路径无 tid 时），事件路径会带上补全。
+func (st *State) BindDsSession(sess *Session, dsSessionID string, targetID string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.dsSession[dsSessionID] = sess
+	if targetID != "" {
+		st.sidTarget[dsSessionID] = targetID
+	}
 }
 
 // SessionOfDs 下游 sessionId → session（事件路由查询）。
@@ -305,11 +359,25 @@ func (st *State) SessionOfDs(dsSessionID string) *Session {
 	return st.dsSession[dsSessionID]
 }
 
+// SidsOfTarget 该 target 名下的全部下游 sessionId（revoke 合成事件用）。
+func (st *State) SidsOfTarget(targetID string) []string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	var out []string
+	for sid, tid := range st.sidTarget {
+		if tid == targetID {
+			out = append(out, sid)
+		}
+	}
+	return out
+}
+
 // UnbindDsSession 下游 session 拆除（detachedFromTarget 事件）。
 func (st *State) UnbindDsSession(dsSessionID string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	delete(st.dsSession, dsSessionID)
+	delete(st.sidTarget, dsSessionID)
 }
 
 // NextDsID 登记一条上游命令，返回重映射后的下游 id。
