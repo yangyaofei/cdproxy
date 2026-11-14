@@ -82,9 +82,11 @@ type Proxy struct {
 	mu       sync.Mutex // 双下游链路生命周期
 	chrome   *dsLink    // keeper 基座链路（按需建立）
 	ext      *dsLink    // cdp-ext 扩展链路（回连采纳，常开待命）
-	// extAdoptGen 扩展采纳代次：每次采纳 +1；restore 到达也 +1（作废待定的
-	// 延迟清账）。采纳后延迟清账的计时器以自己看到的代次为凭，代次已变则放弃。
-	extAdoptGen uint64
+	// extAdoptGen 扩展采纳代次：每次采纳 +1；gstate/restore 到达也 +1（作废
+	// 待定的兜底计时器）。采纳后兜底计时器以自己看到的代次为凭，代次已变则放弃。
+	// extGstateSeen 本次采纳周期内是否收到过组事实（gstate）。
+	extAdoptGen  uint64
+	extGstateSeen bool
 
 	server *http.Server
 }
@@ -318,6 +320,21 @@ func (p *Proxy) AllocSession(name string) (string, error) {
 		}
 	}
 	if preopen {
+		// 组在即领地：认领同名旧组的成员（扩展保留策略下 release 未删组，
+		// 或组事实先于会话到达）。认领到成员则无需再预开 tab。
+		if mode == dsExtension {
+			if tids := p.st.PendingGroupClaim(name); len(tids) > 0 {
+				for _, tid := range tids {
+					p.st.OwnTarget(sess, tid)
+				}
+				preopen = false
+				p.log.Info("认领既有会话组（组在即领地）", "session", name, "targets", len(tids))
+				p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: name,
+					Method: "AllocSession", Action: "group-claim", Detail: fmt.Sprintf("targets=%d", len(tids))})
+			}
+		}
+	}
+	if preopen {
 		// 仅全新（或改绑）会话预开后台 tab；复用路径沿用既有 tab（避免每次 launch 泄漏一个）
 		preopenParams := map[string]any{"url": "about:blank", "background": true}
 		if mode == dsExtension {
@@ -337,33 +354,27 @@ func (p *Proxy) AllocSession(name string) (string, error) {
 // 立即感知 session 已过期，而不是持有僵尸连接继续「成功」收发。
 func (p *Proxy) ReleaseSession(name string) {
 	defer p.ilog.DetachFile(name)
-	sess, targets, adopted := p.st.Release(name)
+	sess, targets := p.st.Release(name)
 	if sess == nil {
 		return
 	}
 	kind := sess.Downstream()
-	adoptedSet := map[string]struct{}{}
-	for _, tid := range adopted {
-		adoptedSet[tid] = struct{}{}
-	}
-	closed := 0
-	for _, tid := range targets {
-		if _, isAdopted := adoptedSet[tid]; isAdopted {
-			continue // 借用 tab 归还，不关
+	if kind == dsExtension {
+		// 组模型：tab 处置归扩展的 release 策略（配置在扩展上：全关+删组 /
+		// 保留+标记 / 保留）。proxy 只通知会话结束——组在即领地在，保留
+		// 策略下的旧组会在下次同名 alloc 时经 gstate 认领。
+		p.sendExtControl(map[string]any{"abCtl": "release", "session": name})
+		p.log.Info("会话已释放（处置交扩展策略）", "session", name, "targets", len(targets))
+	} else {
+		closed := 0
+		for _, tid := range targets {
+			if err := p.dsRaw(kind, "Target.closeTarget", map[string]any{"targetId": tid}); err != nil {
+				p.log.Error("关 tab 失败", "target", tid, "err", err)
+			} else {
+				closed++
+			}
 		}
-		if err := p.dsRaw(kind, "Target.closeTarget", map[string]any{"targetId": tid}); err != nil {
-			p.log.Error("关 tab 失败", "target", tid, "err", err)
-		} else {
-			closed++
-		}
-	}
-	if len(adopted) > 0 {
-		// 归还：扩展把借出 tab 移出会话组（保持打开，回到用户普通 tab 列）
-		p.sendExtControl(map[string]any{"abCtl": "release", "session": name, "adopted": adopted})
-	}
-	if len(targets) > 0 {
-		p.log.Info("会话已释放", "session", name, "tabs_total", len(targets),
-			"tabs_closed", closed, "tabs_returned", len(adopted))
+		p.log.Info("会话已释放", "session", name, "tabs_total", len(targets), "tabs_closed", closed)
 	}
 	if conn := sess.WS(); conn != nil {
 		_ = conn.Close(4401, "session released")
@@ -508,22 +519,6 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 				p.reject(sess, upIDf, hasID, fmt.Sprintf("target %s 属于其他 session，禁止操作", tid))
 				return
 			}
-		}
-	}
-
-	// 借用保护：用户交出（adopt）的 tab 不许会话真关——closeTarget 语义降级
-	// 为「归还」：假成功应答 + 合成销毁事件 + 解除归属 + 通知扩展移出会话组。
-	// tab 留在用户手里（这是「不弄坏我东西」的边界）。
-	if method == "Target.closeTarget" {
-		if tid, _ := params["targetId"].(string); tid != "" && p.st.TargetAdopted(tid) {
-			p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
-				UpID: msg["id"], Action: "adopted-guard", In: inSnap,
-				Delta: "假成功 + 归还（borrowed tab 不关闭）", TargetID: tid})
-			p.fakeSuccess(sess, upIDf, hasID, method)
-			p.revokeTarget(sess, tid, "会话关闭借用 tab（转为归还）")
-			// 单 tab 归还（≠会话结束，不拆组绑定，之后仍可再拖入 adopt）
-			p.sendExtControl(map[string]any{"abCtl": "return", "session": sess.Name, "adopted": []string{tid}})
-			return
 		}
 	}
 
@@ -681,24 +676,26 @@ func (p *Proxy) handleExtension(w http.ResponseWriter, r *http.Request) {
 	if old != nil {
 		_ = old.conn.Close(websocket.StatusGoingAway, "superseded by new extension connection")
 	}
-	// 采纳后不立即清账：扩展可能是 SW 世代延续（会话表经 chrome.storage.session
-	// 持久化，重连即发 restore 续接）。给 2s 窗口——窗口内收到 restore 则跳过
-	// 清归属（见 onExtRestore）；超时未到才是真正的冷启动（浏览器重启/新装），
-	// 清 extension 归属并合成销毁，双方状态一致。
+	// 采纳后不立即清账：新协议下扩展回连必先上报全量组事实（gstate），proxy
+	// 据此重建归属投影（组在即领地，冷启动不再制造孤儿）。给 2s 窗口——
+	// 窗口内收到 gstate 则作废计时器；超时未到视为旧版扩展（无 gstate 协议），
+	// 回退旧语义：清 extension 归属并合成销毁，双方状态一致。
 	p.mu.Lock()
 	p.extAdoptGen++
+	p.extGstateSeen = false
 	gen := p.extAdoptGen
 	p.mu.Unlock()
 	time.AfterFunc(2*time.Second, func() {
 		p.mu.Lock()
 		stale := p.extAdoptGen != gen
+		seen := p.extGstateSeen
 		p.mu.Unlock()
-		if stale {
-			return // restore 已续接，或已被更新的采纳取代
+		if stale || seen {
+			return // gstate 已重建，或已被更新的采纳取代
 		}
 		owned, bound := p.st.ClearOwnershipFor(dsExtension)
 		p.notifyOwnershipCleared(owned, bound)
-		p.log.Info("扩展冷启动确认（无 restore），extension 归属已清")
+		p.log.Info("扩展无 gstate 上报（旧版扩展），回退清归属")
 	})
 	go p.pingLoop(r.Context(), conn, 20*time.Second)
 	p.log.Info("扩展已回连（成为 extension 下游）")
@@ -966,6 +963,8 @@ func (p *Proxy) onExtControl(msg map[string]any) {
 	switch ctl {
 	case "sync":
 		p.onExtSync(msg)
+	case "gstate":
+		p.onExtGstate(msg)
 	case "restore":
 		p.onExtRestore(msg)
 	default:
@@ -989,50 +988,100 @@ func (p *Proxy) onExtRestore(msg map[string]any) {
 	p.log.Info("扩展 restore 续接（跳过清归属，sid 绑定原样有效）", "sessions", n)
 }
 
-// onExtSync 组成员全量对账：扩展定期/事件驱动上报每个会话组的当前成员
-// （用户拖进拖出组是唯一变化来源，Chrome 原生操作面）。代理以归属表为
-// 事实做差分：组内多出的 → adopt（借入，closeTarget 保护）；组内少了的 →
-// revoke（收回可见性，合成销毁事件，tab 留在用户手里）。幂等：无差分时
-// 无动作，反复 sync 无副作用。
+// onExtSync 单会话组事实更新（扩展事件驱动/定期上报：组成员表）。组是
+// 浏览器里的唯一真相，proxy 的归属表只是它的投影：组内多出的 target →
+// 记归属（可见）；少了的 → 收回可见性（合成销毁事件，tab 留在浏览器里）；
+// 已属其他会话的 → 先向原会话收回再归属本会话（用户把 tab 从 A 组拖到
+// B 组 = 领地转移）。会话不存在时暂存领地（alloc 认领）。幂等。
 func (p *Proxy) onExtSync(msg map[string]any) {
 	name, _ := msg["session"].(string)
+	tids := asStringSlice(msg["targetIds"])
 	sess := p.st.FindByName(name)
 	if sess == nil || sess.Downstream() != dsExtension {
-		return // 会话已结束（release 控制消息另行通知扩展清组）
+		p.st.SetPendingGroup(name, tids) // 组在即领地：等待同名 alloc 认领
+		return
 	}
+	p.projectGroup(sess, tids)
+}
+
+// projectGroup 把「会话的组成员表」投影为归属：差分 + 转移 + 收回。
+func (p *Proxy) projectGroup(sess *state.Session, tids []string) {
 	desired := map[string]struct{}{}
-	for _, tid := range asStringSlice(msg["targetIds"]) {
+	for _, tid := range tids {
 		desired[tid] = struct{}{}
 	}
-	// 1) 组内少了 → 收回
+	// 1) 组内少了（拖出/组解散）→ 收回
 	for _, tid := range sess.OwnedTargets() {
 		if _, in := desired[tid]; !in {
 			p.revokeTarget(sess, tid, "用户移出会话组")
 		}
 	}
-	// 2) 组内多出 → 借入（已属其他会话的拒绝——组间转移由上一步 revoke 先行）
-	var adopted, denied []string
+	// 2) 组内多出 → 归属本会话（他属的先收回——领地转移）
+	gained := 0
 	for tid := range desired {
-		owner := p.st.OwnerOf(tid)
-		if owner == sess {
+		if owner := p.st.OwnerOf(tid); owner == sess {
+			continue
+		} else if owner != nil {
+			p.revokeTarget(owner, tid, "用户移出原会话组（领地转移）")
+		}
+		p.st.OwnTarget(sess, tid)
+		gained++
+	}
+	if gained > 0 {
+		p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
+			Method: "abCtl.sync", Action: "group-diff", Detail: fmt.Sprintf("gained=%d", gained)})
+	}
+}
+
+// onExtGstate 全量组事实（扩展每次回连后上报：所有 "ab: " 组的成员表）。
+// 以此重建 extension 形态的整个归属投影——proxy 不再维护独立的创建账本：
+// 组在即领地在，组没了归属就没了。重建即对账：漂移在每条连接上被纠正。
+func (p *Proxy) onExtGstate(msg map[string]any) {
+	p.mu.Lock()
+	p.extAdoptGen++       // 证明扩展活着：作废冷启动兜底计时器
+	p.extGstateSeen = true
+	p.mu.Unlock()
+	groups, _ := msg["groups"].([]any)
+	fact := map[string][]string{}
+	for _, g := range groups {
+		gm, ok := g.(map[string]any)
+		if !ok {
 			continue
 		}
-		if owner != nil {
-			denied = append(denied, tid)
+		name, _ := gm["session"].(string)
+		if name == "" {
 			continue
 		}
-		p.st.AdoptTarget(sess, tid)
-		adopted = append(adopted, tid)
+		fact[name] = asStringSlice(gm["targetIds"])
 	}
-	if len(adopted) > 0 || len(denied) > 0 {
-		p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: name,
-			Method: "abCtl.sync", Action: "group-diff",
-			Detail: fmt.Sprintf("adopted=%d revoked-auto denied=%d", len(adopted), len(denied))})
-		p.log.Info("会话组对账", "session", name, "adopted", len(adopted), "denied", len(denied))
-		if len(denied) > 0 {
-			p.sendExtControl(map[string]any{"abCtl": "adoptDenied", "session": name, "targetIds": denied})
+	// 1) 现有 extension 归属里不在任何组事实中的 → 收回（组被解散/tab 被拖走）
+	inFact := map[string]struct{}{}
+	for _, tids := range fact {
+		for _, tid := range tids {
+			inFact[tid] = struct{}{}
 		}
 	}
+	for _, sess := range p.st.SessionsByDownstream(dsExtension) {
+		for _, tid := range sess.OwnedTargets() {
+			if _, in := inFact[tid]; !in {
+				p.revokeTarget(sess, tid, "组事实重建：不在任何会话组")
+			}
+		}
+	}
+	// 2) 组事实投影到归属（会话存在的直接归属，不存在的暂存领地）
+	claimed := 0
+	for name, tids := range fact {
+		sess := p.st.FindByName(name)
+		if sess == nil || sess.Downstream() != dsExtension {
+			p.st.SetPendingGroup(name, tids)
+			continue
+		}
+		p.projectGroup(sess, tids)
+		claimed++
+	}
+	p.log.Info("扩展组事实重建", "groups", len(fact), "claimed_sessions", claimed)
+	p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Method: "abCtl.gstate",
+		Action: "gstate-rebuild", Detail: fmt.Sprintf("groups=%d", len(fact))})
 }
 
 // revokeTarget 收回一个 target 的可见性：向持有会话合成原生等价事件

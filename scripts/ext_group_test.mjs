@@ -4,9 +4,12 @@
 // .group/ungroup 模拟用户拖入/拖出组，走的与真实操作完全相同的对账路径）：
 //   G1 会话创建的 tab 自动入组（createTarget 响应带 abGroup）
 //   G2 用户 tab 拖入组 → sync 对账 → 会话可见（adopt）且可 attach/eval
-//   G3 会话 closeTarget 借用 tab → 假成功 + 归还（tab 仍活着，会话不再可见）
+//   G3 会话 closeTarget 组内 tab → 真关（组内=会话的，拖入即交出）
 //   G4 再次拖入 → 再拖出（ungroup）→ 收回（revoke），会话不可见
-//   G5 会话 release → 借用 tab 被移出组且保持打开，自建 tab 被关闭
+//   G5 release 策略 close（默认）：组内全部 tab 关闭、组消失
+//   G6 release 策略 mark：组加墓碑（· released + 灰色），tab 全保留
+//   G7 墓碑复活：同名 alloc → 摘碑 + 整组认领（组在即领地）
+//   G8 release 策略 keep：组与 tab 原样保留
 //
 // 前置：extension 服务运行中（EXT_CONTROL，默认 9234）+ 测试浏览器带调试
 // 端口（CHROME_CDP，默认 9333）+ cdp-ext 已加载并回连。
@@ -118,6 +121,7 @@ await up.open();
 
 // G1 自建 tab 自动入组
 const created = await up.call("Target.createTarget", { url: "about:blank?created" });
+const createdTid = created.result?.targetId;
 check("G1 createTarget 响应带 abGroup", created.result?.abGroup === "ab: " + RUN, JSON.stringify(created.result?.abGroup));
 
 // 用户 tab + 拖入组（SW 存活窗口内完成：MV3 SW 在 eval 结束后可能被挂起，
@@ -150,56 +154,157 @@ const sid = att.result?.sessionId;
 const ev = await up.sessionCall(sid, "Runtime.evaluate", { expression: "2+3", returnByValue: true });
 check("G2 借用 tab 可 attach + eval", ev.result?.result?.value === 5, JSON.stringify(ev.result?.result?.value));
 
-// G3 会话 closeTarget 借用 tab → 假成功 + 归还
+// G3 会话 closeTarget 组内 tab → 真关（组内 = 会话的）
 const kill = await up.call("Target.closeTarget", { targetId: userTargetId });
-check("G3 closeTarget 假成功", kill.result !== undefined && !kill.error);
-await sleep(500);
+check("G3 closeTarget 成功", kill.result !== undefined && !kill.error);
+await sleep(600);
 const stillAlive = await swEval(`(async () => {
   try { const t = await chrome.tabs.get(${userTabId}); return t.id === ${userTabId}; } catch { return false; }
 })()`);
-check("G3 借用 tab 仍活着（未真关）", stillAlive === true);
+check("G3 组内 tab 已真关", stillAlive === false);
 targets = (await up.call("Target.getTargets")).result.targetInfos;
-check("G3 归还后会话不再可见", !targets.some((t) => t.targetId === userTargetId));
+check("G3 关闭后会话不再可见", !targets.some((t) => t.targetId === userTargetId));
 const destroyed = await up.waitEvent("Target.targetDestroyed");
-check("G3 合成 targetDestroyed 送达", destroyed?.params?.targetId === userTargetId);
+check("G3 targetDestroyed 送达", destroyed?.params?.targetId === userTargetId);
 
-// G4 再拖入 → 再拖出（同窗口内完成操作+等待，见 G2 注释）
+// G4 新用户 tab 拖入 → 拖出（G3 已真关旧 tab；同窗口内完成操作+等待，见 G2 注释）
+const g4user = await swEval(`(async () => {
+  const groups = await chrome.tabGroups.query({});
+  const g = groups.find(x => x.title === "ab: ${RUN}");
+  if (!g) return { err: "no group" };
+  await refreshTargets();
+  const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+  await chrome.tabs.group({ tabIds: [tab.id], groupId: g.id });
+  await new Promise((r) => setTimeout(r, 1500));
+  await refreshTargets();
+  const entry = targetByTab.get(tab.id);
+  return { tabId: tab.id, targetId: entry ? entry.targetId : null };
+})()`);
+check("G4 前置：新用户 tab 已入组", !!g4user?.targetId, JSON.stringify(g4user));
+targets = (await up.call("Target.getTargets")).result.targetInfos;
+check("G4 拖入组恢复可见", targets.some((t) => t.targetId === g4user.targetId));
 await swEval(`(async () => {
-  await chrome.tabs.group({ tabIds: [${userTabId}], groupId: ${userInfo.groupId} });
+  await chrome.tabs.ungroup([${g4user.tabId}]);
   await new Promise((r) => setTimeout(r, 1500));
 })()`);
 targets = (await up.call("Target.getTargets")).result.targetInfos;
-check("G4 再次拖入恢复可见", targets.some((t) => t.targetId === userTargetId));
-await swEval(`(async () => {
-  await chrome.tabs.ungroup([${userTabId}]);
-  await new Promise((r) => setTimeout(r, 1500));
-})()`);
-targets = (await up.call("Target.getTargets")).result.targetInfos;
-check("G4 拖出组收回（revoke）", !targets.some((t) => t.targetId === userTargetId));
+check("G4 拖出组收回（revoke）", !targets.some((t) => t.targetId === g4user.targetId));
 
-// G5 release：借用归还（移出组+保持打开），自建关闭
-await swEval(`(async () => {
-  await chrome.tabs.group({ tabIds: [${userTabId}], groupId: ${userInfo.groupId} });
+// G5 release 策略 close（默认）：组内全部 tab 关闭、组消失
+const user2 = await swEval(`(async () => {
+  const groups = await chrome.tabGroups.query({});
+  const g = groups.find(x => x.title === "ab: ${RUN}");
+  if (!g) return { err: "no group" };
+  await refreshTargets();
+  const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+  await chrome.tabs.group({ tabIds: [tab.id], groupId: g.id });
   await new Promise((r) => setTimeout(r, 1500));
+  await refreshTargets();
+  const entry = targetByTab.get(tab.id);
+  return { tabId: tab.id, targetId: entry ? entry.targetId : null };
 })()`);
+check("G5 前置：新用户 tab 已入组", !!user2?.targetId, JSON.stringify(user2));
+targets = (await up.call("Target.getTargets")).result.targetInfos;
+check("G5 入组后会话可见", targets.some((t) => t.targetId === user2.targetId));
 await http("POST", `/sessions/${RUN}/release`, {});
 await sleep(1500);
-const userAlive = await swEval(`(async () => {
-  try { await chrome.tabs.get(${userTabId}); return true; } catch { return false; }
+const g5tabs = await swEval(`(async () => {
+  let alive = false;
+  try { await chrome.tabs.get(${user2.tabId}); alive = true; } catch {}
+  let createdAlive = false;
+  try { const tid = tabByTarget.get("${createdTid}"); if (tid !== undefined) { await chrome.tabs.get(tid); createdAlive = true; } } catch {}
+  const groups = await chrome.tabGroups.query({ title: "ab: ${RUN}" });
+  return { userAlive: alive, createdAlive, groupLeft: groups.length };
 })()`);
-check("G5 release 后借用 tab 保持打开", userAlive === true);
-const userGroupless = await swEval(`(async () => {
-  const t = await chrome.tabs.get(${userTabId});
-  return t.groupId === -1;
-})()`);
-check("G5 借用 tab 已移出会话组", userGroupless === true);
-const createdTabGone = await swEval(`(async () => {
-  const tabs = await chrome.tabs.query({ url: "about:blank?created*" });
-  return tabs.length === 0;
-})()`);
-check("G5 自建 tab 已关闭", createdTabGone === true);
+check("G5 close：用户 tab 已关", g5tabs?.userAlive === false);
+check("G5 close：自建 tab 已关", g5tabs?.createdAlive === false, JSON.stringify(g5tabs));
+check("G5 close：组已消失", g5tabs?.groupLeft === 0);
 
-// 清理
-await browserCall("Target.closeTarget", { targetId: userTargetId }).catch(() => {});
+// G6 release 策略 mark：墓碑（· released + 灰色），tab 全保留
+await swEval(`(async () => { await chrome.storage.local.set({ releasePolicy: "mark" }); })()`);
+const alloc2 = await http("POST", "/sessions", { name: RUN });
+const up2 = new Up(alloc2.data.cdpUrl);
+await up2.open();
+const c2 = await up2.call("Target.createTarget", { url: "about:blank?mk" });
+check("G6 前置：新会话 tab 已建", !!c2.result?.targetId);
+const g6user = await swEval(`(async () => {
+  const groups = await chrome.tabGroups.query({});
+  const g = groups.find(x => x.title === "ab: ${RUN}");
+  if (!g) return { err: "no group" };
+  await refreshTargets();
+  const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+  await chrome.tabs.group({ tabIds: [tab.id], groupId: g.id });
+  await new Promise((r) => setTimeout(r, 1500));
+  await refreshTargets();
+  const entry = targetByTab.get(tab.id);
+  return { tabId: tab.id, targetId: entry ? entry.targetId : null };
+})()`);
+check("G6 前置：用户 tab 已入组", !!g6user?.targetId, JSON.stringify(g6user));
+await http("POST", `/sessions/${RUN}/release`, {});
+await sleep(1500);
+const g6 = await swEval(`(async () => {
+  const groups = await chrome.tabGroups.query({});
+  const t = groups.find(x => x.title === "ab: ${RUN} · released");
+  let userAlive = false;
+  try { await chrome.tabs.get(${g6user.tabId}); userAlive = true; } catch {}
+  const mk = await chrome.tabs.query({ url: "about:blank?mk*" });
+  return { tomb: !!t, color: t ? t.color : null, userAlive, mkLeft: mk.length };
+})()`);
+check("G6 mark：墓碑组存在", g6?.tomb === true, JSON.stringify(g6));
+check("G6 mark：墓碑灰色", g6?.color === "grey", JSON.stringify(g6?.color));
+check("G6 mark：用户 tab 保留", g6?.userAlive === true);
+check("G6 mark：会话 tab 保留", g6?.mkLeft === 1);
+
+// G7 墓碑复活：同名 alloc → 摘碑 + 整组认领（组在即领地）
+const alloc3 = await http("POST", "/sessions", { name: RUN });
+const up3 = new Up(alloc3.data.cdpUrl);
+await up3.open();
+await sleep(1800); // 预开 tab 入组（摘碑）+ sync 往返
+const g7 = await swEval(`(async () => {
+  const groups = await chrome.tabGroups.query({});
+  const live = groups.find(x => x.title === "ab: ${RUN}");
+  const tomb = groups.find(x => x.title === "ab: ${RUN} · released");
+  return { live: !!live, tomb: !!tomb };
+})()`);
+check("G7 复活：活组回归（摘碑）", g7?.live === true && g7?.tomb === false, JSON.stringify(g7));
+const t3 = (await up3.call("Target.getTargets")).result.targetInfos;
+check("G7 旧 tab 整组认领（组在即领地）", t3.some((x) => x.targetId === g6user.targetId),
+  `visible=${t3.length}`);
+
+// G8 release 策略 keep：组与 tab 原样保留
+await swEval(`(async () => { await chrome.storage.local.set({ releasePolicy: "keep" }); })()`);
+const g8user = await swEval(`(async () => {
+  const groups = await chrome.tabGroups.query({});
+  const g = groups.find(x => x.title === "ab: ${RUN}");
+  if (!g) return { err: "no group" };
+  await refreshTargets();
+  const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+  await chrome.tabs.group({ tabIds: [tab.id], groupId: g.id });
+  await new Promise((r) => setTimeout(r, 1500));
+  await refreshTargets();
+  const entry = targetByTab.get(tab.id);
+  return { tabId: tab.id, targetId: entry ? entry.targetId : null };
+})()`);
+check("G8 前置：用户 tab 已入组", !!g8user?.targetId, JSON.stringify(g8user));
+await http("POST", `/sessions/${RUN}/release`, {});
+await sleep(1500);
+const g8 = await swEval(`(async () => {
+  const groups = await chrome.tabGroups.query({ title: "ab: ${RUN}" });
+  let userAlive = false;
+  try { await chrome.tabs.get(${g8user.tabId}); userAlive = true; } catch {}
+  return { group: groups.length, userAlive };
+})()`);
+check("G8 keep：组原样保留（无墓碑）", g8?.group === 1);
+check("G8 keep：tab 原样保留", g8?.userAlive === true);
+
+// 清理：关掉遗留 tab + 策略复位 close
+await swEval(`(async () => {
+  await chrome.storage.local.set({ releasePolicy: "close" });
+  const groups = await chrome.tabGroups.query({ title: "ab: ${RUN}" });
+  for (const g of groups) {
+    const tabs = await chrome.tabs.query({ groupId: g.id });
+    if (tabs.length) await chrome.tabs.remove(tabs.map(t => t.id)).catch(() => {});
+  }
+})()`);
 console.log(results.every(Boolean) ? "\n组功能 E2E 全部通过 ✅" : "\n存在失败项 ❌");
 process.exit(results.every(Boolean) ? 0 : 1);

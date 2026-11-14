@@ -96,18 +96,25 @@ debugger attach 属于扩展不随 SW 死——需要救的只有内存里的虚
 createTarget 夹带 `abSession` 私有参数，扩展消费后剥离；响应回带
 `abGroup` 字段供测试断言）。
 
+**组 = 唯一真相（对齐后模型）**：proxy 不再维护独立的创建账本——归属表是
+组事实的投影。扩展每次回连上报全量组事实（`gstate`），此后组事件驱动增量
+sync；组在即领地：组被保留时（mark/keep 策略），同名会话重新 alloc 即整组
+认领。冷启动（扩展刷新/浏览器重启）不再制造孤儿——gstate 重建归属。
+
 | 用户操作（原生） | 扩展/proxy 行为 |
 |---|---|
-| 拖自己的 tab 进组 | 防抖 sync 对账 → proxy `AdoptTarget`（借入：可见+可操作+closeTarget 假成功保护） |
-| 拖出组 / 移除出组 | sync 对账 → `revokeTarget`：合成 detachedFromTarget+targetDestroyed，解除归属，tab 留在用户手里 |
-| 会话 closeTarget 借入 tab | 假成功 + `return` 控制（移出组+detach，可再次拖入） |
-| 会话 release/回收 | 自建 tab 关闭；借入 tab `release` 控制移出组保持打开 |
+| 拖自己的 tab 进组 | sync 投影 → 归属该会话（可见+可操作；组内=会话的，可真关） |
+| 拖出组 / 移除出组 | sync 投影 → 收回可见性：合成 detachedFromTarget+targetDestroyed，tab 留在用户手里 |
+| 在两个会话组间拖动 | 领地转移：先向原会话收回，再归属新会话 |
+| 会话 closeTarget 组内 tab | 真关（拖入即交出） |
+| 会话 release | 按**扩展配置**（options 页 releasePolicy）：`close` 全关+删组（默认）/ `mark` 组加墓碑（`· released`+灰色，tab 保留，同名会话回来摘碑复活）/ `keep` 原样保留 |
 
-实现要点（改组语义前必读）：对账是**全量 sync 差分**（事件驱动
+实现要点（改组语义前必读）：投影是**全量差分**（事件驱动
 tabs.onUpdated{groupId}/onMoved/tabGroups.* + 0.5min alarm 兜底，300ms 防抖，
 幂等）；入组按会话名串行化（`groupChain`，防 preopen 与 createTarget 并发
-建出同名双组）；组绑定缓存空时按标题重绑（`groupFor`，防 SW 重启后绑定
-悬空导致对账误判全量收回）；SW 存活窗口外事件由 alarm 兜底对账自愈。
+建出同名双组）；缓存组已死时清缓存重查（防 release 后死绑定导致永不入组）；
+墓碑组（`· released`）不算活领地（gstate 不上报），同名会话回来时
+addToGroup 摘碑复活；SW 存活窗口外事件由 alarm 兜底对账自愈。
 
 **代码更新后**：已安装的未打包扩展不会自动重读磁盘——chrome://extensions
 里点该扩展的刷新按钮（测试环境用全新 profile + load_ext_via_cdp）。

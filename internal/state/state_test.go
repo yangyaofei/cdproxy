@@ -75,7 +75,7 @@ func TestReleaseReturnsTargetsAndCleans(t *testing.T) {
 	s := alloc(t, st, "a")
 	st.OwnTarget(s, "t1")
 	st.OwnTarget(s, "t2")
-	sess, targets, _ := st.Release("a")
+	sess, targets := st.Release("a")
 	if sess == nil || sess.Name != "a" {
 		t.Fatalf("期望返回原 session，实际 %v", sess)
 	}
@@ -137,31 +137,44 @@ func TestClearOwnershipForOnlyTouchesKind(t *testing.T) {
 	}
 }
 
-func TestAdoptRevokeAndBorrowedRelease(t *testing.T) {
+func TestGroupProjectionAndPendingClaim(t *testing.T) {
 	st := New()
 	a, _ := st.Alloc("a", "t-a", "extension")
-	// 创建的 tab 与借用的 tab
-	st.OwnTarget(a, "created-1")
-	st.AdoptTarget(a, "borrowed-1")
-	if !st.TargetAdopted("borrowed-1") || st.TargetAdopted("created-1") {
-		t.Fatal("adopted 标记错误")
-	}
+	st.OwnTarget(a, "tab-1")
 	// sid→target 追踪：revoke 反查依据
-	st.BindDsSession(a, "ds-b1", "borrowed-1")
-	sids := st.SidsOfTarget("borrowed-1")
-	if len(sids) != 1 || sids[0] != "ds-b1" {
-		t.Fatalf("SidsOfTarget 应返回 [ds-b1]，实际 %v", sids)
+	st.BindDsSession(a, "ds-1", "tab-1")
+	sids := st.SidsOfTarget("tab-1")
+	if len(sids) != 1 || sids[0] != "ds-1" {
+		t.Fatalf("SidsOfTarget 应返回 [ds-1]，实际 %v", sids)
 	}
-	// release 返回全集 + adopted 子集（调用方关 created、归还 borrowed）
-	_, targets, adopted := st.Release("a")
-	if len(targets) != 2 || len(adopted) != 1 || adopted[0] != "borrowed-1" {
-		t.Fatalf("release 快照错误: targets=%v adopted=%v", targets, adopted)
+	// release 返回全集（处置归扩展策略）
+	_, targets := st.Release("a")
+	if len(targets) != 1 {
+		t.Fatalf("release 快照错误: targets=%v", targets)
+	}
+	// 领地暂存：会话不存在时的组事实 → alloc 同名认领
+	st.SetPendingGroup("b", []string{"tab-b1", "tab-b2"})
+	st.SetPendingGroup("empty", nil) // 空组清理
+	b, _ := st.Alloc("b", "t-b", "extension")
+	claimed := st.PendingGroupClaim("b")
+	if len(claimed) != 2 {
+		t.Fatalf("认领应返回 2 个 target，实际 %v", claimed)
+	}
+	for _, tid := range claimed {
+		st.OwnTarget(b, tid)
+	}
+	if st.OwnerOf("tab-b2") != b {
+		t.Fatal("认领后归属应为会话 b")
+	}
+	// 重复认领返回空（幂等）
+	if again := st.PendingGroupClaim("b"); again != nil {
+		t.Fatalf("重复认领应为空，实际 %v", again)
 	}
 	// DropTarget 清 sid 关联
 	st2 := New()
-	b, _ := st2.Alloc("b", "t-b", "extension")
-	st2.AdoptTarget(b, "x")
-	st2.BindDsSession(b, "ds-x", "x")
+	c, _ := st2.Alloc("c", "t-c", "extension")
+	st2.OwnTarget(c, "x")
+	st2.BindDsSession(c, "ds-x", "x")
 	st2.DropTarget("x")
 	if len(st2.SidsOfTarget("x")) != 0 || st2.OwnerOf("x") != nil {
 		t.Fatal("DropTarget 应清归属与 sid 关联")
@@ -190,7 +203,7 @@ func TestDetachSessionTargetsAndDownstreamBinding(t *testing.T) {	st := New()
 }
 
 func TestReleaseUnknownNameIsNoop(t *testing.T) {
-	if sess, targets, _ := New().Release("ghost"); sess != nil || targets != nil {
+	if sess, targets := New().Release("ghost"); sess != nil || targets != nil {
 		t.Fatal("未知名应为 no-op")
 	}
 }

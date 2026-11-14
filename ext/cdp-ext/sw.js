@@ -44,6 +44,7 @@ const STATE_KEY = "cdpExtState";
 // 自己的 tab 拖进组 = 交给该会话，拖出 = 收回。组成员变化经 sync 控制消息
 // 与 proxy 归属表对账（幂等，事件驱动 + alarm 兜底，漏事件可自愈）。
 const GROUP_PREFIX = "ab: ";
+const RELEASED_SUFFIX = " · released";
 const GROUP_COLORS = ["red", "yellow", "green", "cyan", "blue", "purple", "pink", "orange"];
 let reconcileTimer = null;
 
@@ -54,13 +55,21 @@ function groupColorFor(name) {
 }
 
 // SW 重启后组表重建：按标题前缀识别会话组（标题是稳定契约）
+// parseSessionName 组标题 → 会话名：仅认 "ab: " 前缀；release 策略 mark 打的
+// " · released" 后缀剥掉（墓碑组仍是该会话的领地，可被同名 alloc 复活认领）。
+function parseSessionName(title) {
+  if (!title || !title.startsWith(GROUP_PREFIX)) return null;
+  let name = title.slice(GROUP_PREFIX.length);
+  if (name.endsWith(RELEASED_SUFFIX)) name = name.slice(0, -RELEASED_SUFFIX.length);
+  return name || null;
+}
+
 async function rebuildGroupMaps() {
   try {
     const groups = await chrome.tabGroups.query({});
     for (const g of groups) {
-      if (g.title && g.title.startsWith(GROUP_PREFIX)) {
-        sessionGroups.set(g.title.slice(GROUP_PREFIX.length), g.id);
-      }
+      const name = parseSessionName(g.title);
+      if (name !== null) sessionGroups.set(name, g.id);
     }
   } catch { /* tabGroups 权限缺失等，静默降级为不分组 */ }
 }
@@ -68,6 +77,21 @@ async function rebuildGroupMaps() {
 async function addToGroupInner(sessionName, tabId) {
   try {
     let groupId = sessionGroups.get(sessionName);
+    if (groupId !== undefined) {
+      // 缓存组可能已死（release 后组被删/用户手动解散）：死缓存清掉走完整
+      // 查找，否则 tabs.group 抛错导致永不入组。
+      const g = await chrome.tabGroups.get(groupId).catch(() => null);
+      if (!g) {
+        sessionGroups.delete(sessionName);
+        groupId = undefined;
+      } else if (g.title.endsWith(RELEASED_SUFFIX)) {
+        // 缓存命中的是墓碑组：先摘碑再入组（复活语义与显式查找一致）。
+        await chrome.tabGroups.update(groupId, {
+          title: GROUP_PREFIX + sessionName,
+          color: groupColorFor(sessionName),
+        }).catch(() => {});
+      }
+    }
     if (groupId === undefined) {
       // 缓存缺失（SW 被 MV3 重启过）：按标题找回既有组，防重复建组
       const found = await chrome.tabGroups.query({ title: GROUP_PREFIX + sessionName });
@@ -82,6 +106,18 @@ async function addToGroupInner(sessionName, tabId) {
               await chrome.tabs.group({ tabIds: stray.map((t) => t.id), groupId });
             }
           }
+        }
+      } else {
+        // 墓碑复活：release 策略 mark 留下的 "… · released" 组是同会话的
+        // 领地标记——同名会话回来时摘掉墓碑（改回标题+配色）复用该组，
+        // 不另建新组（组在即领地）。
+        const tomb = await chrome.tabGroups.query({ title: GROUP_PREFIX + sessionName + RELEASED_SUFFIX });
+        if (tomb.length) {
+          groupId = tomb[0].id;
+          await chrome.tabGroups.update(groupId, {
+            title: GROUP_PREFIX + sessionName,
+            color: groupColorFor(sessionName),
+          }).catch(() => {});
         }
       }
     }
@@ -120,14 +156,18 @@ function addToGroup(sessionName, tabId) {
   return run;
 }
 
-// groupFor 会话组解析（reconcile 用）：优先缓存绑定；缓存组已空时按标题
-// 重绑（防历史竞态/用户删组后重建导致的空绑定——空绑定会让对账误判全量
-// 收回）。
+// groupFor 会话组解析（reconcile/gstate 用）：优先缓存绑定；缓存组已空时
+// 按标题重绑（防历史竞态/用户删组后重建导致的空绑定——空绑定会让对账误
+// 判全量收回）。墓碑组（mark 策略）不算活组：gstate 不把 "… · released"
+// 当作当前领地（它是已释放的标记，等同名会话回来时 addToGroup 摘碑复活）。
 async function groupFor(sessionName) {
   const cached = sessionGroups.get(sessionName);
   if (cached !== undefined) {
     const inG = await chrome.tabs.query({ groupId: cached });
-    if (inG.length) return cached;
+    if (inG.length) {
+      const g = await chrome.tabGroups.get(cached).catch(() => null);
+      if (g && parseSessionName(g.title) === sessionName && !g.title.endsWith(RELEASED_SUFFIX)) return cached;
+    }
   }
   const byTitle = await chrome.tabGroups.query({ title: GROUP_PREFIX + sessionName });
   for (const g of byTitle) {
@@ -241,6 +281,10 @@ function connect() {
         await resetState();
       }
       await rebuildGroupMaps();
+      // 全量组事实：每次回连必报（冷热皆同）。proxy 据此重建归属投影——
+      // 组在即领地：扩展刷新/浏览器重启都不再制造孤儿，旧组等待同名会话
+      // 认领。墓碑组（· released）不算活领地，不在此上报。
+      await sendGstate();
       scheduleReconcile(0);
       startHeartbeat();
     };
@@ -356,35 +400,57 @@ function scheduleReconcile(delayMs = 300) {
 // onControl proxy → 扩展的控制消息。
 async function onControl(msg) {
   switch (msg.abCtl) {
-    case "return": {
-      // 单个借出 tab 归还（会话仍活着）：移出会话组 + 清该 target 的虚拟
-      // 会话与物理 attach；组绑定保留（用户可再次拖入 adopt）
-      await ungroupAdopted(msg.adopted || []);
-      for (const tid of msg.adopted || []) await dropTarget(tid);
-      break;
-    }
     case "release": {
-      // 会话结束：借出的 tab 移出组（保持打开，归还用户）；扩展侧清理
-      // 这些 target 的虚拟会话与物理 attach（proxy 已向会话合成销毁事件）
-      await ungroupAdopted(msg.adopted || []);
-      for (const tid of msg.adopted || []) await dropTarget(tid);
-      sessionGroups.delete(msg.session);
+      // 会话结束：tab 处置归本扩展的 release 策略（options 配置）——
+      // close：关闭全部组内 tab（组随最后一个 tab 消失）；
+      // mark：组加墓碑（标题 "… · released" + 灰色），tab 保留，同名会话
+      //       回来时摘碑复活、整组认领；
+      // keep：什么都不动（领地原样保留）。
+      // 三种策略下该会话的虚拟会话与物理 attach 都清理（daemon 已断，
+      // E 句柄作废；proxy 已合成销毁事件）。
+      const sessionName = msg.session;
+      const cfg = await chrome.storage.local.get(["releasePolicy"]);
+      const policy = cfg.releasePolicy || "close";
+      const groupId = await groupFor(sessionName);
+      if (groupId !== undefined) {
+        const tabs = await chrome.tabs.query({ groupId });
+        const tids = tabs.map((t) => (targetByTab.get(t.id) || {}).targetId).filter(Boolean);
+        for (const tid of tids) await dropTarget(tid);
+        if (policy === "close") {
+          await chrome.tabs.remove(tabs.map((t) => t.id)).catch(() => {});
+        } else if (policy === "mark") {
+          await chrome.tabGroups.update(groupId, {
+            title: GROUP_PREFIX + sessionName + RELEASED_SUFFIX,
+            color: "grey",
+          }).catch(() => {});
+        }
+        // keep：组与 tab 原样保留
+      }
       break;
     }
-    case "adoptDenied":
-      // 已属其他会话却出现在本组（理论少见：组间转移的正常路径是先 revoke）
-      console.warn("[cdp-ext] adopt 被拒（tab 属其他会话）", msg.targetIds);
-      break;
   }
 }
 
-// ungroupAdopted 把借出 tab 移出会话组（tab 保持打开，回到用户普通 tab 列）。
-async function ungroupAdopted(targetIds) {
-  const tabIds = targetIds
-    .map((tid) => tabByTarget.get(tid))
-    .filter((x) => x !== undefined);
-  if (tabIds.length) {
-    try { await chrome.tabs.ungroup(tabIds); } catch { /* tab 已关等 */ }
+// sendGstate 全量组事实上报：所有 "ab: " 活组（非墓碑）的 会话名 → 成员
+// targetId 列表。proxy 以此重建归属投影。
+async function sendGstate() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  try {
+    await refreshTargets();
+    const groups = await chrome.tabGroups.query({});
+    const bySession = new Map(); // 会话名 → targetIds（多组同名取并集）
+    for (const g of groups) {
+      if (!g.title || !g.title.startsWith(GROUP_PREFIX) || g.title.endsWith(RELEASED_SUFFIX)) continue;
+      const name = parseSessionName(g.title);
+      if (name === null) continue;
+      const tabs = await chrome.tabs.query({ groupId: g.id });
+      const tids = tabs.map((t) => (targetByTab.get(t.id) || {}).targetId).filter(Boolean);
+      if (!bySession.has(name)) bySession.set(name, []);
+      bySession.get(name).push(...tids);
+    }
+    send({ abCtl: "gstate", groups: [...bySession.entries()].map(([session, targetIds]) => ({ session, targetIds })) });
+  } catch (e) {
+    console.warn("[cdp-ext] gstate 上报失败", e);
   }
 }
 

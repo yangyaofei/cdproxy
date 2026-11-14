@@ -6,7 +6,7 @@
   <style>
     body { font: 14px/1.6 system-ui, sans-serif; max-width: 480px; margin: 32px auto; padding: 0 16px; }
     label { display: block; margin: 16px 0 4px; font-weight: 600; }
-    input { width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit; }
+    input, select { width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit; }
     button { margin-top: 20px; padding: 6px 20px; font: inherit; cursor: pointer; }
     #saved { color: #080; margin-left: 12px; visibility: hidden; }
   </style>
@@ -18,6 +18,12 @@
   <input id="relayUrl" placeholder="ws://127.0.0.1:9235/ext" />
   <label for="token">连接令牌（proxy --ext-token）</label>
   <input id="token" placeholder="dev" />
+  <label for="releasePolicy">会话释放时组内标签页怎么办</label>
+  <select id="releasePolicy">
+    <option value="close">全部关闭并删除组（默认）</option>
+    <option value="mark">保留标签页，组标记为已释放（灰色 · released）</option>
+    <option value="keep">完全保留，不做任何改动</option>
+  </select>
   <button id="save">保存</button>
   <span id="saved">已保存</span>
   <script src="options.js"></script>

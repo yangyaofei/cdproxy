@@ -27,7 +27,6 @@ type Session struct {
 
 	mu            sync.Mutex // 守护以下字段
 	ownedTargets  map[string]struct{}
-	adopted       map[string]struct{} // 用户交出（adopt）的 tab：release 时归还而非关闭
 	connected     bool
 	ws            *websocket.Conn
 	autoAttach    bool   // root 级 Target.setAutoAttach(autoAttach=true) 已启用
@@ -130,25 +129,27 @@ type PendingEntry struct {
 
 // State 全局状态表。
 type State struct {
-	mu         sync.Mutex
-	nextID     atomic.Int64
-	sessions   map[string]*Session          // name → session
-	byToken    map[string]*Session          // token → session
-	targetOwn  map[string]*Session          // targetId → session
-	dsSession  map[string]*Session          // 下游 sessionId → session
-	sidTarget  map[string]string            // 下游 sessionId → targetId（revoke 反查）
-	pending    map[int64]PendingEntry       // 下游命令 id → 关联
+	mu            sync.Mutex
+	nextID        atomic.Int64
+	sessions      map[string]*Session // name → session
+	byToken       map[string]*Session // token → session
+	targetOwn     map[string]*Session // targetId → session
+	dsSession     map[string]*Session // 下游 sessionId → session
+	sidTarget     map[string]string   // 下游 sessionId → targetId（revoke 反查）
+	pending       map[int64]PendingEntry // 下游命令 id → 关联
+	pendingGroups map[string][]string   // 组名（会话名）→ targetIds：组事实先于会话到达时的领地暂存（alloc 认领）
 }
 
 // New 构造空状态表。
 func New() *State {
 	return &State{
-		sessions:  map[string]*Session{},
-		byToken:   map[string]*Session{},
-		targetOwn: map[string]*Session{},
-		dsSession: map[string]*Session{},
-		sidTarget: map[string]string{},
-		pending:   map[int64]PendingEntry{},
+		sessions:      map[string]*Session{},
+		byToken:       map[string]*Session{},
+		targetOwn:     map[string]*Session{},
+		dsSession:     map[string]*Session{},
+		sidTarget:     map[string]string{},
+		pending:       map[int64]PendingEntry{},
+		pendingGroups: map[string][]string{},
 	}
 }
 
@@ -165,30 +166,26 @@ func (st *State) Alloc(name string, token string, downstream string) (*Session, 
 		return existing, false
 	}
 	sess := &Session{Name: name, Token: token,
-		ownedTargets: map[string]struct{}{}, adopted: map[string]struct{}{}, downstream: downstream}
+		ownedTargets: map[string]struct{}{}, downstream: downstream}
 	st.sessions[name] = sess
 	st.byToken[token] = sess
 	return sess, true
 }
 
-// Release 释放 session，返回 session（不存在则 nil）、名下 target 列表与
-// 其中借用（adopted）子集。调用方负责：非借用的关 tab、借用的归还（保持
-// 打开）+ 关闭其上游连接（原生等价：浏览器消亡连接必断，否则 daemon 持
-// 僵尸连接继续收发，表现为释放后仍可用）。
-func (st *State) Release(name string) (*Session, []string, []string) {
+// Release 释放 session，返回 session（不存在则 nil）与名下 target 列表。
+// chrome 形态由调用方负责关 tab；extension 形态的 tab 处置归扩展的 release
+// 策略（组是领地标记，组在即可重新认领）。两者都关闭其上游连接（原生等
+// 价：浏览器消亡连接必断，否则 daemon 持僵尸连接继续收发，表现为释放后仍可用）。
+func (st *State) Release(name string) (*Session, []string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	sess, ok := st.sessions[name]
 	if !ok {
-		return nil, nil, nil
+		return nil, nil
 	}
 	targets := sess.OwnedTargets()
-	adopted := make([]string, 0, len(sess.adopted))
-	for tid := range sess.adopted {
-		adopted = append(adopted, tid)
-	}
 	st.drop(sess)
-	return sess, targets, adopted
+	return sess, targets
 }
 
 // drop 摘除 session 并清理全部关联（调用方持锁）。
@@ -199,13 +196,25 @@ func (st *State) drop(sess *Session) {
 		delete(st.targetOwn, tid)
 	}
 	sess.ownedTargets = map[string]struct{}{}
-	sess.adopted = map[string]struct{}{}
 	for sid, s := range st.dsSession {
 		if s == sess {
 			delete(st.dsSession, sid)
 			delete(st.sidTarget, sid)
 		}
 	}
+}
+
+// SessionsByDownstream 返回绑定到某一下游形态的全部会话（快照）。
+func (st *State) SessionsByDownstream(kind string) []*Session {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := make([]*Session, 0, len(st.sessions))
+	for _, sess := range st.sessions {
+		if sess.Downstream() == kind {
+			out = append(out, sess)
+		}
+	}
+	return out
 }
 
 // SessionCount 当前会话数（含未连接的，分配即计数）。
@@ -276,7 +285,6 @@ func (st *State) DetachSessionTargets(sess *Session) (tids []string, sids []stri
 		delete(st.targetOwn, tid)
 	}
 	sess.ownedTargets = map[string]struct{}{}
-	sess.adopted = map[string]struct{}{}
 	for sid, s := range st.dsSession {
 		if s == sess {
 			sids = append(sids, sid)
@@ -295,26 +303,26 @@ func (st *State) OwnTarget(sess *Session, targetID string) {
 	st.targetOwn[targetID] = sess
 }
 
-// AdoptTarget 登记用户交出（adopt）的 tab：归属 + 借用标记（release 时
-// 归还而非关闭）。
-func (st *State) AdoptTarget(sess *Session, targetID string) {
+// PendingGroupClaim 认领待领组：组事实先于同名会话到达（扩展先连上、
+// 会话后 alloc，或会话已释放但组保留）时，组成员暂存于 pendingGroups；
+// alloc 同名会话时一次性认领全部成员。组在即领地在（浏览器是唯一真相）。
+func (st *State) PendingGroupClaim(name string) []string {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	sess.ownedTargets[targetID] = struct{}{}
-	sess.adopted[targetID] = struct{}{}
-	st.targetOwn[targetID] = sess
+	tids := st.pendingGroups[name]
+	delete(st.pendingGroups, name)
+	return tids
 }
 
-// TargetAdopted 该 tab 是否为用户借出（closeTarget 保护判定用）。
-func (st *State) TargetAdopted(targetID string) bool {
+// SetPendingGroup 暂存一组无主领地（会话不存在时的组事实）。
+func (st *State) SetPendingGroup(name string, targetIDs []string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	sess, ok := st.targetOwn[targetID]
-	if !ok {
-		return false
+	if len(targetIDs) == 0 {
+		delete(st.pendingGroups, name)
+		return
 	}
-	_, adopted := sess.adopted[targetID]
-	return adopted
+	st.pendingGroups[name] = targetIDs
 }
 
 // OwnerOf 查询 tab 归属。
@@ -330,7 +338,6 @@ func (st *State) DropTarget(targetID string) {
 	defer st.mu.Unlock()
 	if sess, ok := st.targetOwn[targetID]; ok {
 		delete(sess.ownedTargets, targetID)
-		delete(sess.adopted, targetID)
 		delete(st.targetOwn, targetID)
 	}
 	for sid, tid := range st.sidTarget {
