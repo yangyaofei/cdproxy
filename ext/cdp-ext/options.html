@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>cdp-ext 设置</title>
+  <style>
+    body { font: 14px/1.6 system-ui, sans-serif; max-width: 480px; margin: 32px auto; padding: 0 16px; }
+    label { display: block; margin: 16px 0 4px; font-weight: 600; }
+    input { width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit; }
+    button { margin-top: 20px; padding: 6px 20px; font: inherit; cursor: pointer; }
+    #saved { color: #080; margin-left: 12px; visibility: hidden; }
+  </style>
+</head>
+<body>
+  <h2>cdp-ext 反向桥设置</h2>
+  <p>扩展会反向拨出到 agent-browser-proxy（<code>--downstream extension</code> 模式），把自己伪装成该代理的浏览器级 CDP 下游。</p>
+  <label for="relayUrl">Proxy 反向入口（WebSocket URL）</label>
+  <input id="relayUrl" placeholder="ws://127.0.0.1:9235/ext" />
+  <label for="token">连接令牌（proxy --ext-token）</label>
+  <input id="token" placeholder="dev" />
+  <button id="save">保存</button>
+  <span id="saved">已保存</span>
+  <script src="options.js"></script>
+</body>
+</html>

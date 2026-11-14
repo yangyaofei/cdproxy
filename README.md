@@ -135,6 +135,42 @@ CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleas
 | 9222 | Chrome 调试端口（keeper 固定） |
 | 9224 | 控制面 HTTP |
 | 9225 | 代理 WS（上游 cdpUrl） |
+| 9234 / 9235 | 扩展模式的控制面 / WS（`--downstream extension` 时） |
+
+## 扩展下游（cdp-ext）
+
+`--downstream chrome` 之外的另一种下游：不启动 keeper Chrome，而是由装在
+**用户日常浏览器**里的 MV3 扩展（`ext/cdp-ext/`）反向拨出 WS 充当下游。适用于
+"没有可被调试的 Chrome"的场景——Chrome 136 起 `--remote-debugging-port` 对默认
+profile 失效，扩展用 `chrome.debugger` API 走官方通道，无命令行开关要求。
+
+```
+agent-browser daemon ──WS 9235/cdp/<token>──► proxy ◄──反向拨出 WS 9235/ext?token=── cdp-ext(SW)
+                                                                   │ chrome.debugger（26 个 CDP 域）
+                                                                   ▼
+                                                      用户日常 Chrome 的各 tab
+```
+
+```bash
+var/agent-browser-proxy serve --downstream extension --ext-token dev \
+  --control-port 9234 --ws-port 9235 --data-dir var/ext
+```
+
+用户侧一次性安装：Chrome 加载 `ext/cdp-ext/`（开发者模式→加载已解压），扩展
+options 页可改 relay 地址与 token。语义与 chrome 模式完全一致（归属隔离/越权
+拒绝/焦点策略/基座保护/断连回收），差异只有三点：
+
+- `Browser.close` 由扩展层拒绝（宿主是用户自己的浏览器，双保险）
+- 浏览器级命令面为仿真（Target.* + Browser.getVersion/setDownloadBehavior），
+  未知命令诚实报错；页面会话命令全部透传
+- 一 tab 一 debugger：用户正开着 DevTools 的 tab 无法 attach（诚实报错）
+
+扩展内建**虚拟会话多路复用**：一个物理 `chrome.debugger` attach 上可叠加多个
+虚拟 CDP 会话（对齐真浏览器端点每连接独立会话），代理侧以
+`Target.setAutoAttach` 拦截改写保证只 attach 会话名下 target（不给用户其他
+tab 挂调试横幅）。响应回带 sessionId、attachedToTarget/detachedFromTarget
+事件带 browserContextId/targetId、事件先于 setAutoAttach/createTarget 响应
+送达——这些时序/字段细节是 Playwright connectOverCDP 的硬要求，均有测试锁定。
 
 ## 已验证（真实 agent-browser 0.36.0）
 
@@ -144,8 +180,15 @@ CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleas
 - close 后 60s 自动回收名下 tab，基座存活
 - plugin 自启动：服务未跑时首个 launch 拉起服务并就绪
 
+已验证（扩展下游，Playwright connectOverCDP 零改动接入）：连接/页面发现/
+setContent/evaluate/content/screenshot/newPage/page.close/newCDPSession/click
+全链路通过；下游重启后扩展自动重连、会话自愈（`scripts/ext_smoke_test.py`
+六项 + `scripts/ext_playwright_e2e.mjs`）。
+
 ## 已知限制（v0.1.0）
 
-- 单下游连接上的 setAutoAttach 由多 session 先后设置时会互相覆盖（agent-browser
-  常规路径用显式 attach，不触发；如遇依赖 auto-attach 的工具需升级为多下游连接）
 - release 的 tab 关闭为 fire-and-forget（失败有日志，不重试）
+- 扩展下游：`page.download()` 的落盘路径解析受限（Browser.setDownloadBehavior
+  为假成功，下载按宿主默认行为；精确控制需 chrome.downloads，不在 CDP 层补偿）
+- 扩展下游：heap/CPU profiler 等浏览器级域不可用（chrome.debugger 未开放，
+  诚实报错）；agent/Playwright 常规自动化面 ≈95% 覆盖

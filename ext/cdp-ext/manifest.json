@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "cdp-ext reverse bridge",
+  "version": "0.1.0",
+  "description": "Reverse-dial agent-browser-proxy and emulate a browser-level CDP endpoint via chrome.debugger",
+  "permissions": ["debugger", "tabs", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "background": { "service_worker": "sw.js" },
+  "options_page": "options.html"
+}

@@ -10,6 +10,15 @@
 //   - 生命线：下游 CDP 断开时什么都不做（不自愈）——基座生命周期归
 //     ab-keeper（agent-browser 原生 idle-timeout/close/restart），
 //     （重）连基座的唯一入口是 provider 分配路径与 Admin 重启
+//
+// 下游有两种形态（Options.Enabled 切换，语义层完全一致——下游只要长得像
+// 浏览器级 CDP 端点即可）：
+//   - chrome（默认）：dial keeper 管理的基座 Chrome 浏览器级 WS
+//   - extension：ext/cdp-ext 扩展反向拨入 GET /ext（token 校验）——扩展用
+//     chrome.debugger + chrome.tabs 把用户自己的 Chrome 仿真成浏览器级 CDP
+//     端点（flatten-only）。扩展模式下不存在 keeper：不保活、不冷启动、
+//     不重启浏览器——宿主浏览器属于用户，生命周期一概不碰；下游断开就是
+//     等扩展自行重连（每次回连视为基座更换：归属全清 + 合成销毁事件）。
 package proxy
 
 import (
@@ -36,6 +45,15 @@ import (
 // writeTimeout 单帧写超时（防慢消费方拖死路由）。
 const writeTimeout = 30 * time.Second
 
+// Options 下游形态选项（extension 模式开关 + 反向连接令牌）。
+type Options struct {
+	// Enabled 为 true 时下游来自 ext/cdp-ext 扩展的反向回连（GET /ext），
+	// keeper 全套（保活/冷启动/重启）不生效。
+	Enabled bool
+	// Token 反向连接令牌；空串 = 不校验（仅回环监听，与控制面同信任级）。
+	Token string
+}
+
 // Proxy 代理服务。
 type Proxy struct {
 	cfg     keeper.Config
@@ -45,6 +63,7 @@ type Proxy struct {
 	ilog    *interlog.Log
 	log     *slog.Logger
 	marker  string // 日志定位用
+	ext     Options // 下游形态（extension 模式）
 
 	mu        sync.Mutex    // 下游生命周期
 	ds        *websocket.Conn
@@ -53,6 +72,9 @@ type Proxy struct {
 
 	server *http.Server
 }
+
+// ExtMode 下游是否为 extension 形态（control 展示用）。
+func (p *Proxy) ExtMode() bool { return p.ext.Enabled }
 
 // idleCheckInterval 空闲巡检周期。
 const idleCheckInterval = 30 * time.Second
@@ -148,18 +170,22 @@ func (p *Proxy) unownedPageCount() (int, error) {
 	return count, nil
 }
 
-// New 构造代理。
-func New(cfg keeper.Config, wsPort int, store *settings.Store, ilog *interlog.Log, log *slog.Logger) *Proxy {
+// New 构造代理。opts 决定下游形态（extension 模式见 Options）。
+func New(cfg keeper.Config, wsPort int, store *settings.Store, ilog *interlog.Log, log *slog.Logger, opts Options) *Proxy {
 	return &Proxy{
 		cfg: cfg, wsPort: wsPort, store: store,
-		st: state.New(), ilog: ilog, log: log,
+		st: state.New(), ilog: ilog, log: log, ext: opts,
 	}
 }
 
-// Start 启动上游 WS 服务（127.0.0.1:wsPort，路径 /cdp/<token>）。
+// Start 启动上游 WS 服务（127.0.0.1:wsPort，路径 /cdp/<token>）；
+// extension 模式下同时注册反向入口 GET /ext（扩展拨入即成为下游）。
 func (p *Proxy) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /cdp/{token}", p.handleUpstream)
+	if p.ext.Enabled {
+		mux.HandleFunc("GET /ext", p.handleExtension)
+	}
 	addr := fmt.Sprintf("127.0.0.1:%d", p.wsPort)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -171,9 +197,19 @@ func (p *Proxy) Start() error {
 			p.log.Error("上游服务退出", "err", err)
 		}
 	}()
-	p.log.Info("代理 WS 服务已启动", "addr", addr)
-	p.startBaseKeepAlive()
+	p.log.Info("代理 WS 服务已启动", "addr", addr, "downstream", p.downstreamKind())
+	if !p.ext.Enabled {
+		p.startBaseKeepAlive()
+	}
 	return nil
+}
+
+// downstreamKind 下游形态名（日志/状态用）。
+func (p *Proxy) downstreamKind() string {
+	if p.ext.Enabled {
+		return "extension"
+	}
+	return "chrome"
 }
 
 // Stop 停止上游服务并断开全部连接。
@@ -206,24 +242,35 @@ func (p *Proxy) AllocSession(name string) (string, error) {
 	p.log.Info("alloc 会话", "session", name, "token_prefix", sess.Token[:min(8, len(sess.Token))], "reused", !created)
 	p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: name, Method: "AllocSession",
 		Action: "alloc", Detail: fmt.Sprintf("created=%v token_prefix=%s", created, sess.Token[:min(8, len(sess.Token))])})
-	wsURL, err := p.cfg.EnsureRunning(keeper.IdleTimeoutString(p.store.Get().KeeperIdleShutdownSeconds))
-	if err != nil {
-		if created {
-			p.st.Release(name)
+	if p.ext.Enabled {
+		// extension 模式：下游只能等扩展回连（宿主浏览器是用户的，绝不拉起）。
+		// 回连时刻已做归属清理；此处只校验在场。
+		if !p.dsConnected() {
+			if created {
+				p.st.Release(name)
+			}
+			return "", fmt.Errorf("扩展未回连（宿主 Chrome 未运行或未装 cdp-ext，无法分配会话）")
 		}
-		return "", err
-	}
-	// 基座 WS 变化（Chrome 被重启/重拉）= 旧归属全部失效：清归属并合成
-	// 原生等价的销毁事件；URL 未变（瞬断重连）则归属仍然有效，不惊动会话
-	if wsURL != p.baseWS {
-		owned, bound := p.st.ClearOwnership()
-		p.notifyOwnershipCleared(owned, bound)
-	}
-	if err := p.connectDownstream(wsURL); err != nil {
-		if created {
-			p.st.Release(name)
+	} else {
+		wsURL, err := p.cfg.EnsureRunning(keeper.IdleTimeoutString(p.store.Get().KeeperIdleShutdownSeconds))
+		if err != nil {
+			if created {
+				p.st.Release(name)
+			}
+			return "", err
 		}
-		return "", err
+		// 基座 WS 变化（Chrome 被重启/重拉）= 旧归属全部失效：清归属并合成
+		// 原生等价的销毁事件；URL 未变（瞬断重连）则归属仍然有效，不惊动会话
+		if wsURL != p.baseWS {
+			owned, bound := p.st.ClearOwnership()
+			p.notifyOwnershipCleared(owned, bound)
+		}
+		if err := p.connectDownstream(wsURL); err != nil {
+			if created {
+				p.st.Release(name)
+			}
+			return "", err
+		}
 	}
 	if created {
 		// 仅全新会话预开后台 tab；复用路径沿用既有 tab（避免每次 launch 泄漏一个）
@@ -263,9 +310,10 @@ func (p *Proxy) ReleaseSession(name string) {
 }
 
 // RestartKeeper 重启基座 Chrome 并重建下游（归属全清——重启后 targetId 全失效）。
-// RestartKeeper 重启基座 Chrome 并重建下游（归属全清——重启后 targetId 全失效）。
 // 必须验证旧基座真正死亡才返回成功——杀不死（不可中断内核态，信号无效）
 // 时如实报错，绝不宣称"已重建"。
+// extension 模式下语义降级为「断开扩展连接」：宿主浏览器属于用户绝不重启，
+// 归属清理由扩展回连路径完成（每次回连视为基座更换），扩展自行退避重连。
 func (p *Proxy) RestartKeeper() error {
 	p.mu.Lock()
 	ds := p.ds
@@ -274,6 +322,10 @@ func (p *Proxy) RestartKeeper() error {
 	p.mu.Unlock()
 	if ds != nil {
 		_ = ds.Close(websocket.StatusGoingAway, "keeper restart")
+	}
+	if p.ext.Enabled {
+		p.log.Info("extension 模式：已断开扩展连接（等待扩展自行回连）", "base", old)
+		return nil
 	}
 	if err := p.cfg.Stop(old); err != nil {
 		// 基座未真死：如实报错（此刻下游已断，行为等同断开——什么都不做）
@@ -301,11 +353,20 @@ func (p *Proxy) Status() map[string]any {
 	return map[string]any{
 		"downstream": map[string]any{
 			"connected":    dsAlive,
+			"mode":         p.downstreamKind(),
 			"base_session": p.cfg.Session,
-			"manager":      "agent-browser",
+			"manager":      p.extManager(),
 		},
 		"sessions": p.st.Snapshot(),
 	}
+}
+
+// extManager 下游生命周期归属者（状态展示用）。
+func (p *Proxy) extManager() string {
+	if p.ext.Enabled {
+		return "cdp-ext 扩展（用户宿主浏览器）"
+	}
+	return "agent-browser"
 }
 
 // ── 上游（session 连接）───────────────────────────────────────────
@@ -386,6 +447,31 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 		}
 	}
 
+	// setAutoAttach 拦截改写：不透传下游。真浏览器端点会 attach 全部 target
+	// （含他人名下与用户自己的 tab——extension 模式会给用户日常浏览器所有
+	// tab 挂上调试横幅，chrome 模式则破坏多会话隔离）。归属是 proxy 的知识，
+	// 由 proxy 改写为「只对该会话名下 target 逐个 attach」：语义等价于真
+	// autoAttach（该会话可见的世界 = 名下 target），后续 createTarget 的
+	// attach 补挂见 onDsResponse tag=create。
+	if method == "Target.setAutoAttach" {
+		if sid, _ := msg["sessionId"].(string); sid == "" {
+			autoOn, _ := params["autoAttach"].(bool)
+			sess.SetAutoAttach(autoOn)
+			p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name, Method: method,
+				UpID: msg2UpID(upIDf, hasID), Action: "rewritten", In: inSnap,
+				Delta: fmt.Sprintf("拦截改写：autoAttach=%v，仅 attach 名下 target", autoOn)})
+			if autoOn {
+				// 同步补挂：全部 attachedToTarget 事件先于本命令应答送达上游
+				// （对齐真 Chrome 时序），单个失败不阻塞其余。
+				for _, tid := range sess.OwnedTargets() {
+					p.proxyAttachSync(sess, tid, 3*time.Second)
+				}
+			}
+			p.fakeSuccess(sess, upIDf, hasID, method)
+			return
+		}
+	}
+
 	// 可配置改写规则（settings.rewrites，默认=「不抢焦点」+ 基座保护）
 	outcome := applyUpstreamRules(p.store.Get().Rewrites, method, params)
 	if outcome.Stop {
@@ -405,7 +491,9 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 	switch method {
 	case "Target.createTarget":
 		tag = "create"
-	case "Target.attachToTarget":
+	case "Target.attachToTarget", "Target.attachToBrowserTarget":
+		// attachToBrowserTarget 的响应同样携带 sessionId（浏览器 target 会话），
+		// 绑定后其嵌套事件（顶层 sessionId=该会话）才能路由回上游会话
 		tag = "attach"
 	case "Target.getTargets":
 		tag = "gettargets"
@@ -474,6 +562,41 @@ func (p *Proxy) sendTo(sess *state.Session, msg map[string]any) {
 }
 
 // ── 下游（Chrome 浏览器级连接）────────────────────────────────────
+
+// handleExtension extension 模式的反向入口（GET /ext?token=...）：
+// ext/cdp-ext 扩展拨入即被采纳为下游（顶替旧连接）。每次采纳视为基座更换：
+// 归属全清 + 合成销毁事件（扩展侧重连时会话表同样重建，双方一致）。
+// 令牌不匹配回 401，扩展侧按退避重试。
+func (p *Proxy) handleExtension(w http.ResponseWriter, r *http.Request) {
+	if p.ext.Token != "" && r.URL.Query().Get("token") != p.ext.Token {
+		p.log.Warn("拒绝令牌不匹配的扩展连接", "remote", r.RemoteAddr)
+		http.Error(w, "invalid extension token", http.StatusUnauthorized)
+		return
+	}
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		// 浏览器 WebSocket 必带 Origin（chrome-extension://…），默认跨源校验
+		// 会 403——反向入口的准入凭据是 token（外加仅回环监听），不走 origin。
+		OriginPatterns: []string{"*"},
+	})
+	if err != nil {
+		return
+	}
+	conn.SetReadLimit(64 << 20)
+	p.mu.Lock()
+	old := p.ds
+	p.ds = conn
+	p.baseWS = "extension://" + randomToken()
+	p.mu.Unlock()
+	if old != nil {
+		_ = old.Close(websocket.StatusGoingAway, "superseded by new extension connection")
+	}
+	// 采纳即基座更换（扩展会话表已重建，旧 targetId 一概不可信）
+	owned, bound := p.st.ClearOwnership()
+	p.notifyOwnershipCleared(owned, bound)
+	go p.pingLoop(r.Context(), conn, 20*time.Second)
+	p.log.Info("扩展已回连（成为下游）")
+	go p.dsRecvLoop(conn)
+}
 
 // ensureDownstream 确保下游连接存在（含 Chrome 基座就绪）。
 // connectDownstream 连接到给定基座 WS。
@@ -614,8 +737,61 @@ func (p *Proxy) dsRaw(method string, params map[string]any) error {
 }
 
 // dsCommand 会话命令登记（含 tag）。
-func (p *Proxy) dsCommand(sess *state.Session, upID int64, hasUpID bool, method string, params map[string]any, tag string) error {
-	id := p.st.NextDsID(sess, upID, hasUpID, tag, method)
+// proxyAttach 代理主动挂接：以会话名义对名下 target 发 Target.attachToTarget
+// （flatten）。用于 setAutoAttach 改写与 createTarget 补挂——响应仍走
+// tag=attach 链路（绑定 dsSession 归属），attachedToTarget 事件按 target
+// 归属路由回该会话。
+func (p *Proxy) proxyAttach(sess *state.Session, targetID string) {
+	params := map[string]any{"targetId": targetID, "flatten": true}
+	err := p.dsCommand(sess, 0, false, "Target.attachToTarget", params, "attach")
+	p.ilog.Append(interlog.Entry{Dir: "up", Kind: "cmd", Session: sess.Name,
+		Method: "Target.attachToTarget", Action: "proxy-attach", TargetID: targetID,
+		Delta: "代理补挂（autoAttach 改写/createTarget 补挂）",
+		Status: boolStatus(err == nil)})
+	if err != nil {
+		p.log.Error("代理补挂失败", "session", sess.Name, "targetId", targetID, "err", err)
+	}
+}
+
+// proxyAttachSync 同步版补挂：阻塞至下游 attach 应答（或超时）。
+// setAutoAttach 改写用它在应答上游前把名下 target 的 attachedToTarget
+// 事件全部送达——真 Chrome 的时序是事件先于 setAutoAttach 响应，
+// Playwright 连接一返回就枚举页面，事件迟到即视为无页面。
+func (p *Proxy) proxyAttachSync(sess *state.Session, targetID string, timeout time.Duration) bool {
+	ch := make(chan map[string]any, 1)
+	id := p.st.NextSessCallID(sess, "attach", "Target.attachToTarget", ch)
+	out, err := json.Marshal(map[string]any{
+		"id": id, "method": "Target.attachToTarget",
+		"params": map[string]any{"targetId": targetID, "flatten": true},
+	})
+	if err != nil {
+		return false
+	}
+	if err := p.dsSend(out); err != nil {
+		p.log.Error("代理补挂发送失败", "session", sess.Name, "targetId", targetID, "err", err)
+		return false
+	}
+	select {
+	case resp := <-ch:
+		if _, isErr := resp["error"]; isErr {
+			return false
+		}
+		return true
+	case <-time.After(timeout):
+		p.log.Warn("代理补挂超时", "session", sess.Name, "targetId", targetID)
+		return false
+	}
+}
+
+// boolStatus 简易状态字符串。
+func boolStatus(ok bool) string {
+	if ok {
+		return "ok"
+	}
+	return "error"
+}
+
+func (p *Proxy) dsCommand(sess *state.Session, upID int64, hasUpID bool, method string, params map[string]any, tag string) error {	id := p.st.NextDsID(sess, upID, hasUpID, tag, method)
 	return p.sendDownstreamCommand(id, method, params)
 }
 
@@ -643,20 +819,15 @@ func (p *Proxy) onDownstreamMessage(data []byte) {
 }
 
 // onDsResponse 响应：取回 pending → tag 加工 → 回传原 session 原始 id。
+// RespCh 条目（同步调用）同样先做 tag 加工（attach 绑定 / create 归属），
+// 再投递通道——保证同步调用方醒来时绑定已就位。
 func (p *Proxy) onDsResponse(msg map[string]any) {
 	dsIDf, _ := msg["id"].(float64)
 	entry, ok := p.st.TakePending(int64(dsIDf))
 	if !ok {
 		return
 	}
-	if entry.RespCh != nil {
-		select {
-		case entry.RespCh <- msg:
-		default:
-		}
-		return
-	}
-	if entry.Sess == nil {
+	if entry.Sess == nil && entry.RespCh == nil {
 		return // 自管理命令（无应答方）
 	}
 	result, _ := msg["result"].(map[string]any)
@@ -664,6 +835,17 @@ func (p *Proxy) onDsResponse(msg map[string]any) {
 	case "create":
 		if tid, _ := result["targetId"].(string); tid != "" {
 			p.st.OwnTarget(entry.Sess, tid)
+			// 会话已开 autoAttach：新 target 立即补挂，且 create 响应必须等
+			// attachedToTarget 事件送达上游后才转发——真 Chrome 的事件先于
+			// 响应，Playwright 在 create 响应返回后立即查页面注册表。
+			// 等待放 goroutine：此处已在 dsRecvLoop，同步等 attach 响应会死锁。
+			if entry.Sess.AutoAttach() {
+				go func() {
+					p.proxyAttachSync(entry.Sess, tid, 3*time.Second)
+					p.finishDsResponse(entry, msg, dsIDf, result)
+				}()
+				return
+			}
 		}
 	case "attach":
 		if sid, _ := result["sessionId"].(string); sid != "" {
@@ -683,19 +865,32 @@ func (p *Proxy) onDsResponse(msg map[string]any) {
 			msg["result"] = result
 		}
 	}
-	if entry.HasUpID {
-		msg["id"] = entry.UpID
-		if errMsg, ok := msg["error"].(map[string]any); ok {
-			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "resp", Session: entry.Sess.Name,
-				Method: entry.Method, UpID: entry.UpID, DSID: int64(dsIDf),
-				Status: "error", Result: interlog.Safe(errMsg)})
-		} else if entry.Tag == "create" || entry.Tag == "attach" || entry.Tag == "gettargets" {
-			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "resp", Session: entry.Sess.Name,
-				Method: entry.Method, UpID: entry.UpID, DSID: int64(dsIDf),
-				Status: "ok", Result: interlog.Safe(result)})
+	if entry.RespCh != nil {
+		select {
+		case entry.RespCh <- msg:
+		default:
 		}
-		p.sendTo(entry.Sess, msg)
+		return
 	}
+	p.finishDsResponse(entry, msg, dsIDf, result)
+}
+
+// finishDsResponse 回传上游：重写 id → 原始上游 id，附日志。
+func (p *Proxy) finishDsResponse(entry state.PendingEntry, msg map[string]any, dsIDf float64, result map[string]any) {
+	if !entry.HasUpID {
+		return
+	}
+	msg["id"] = entry.UpID
+	if errMsg, ok := msg["error"].(map[string]any); ok {
+		p.ilog.Append(interlog.Entry{Dir: "down", Kind: "resp", Session: entry.Sess.Name,
+			Method: entry.Method, UpID: entry.UpID, DSID: int64(dsIDf),
+			Status: "error", Result: interlog.Safe(errMsg)})
+	} else if entry.Tag == "create" || entry.Tag == "attach" || entry.Tag == "gettargets" {
+		p.ilog.Append(interlog.Entry{Dir: "down", Kind: "resp", Session: entry.Sess.Name,
+			Method: entry.Method, UpID: entry.UpID, DSID: int64(dsIDf),
+			Status: "ok", Result: interlog.Safe(result)})
+	}
+	p.sendTo(entry.Sess, msg)
 }
 
 // onDsEvent 事件：sessionId 路由 / tab 归属定向。
@@ -730,6 +925,14 @@ func (p *Proxy) onDsEvent(msg map[string]any) {
 		}
 	case "Target.detachedFromTarget":
 		if sid, _ := params["sessionId"].(string); sid != "" {
+			// 先回传再解绑：Playwright(Chromium) 浏览器级不监听 targetDestroyed，
+			// 页面关闭完全依赖 detachedFromTarget → didClose()；只解绑不转发
+			// 会让 page.close() 永远挂起。
+			if sess := p.st.SessionOfDs(sid); sess != nil {
+				p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
+					Method: method, Action: "routed"})
+				p.sendTo(sess, msg)
+			}
 			p.st.UnbindDsSession(sid)
 		}
 	case "Target.targetCreated", "Target.targetInfoChanged":

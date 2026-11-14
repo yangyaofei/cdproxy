@@ -15,11 +15,12 @@ import asyncio
 import json
 import sys
 import time
+import os
 import urllib.request
 
 import websockets
 
-CONTROL = "http://127.0.0.1:9224"
+CONTROL = os.environ.get("ABP_CONTROL", "http://127.0.0.1:9224")
 RUN_ID = str(int(time.time()))
 
 

@@ -45,9 +45,16 @@ const usage = `agent-browser-proxy ` + "v" + `%s — Chrome CDP 隔离代理（K
   agent-browser-proxy serve    [--chrome <path>] [--profile <dir>] [--cdp-port 9222]
                                [--control-port 9224] [--ws-port 9225] [--headless]
                                [--data-dir ~/.agent-browser/proxy]
+                               [--downstream chrome|extension] [--ext-token <token>]
   agent-browser-proxy status   [--control-port 9224]
   agent-browser-proxy stop     [--control-port 9224]
   agent-browser-proxy plugin   (stdin/stdout 插件协议；无参数+管道 stdin 时自动进入)
+
+下游形态:
+  chrome      默认。dial keeper 管理的共享基座 Chrome（9222）
+  extension   等待 ext/cdp-ext 扩展反向回连 GET /ext（用户的宿主 Chrome 经
+              chrome.debugger 仿真成浏览器级 CDP 端点；不管理宿主生命周期，
+              建议与默认实例分端口+分 data-dir 运行）
 
 环境变量:
   AB_PROXY_CONTROL   管理面地址（默认 http://127.0.0.1:9224）
@@ -99,10 +106,12 @@ type serveOptions struct {
 	wsPort      int
 	headless    bool
 	dataDir     string
+	downstream  string
+	extToken    string
 }
 
 func parseServeOptions(args []string) serveOptions {
-	opts := serveOptions{cdpPort: 9222, controlPort: 9224, wsPort: 9225, dataDir: defaultDataDir()}
+	opts := serveOptions{cdpPort: 9222, controlPort: 9224, wsPort: 9225, dataDir: defaultDataDir(), downstream: "chrome"}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--chrome":
@@ -119,6 +128,10 @@ func parseServeOptions(args []string) serveOptions {
 			opts.headless = true
 		case "--data-dir":
 			i++; opts.dataDir = argAt(args, i)
+		case "--downstream":
+			i++; opts.downstream = argAt(args, i)
+		case "--ext-token":
+			i++; opts.extToken = argAt(args, i)
 		}
 	}
 	return opts
@@ -196,7 +209,8 @@ func runServe(args []string) int {
 	ilg := interlog.New(filepath.Join(opts.dataDir, "logs"))
 
 	shutdown := make(chan struct{})
-	p := proxy.New(kcfg, opts.wsPort, store, ilg, logger)
+	extOpts := proxy.Options{Enabled: opts.downstream == "extension", Token: opts.extToken}
+	p := proxy.New(kcfg, opts.wsPort, store, ilg, logger, extOpts)
 	if err := p.Start(); err != nil {
 		logger.Error("代理启动失败", "err", err)
 		return 1
@@ -211,8 +225,14 @@ func runServe(args []string) int {
 	logger.Info("服务就绪",
 		"control", controlAddr,
 		"proxy_ws", fmt.Sprintf("ws://127.0.0.1:%d/cdp/<token>", opts.wsPort),
+		"downstream", opts.downstream,
 		"cdp", fmt.Sprintf("127.0.0.1:%d", opts.cdpPort),
 	)
+	if extOpts.Enabled {
+		logger.Info("extension 模式：等待 cdp-ext 扩展回连",
+			"ext_ws", fmt.Sprintf("ws://127.0.0.1:%d/ext", opts.wsPort),
+			"token_required", extOpts.Token != "")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

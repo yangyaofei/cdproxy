@@ -41,7 +41,7 @@ Admin 页（GET /）                    keeper：Chrome @127.0.0.1:9222（profil
 |------|------|
 | 基座（keeper） | 共享 Chrome 实例，`~/agent-browser/profile` 承载登录态 |
 | 上游 | agent-browser daemon 到代理的 WS 连接（每 session 一条，token 凭证） |
-| 下游 | 代理到 Chrome 的单条浏览器级 WS（全体共享，id 重映射在此发生） |
+| 下游 | 代理到 Chrome 的单条浏览器级 WS（全体共享，id 重映射在此发生）；`--downstream extension` 时为 cdp-ext 扩展的反向拨出 WS（`GET /ext?token=`），归属/拦截规则对上游完全透明一致 |
 | 归属（ownership） | tab（targetId）属于创建它的 session；getTargets 只见自己的 |
 | 回收（reap） | 断连 60s / 分配后未连接 300s（运行时设置可调）→ 关名下 tab 摘会话 |
 | 焦点策略（focus_mode） | background（默认）：createTarget 强制 background + activateTarget/bringToFront 假成功不转发，操作不抢用户焦点；steal=原生 |
@@ -94,6 +94,7 @@ CGO_ENABLED=0 go build -ldflags="-s -w" -o var/agent-browser-proxy ./cmd/agent-b
 codesign --force --sign - var/agent-browser-proxy
 go vet ./... && go test ./...     # 门禁
 var/agent-browser-proxy serve     # 运行（status/stop 同入口）
+# 扩展下游模式：--downstream extension --ext-token dev --control-port 9234 --ws-port 9235
 ```
 
 `codesign` 步骤必需：`-s -w` 剥符号后 Go 写入的 ad-hoc 签名失配，不重签名
@@ -127,13 +128,20 @@ Admin 页：服务起来后开 `http://127.0.0.1:9224/`（状态/会话释放/�
 
 | 层 | 位置 | 依赖 | 何时跑 |
 |----|------|------|--------|
-| 单元 | `tests/unit/`（state / settings 纯逻辑） | 无 | 每次改动 |
-| 冒烟 | `scripts/smoke_test.py` 五项判定 | 服务 + 真实 Chrome | 改 proxy/keeper 后必跑 |
+| 单元 | `tests/unit/`（state / settings 纯逻辑）+ `go test ./...` | 无 | 每次改动 |
+| 冒烟 | `scripts/smoke_test.py` 六项判定（`ABP_CONTROL` 可换端口） | 服务 + 真实 Chrome | 改 proxy/keeper 后必跑 |
+| 扩展冒烟 | `scripts/ext_smoke_test.py`（六项同判，扩展下游） | ext 模式服务 + 浏览器装 cdp-ext | 改扩展/proxy 转发后必跑 |
+| Playwright E2E | `scripts/ext_playwright_e2e.mjs`（connectOverCDP 零改动客户端全链路） | 同上 | 改会话语义/时序后必跑 |
 | 并发压测 | `scripts/concurrency_test.sh`（3 校验流 + 1 churn 流四路并行，零串扰判定） | 服务 + 真实 Chrome | 改转发/焦点/回收语义后必跑 |
 | 浏览器级 | agent-browser 实连（`--config examples/agent-browser-config.json`） | 全链路 | 接入相关改动 |
 
-冒烟五项：预开 tab 隔离 / createTarget 归属 / attach+eval 路由 / 越权拒绝 /
-release 回收。**任何转发语义改动，五项不全绿不得提交。**
+冒烟六项：预开 tab 隔离 / createTarget 归属 / attach+eval 路由 / 越权拒绝 /
+release 回收 / Browser.close 基座保护。**任何转发语义改动，chrome 与 extension
+两套冒烟不全绿不得提交。**
+
+测试用浏览器加载扩展：`node scripts/load_ext_via_cdp.mjs <cdp-http-url> <扩展目录>`
+（浏览器需带 `--enable-unsafe-extension-debugging`，Chrome 159 起 `--load-extension`
+失效）；SW 内调试：`node scripts/sw_eval.mjs <cdp-http-url> sw.js <表达式>`。
 
 ## 8. 禁止项
 

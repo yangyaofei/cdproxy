@@ -29,6 +29,21 @@ type Session struct {
 	ownedTargets  map[string]struct{}
 	connected     bool
 	ws            *websocket.Conn
+	autoAttach    bool // root 级 Target.setAutoAttach(autoAttach=true) 已启用
+}
+
+// AutoAttach 返回 root 级自动附着标志。
+func (s *Session) AutoAttach() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.autoAttach
+}
+
+// SetAutoAttach 设置 root 级自动附着标志。
+func (s *Session) SetAutoAttach(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.autoAttach = v
 }
 
 // OwnedTargets 返回名下 target 快照。
@@ -272,6 +287,17 @@ func (st *State) NextCallID(ch chan map[string]any, method string) int64 {
 	defer st.mu.Unlock()
 	id := st.nextID.Add(1)
 	st.pending[id] = PendingEntry{Method: method, RespCh: ch}
+	return id
+}
+
+// NextSessCallID 分配一个「会话署名」的同步调用下游 id：响应先做 tag 处理
+// （attach 绑定 / create 归属），再投递 RespCh。用于代理主动发起、需要与
+// 上游应答保持时序的命令（setAutoAttach 改写的同步补挂）。
+func (st *State) NextSessCallID(sess *Session, tag, method string, ch chan map[string]any) int64 {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	id := st.nextID.Add(1)
+	st.pending[id] = PendingEntry{Sess: sess, Tag: tag, Method: method, RespCh: ch}
 	return id
 }
 
