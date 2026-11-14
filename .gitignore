@@ -6,3 +6,4 @@ var/
 # Go 构建产物
 /agent-browser-proxy
 /dist/
+.DS_Store
