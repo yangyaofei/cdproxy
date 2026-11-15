@@ -830,21 +830,27 @@ func (p *Proxy) dsSend(kind string, data []byte) error {
 
 // dsCall 同步请求基座（chrome 自管理命令的应答版）：登记 pending + 等响应。
 func (p *Proxy) dsCall(method string, params map[string]any, timeout time.Duration) (map[string]any, error) {
+	return p.dsCallOn(dsChrome, method, params, timeout)
+}
+
+// dsCallOn 对指定下游形态发同步命令（响应经 onDsResponse 原样投递——无
+// tag，不做归属过滤）。
+func (p *Proxy) dsCallOn(kind string, method string, params map[string]any, timeout time.Duration) (map[string]any, error) {
 	ch := make(chan map[string]any, 1)
 	id := p.st.NextCallID(ch, method)
-	if err := p.sendDownstreamCommand(dsChrome, id, method, params); err != nil {
+	if err := p.sendDownstreamCommand(kind, id, method, params); err != nil {
 		p.st.TakePending(id)
 		return nil, err
 	}
 	select {
 	case msg := <-ch:
 		if e, ok := msg["error"].(map[string]any); ok {
-			return msg, fmt.Errorf("基座拒绝 %s: %v", method, e)
+			return msg, fmt.Errorf("下游拒绝 %s: %v", method, e)
 		}
 		return msg, nil
 	case <-time.After(timeout):
 		p.st.TakePending(id)
-		return nil, fmt.Errorf("基座应答超时: %s", method)
+		return nil, fmt.Errorf("下游应答超时: %s", method)
 	}
 }
 
@@ -1044,7 +1050,8 @@ func (p *Proxy) projectGroup(sess *state.Session, tids []string, infos map[strin
 		}
 	}
 	// 2) 组内多出 → 归属本会话（他属的先收回——领地转移）
-	gained := 0
+	gainedSet := map[string]struct{}{}
+	var missing []string
 	for tid := range desired {
 		if owner := p.st.OwnerOf(tid); owner == sess {
 			continue
@@ -1052,12 +1059,38 @@ func (p *Proxy) projectGroup(sess *state.Session, tids []string, infos map[strin
 			p.revokeTarget(owner, tid, "用户移出原会话组（领地转移）")
 		}
 		p.st.OwnTarget(sess, tid)
-		gained++
-		// 合成 targetCreated：客户端页面列表靠事件流维护（等价真 Chrome
-		// 的 tab 出现）；门控=会话已开启 target 发现或 autoAttach（真
-		// Chrome 仅在二者之一开启后才推送生命周期事件）；会话已开
-		// autoAttach 则同步补挂（可见即可连）。
-		if info, ok := infos[tid]; ok && sess.Connected() && (sess.DiscoverTargets() || sess.AutoAttach()) {
+		gainedSet[tid] = struct{}{}
+		if _, ok := infos[tid]; !ok {
+			missing = append(missing, tid)
+		}
+	}
+	// 信息兜底：sync/gstate 未随行 targetInfo 的（旧版扩展/异常路径），
+	// 现场向扩展拉一次 getTargets 补齐——合成事件不依赖上报格式。
+	if len(missing) > 0 {
+		if resp, err := p.dsCallOn(dsExtension, "Target.getTargets", map[string]any{}, 3*time.Second); err == nil {
+			if result, ok := resp["result"].(map[string]any); ok {
+				if items, ok := result["targetInfos"].([]any); ok {
+					for _, item := range items {
+						if im, ok := item.(map[string]any); ok {
+							if tid, _ := im["targetId"].(string); tid != "" {
+								infos[tid] = im
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	// 合成 targetCreated：客户端页面列表靠事件流维护（等价真 Chrome 的
+	// tab 出现）；门控=会话已开启 target 发现或 autoAttach（真 Chrome 仅
+	// 在二者之一开启后才推送生命周期事件）；会话已开 autoAttach 则同步
+	// 补挂（可见即可连）。仅对本次新增的发放。
+	if sess.Connected() && (sess.DiscoverTargets() || sess.AutoAttach()) {
+		for tid := range gainedSet {
+			info, ok := infos[tid]
+			if !ok {
+				continue
+			}
 			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
 				Method: "Target.targetCreated", Action: "synthetic", TargetID: tid})
 			p.sendTo(sess, map[string]any{
@@ -1069,9 +1102,9 @@ func (p *Proxy) projectGroup(sess *state.Session, tids []string, infos map[strin
 			}
 		}
 	}
-	if gained > 0 {
+	if len(gainedSet) > 0 {
 		p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
-			Method: "abCtl.sync", Action: "group-diff", Detail: fmt.Sprintf("gained=%d", gained)})
+			Method: "abCtl.sync", Action: "group-diff", Detail: fmt.Sprintf("gained=%d", len(gainedSet))})
 	}
 }
 
