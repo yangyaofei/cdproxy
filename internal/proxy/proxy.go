@@ -547,6 +547,16 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 		}
 	}
 
+	// setDiscoverTargets：记录发现开关（合成 targetCreated 的门控——真
+	// Chrome 仅在发现开启后才推送 target 生命周期事件），透传下游。
+	if method == "Target.setDiscoverTargets" {
+		if sid, _ := msg["sessionId"].(string); sid == "" {
+			if v, ok := params["discover"].(bool); ok {
+				sess.SetDiscoverTargets(v)
+			}
+		}
+	}
+
 	// 可配置改写规则（settings.rewrites，默认=「不抢焦点」+ 基座保护）
 	outcome := applyUpstreamRules(p.store.Get().Rewrites, method, params)
 	if outcome.Stop {
@@ -988,11 +998,13 @@ func (p *Proxy) onExtRestore(msg map[string]any) {
 	p.log.Info("扩展 restore 续接（跳过清归属，sid 绑定原样有效）", "sessions", n)
 }
 
-// onExtSync 单会话组事实更新（扩展事件驱动/定期上报：组成员表）。组是
-// 浏览器里的唯一真相，proxy 的归属表只是它的投影：组内多出的 target →
-// 记归属（可见）；少了的 → 收回可见性（合成销毁事件，tab 留在浏览器里）；
-// 已属其他会话的 → 先向原会话收回再归属本会话（用户把 tab 从 A 组拖到
-// B 组 = 领地转移）。会话不存在时暂存领地（alloc 认领）。幂等。
+// onExtSync 单会话组事实更新（扩展事件驱动/定期上报：组成员表 + targetInfo
+// 全量随行）。组是浏览器里的唯一真相，proxy 的归属表只是它的投影：组内多出
+// 的 target → 记归属（可见）并向客户端合成 targetCreated（页面列表靠事件流
+// 维护——真 Chrome 里 tab 出现必然伴随该事件，投影变化必须等价）；少了的
+// → 收回可见性（合成销毁事件，tab 留在浏览器里）；已属其他会话的 → 先向
+// 原会话收回再归属本会话（用户把 tab 从 A 组拖到 B 组 = 领地转移）。
+// 会话不存在时暂存领地（alloc 认领）。幂等。
 func (p *Proxy) onExtSync(msg map[string]any) {
 	name, _ := msg["session"].(string)
 	tids := asStringSlice(msg["targetIds"])
@@ -1001,11 +1013,26 @@ func (p *Proxy) onExtSync(msg map[string]any) {
 		p.st.SetPendingGroup(name, tids) // 组在即领地：等待同名 alloc 认领
 		return
 	}
-	p.projectGroup(sess, tids)
+	p.projectGroup(sess, tids, infosOf(msg))
 }
 
-// projectGroup 把「会话的组成员表」投影为归属：差分 + 转移 + 收回。
-func (p *Proxy) projectGroup(sess *state.Session, tids []string) {
+// infosOf 提取随行 targetInfo（targetId → info）。
+func infosOf(msg map[string]any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	if items, ok := msg["infos"].([]any); ok {
+		for _, item := range items {
+			if im, ok := item.(map[string]any); ok {
+				if tid, _ := im["targetId"].(string); tid != "" {
+					out[tid] = im
+				}
+			}
+		}
+	}
+	return out
+}
+
+// projectGroup 把「会话的组成员表」投影为归属：差分 + 转移 + 收回 + 事件。
+func (p *Proxy) projectGroup(sess *state.Session, tids []string, infos map[string]map[string]any) {
 	desired := map[string]struct{}{}
 	for _, tid := range tids {
 		desired[tid] = struct{}{}
@@ -1026,6 +1053,21 @@ func (p *Proxy) projectGroup(sess *state.Session, tids []string) {
 		}
 		p.st.OwnTarget(sess, tid)
 		gained++
+		// 合成 targetCreated：客户端页面列表靠事件流维护（等价真 Chrome
+		// 的 tab 出现）；门控=会话已开启 target 发现或 autoAttach（真
+		// Chrome 仅在二者之一开启后才推送生命周期事件）；会话已开
+		// autoAttach 则同步补挂（可见即可连）。
+		if info, ok := infos[tid]; ok && sess.Connected() && (sess.DiscoverTargets() || sess.AutoAttach()) {
+			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
+				Method: "Target.targetCreated", Action: "synthetic", TargetID: tid})
+			p.sendTo(sess, map[string]any{
+				"method": "Target.targetCreated",
+				"params": map[string]any{"targetInfo": info},
+			})
+			if sess.AutoAttach() {
+				p.proxyAttachSync(sess, tid, 3*time.Second)
+			}
+		}
 	}
 	if gained > 0 {
 		p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
@@ -1042,7 +1084,11 @@ func (p *Proxy) onExtGstate(msg map[string]any) {
 	p.extGstateSeen = true
 	p.mu.Unlock()
 	groups, _ := msg["groups"].([]any)
-	fact := map[string][]string{}
+	type groupFact struct {
+		tids  []string
+		infos map[string]map[string]any
+	}
+	fact := map[string]*groupFact{}
 	for _, g := range groups {
 		gm, ok := g.(map[string]any)
 		if !ok {
@@ -1052,12 +1098,13 @@ func (p *Proxy) onExtGstate(msg map[string]any) {
 		if name == "" {
 			continue
 		}
-		fact[name] = asStringSlice(gm["targetIds"])
+		agg := &groupFact{tids: asStringSlice(gm["targetIds"]), infos: infosOf(gm)}
+		fact[name] = agg
 	}
 	// 1) 现有 extension 归属里不在任何组事实中的 → 收回（组被解散/tab 被拖走）
 	inFact := map[string]struct{}{}
-	for _, tids := range fact {
-		for _, tid := range tids {
+	for _, agg := range fact {
+		for _, tid := range agg.tids {
 			inFact[tid] = struct{}{}
 		}
 	}
@@ -1070,13 +1117,14 @@ func (p *Proxy) onExtGstate(msg map[string]any) {
 	}
 	// 2) 组事实投影到归属（会话存在的直接归属，不存在的暂存领地）
 	claimed := 0
-	for name, tids := range fact {
+	for name, agg := range fact {
+		tids := agg.tids
 		sess := p.st.FindByName(name)
 		if sess == nil || sess.Downstream() != dsExtension {
 			p.st.SetPendingGroup(name, tids)
 			continue
 		}
-		p.projectGroup(sess, tids)
+		p.projectGroup(sess, tids, agg.infos)
 		claimed++
 	}
 	p.log.Info("扩展组事实重建", "groups", len(fact), "claimed_sessions", claimed)

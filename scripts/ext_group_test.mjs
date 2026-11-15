@@ -118,6 +118,7 @@ await http("PUT", "/settings", { downstream_mode: "extension" });
 const alloc = await http("POST", "/sessions", { name: RUN });
 const up = new Up(alloc.data.cdpUrl);
 await up.open();
+await up.call("Target.setDiscoverTargets", { discover: true }); // 对齐 agent-browser 连接序列
 
 // G1 自建 tab 自动入组
 const created = await up.call("Target.createTarget", { url: "about:blank?created" });
@@ -147,6 +148,10 @@ check("会话组存在 + 用户 tab 已建", !!userTargetId,
 let targets = (await up.call("Target.getTargets")).result.targetInfos;
 check("G2 拖入组后会话可见（adopt）", targets.some((t) => t.targetId === userTargetId),
   `visible=${targets.length}`);
+const g2created = up.events.find((e) => e.method === "Target.targetCreated" && e.params?.targetInfo?.targetId === userTargetId);
+check("G2 拖入后 targetCreated 事件送达（tab list 靠事件流）",
+  !!g2created,
+  JSON.stringify(up.events.filter((e) => e.method === "Target.targetCreated").map((e) => e.params?.targetInfo?.targetId)));
 
 // attach + eval 借用 tab
 const att = await up.call("Target.attachToTarget", { targetId: userTargetId, flatten: true });

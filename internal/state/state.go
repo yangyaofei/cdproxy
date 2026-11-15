@@ -30,6 +30,7 @@ type Session struct {
 	connected     bool
 	ws            *websocket.Conn
 	autoAttach    bool   // root 级 Target.setAutoAttach(autoAttach=true) 已启用
+	discoverTargets bool // root 级 Target.setDiscoverTargets(discover=true) 已启用
 	downstream    string // 会话绑定的下游形态：chrome | extension（分配时定格）
 }
 
@@ -59,6 +60,21 @@ func (s *Session) SetAutoAttach(v bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.autoAttach = v
+}
+
+// DiscoverTargets 返回 Target.setDiscoverTargets 标志（合成 targetCreated
+// 的门控：真 Chrome 仅在发现开启后才推送 target 生命周期事件）。
+func (s *Session) DiscoverTargets() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.discoverTargets
+}
+
+// SetDiscoverTargets 设置 target 发现标志。
+func (s *Session) SetDiscoverTargets(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.discoverTargets = v
 }
 
 // OwnedTargets 返回名下 target 快照。

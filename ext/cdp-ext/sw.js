@@ -227,7 +227,9 @@ async function refreshTargets() {
 
 function cdpTargetInfo(ti, openerTabId) {
   const info = {
-    targetId: ti.id,
+    // 兼容两种来源：chrome.debugger 原始 targetInfo（id 字段）与缓存归一化
+    // 条目（targetId 字段，sync/gstate 随行信息用）
+    targetId: ti.id ?? ti.targetId,
     type: ti.type,
     title: ti.title,
     url: ti.url,
@@ -386,10 +388,16 @@ function scheduleReconcile(delayMs = 300) {
         const groupId = await groupFor(sessionName);
         if (groupId === undefined) continue;
         const tabs = await chrome.tabs.query({ groupId });
-        const targetIds = tabs
-          .map((t) => (targetByTab.get(t.id) || {}).targetId)
+        const entries = tabs
+          .map((t) => targetByTab.get(t.id))
           .filter(Boolean);
-        send({ abCtl: "sync", session: sessionName, targetIds });
+        send({
+          abCtl: "sync", session: sessionName,
+          targetIds: entries.map((e) => e.targetId),
+          // targetInfo 全量随行：proxy 归属新增时向客户端合成 targetCreated
+          // 事件（页面列表靠事件流维护，getTargets 轮询不可依赖）
+          infos: entries.map((e) => cdpTargetInfo(e)),
+        });
       }
     } catch (e) {
       console.warn("[cdp-ext] 组对账失败", e);
@@ -444,11 +452,18 @@ async function sendGstate() {
       const name = parseSessionName(g.title);
       if (name === null) continue;
       const tabs = await chrome.tabs.query({ groupId: g.id });
-      const tids = tabs.map((t) => (targetByTab.get(t.id) || {}).targetId).filter(Boolean);
-      if (!bySession.has(name)) bySession.set(name, []);
-      bySession.get(name).push(...tids);
+      const entries = tabs.map((t) => targetByTab.get(t.id)).filter(Boolean);
+      if (!bySession.has(name)) bySession.set(name, { targetIds: [], infos: [] });
+      const agg = bySession.get(name);
+      agg.targetIds.push(...entries.map((e) => e.targetId));
+      agg.infos.push(...entries.map((e) => cdpTargetInfo(e)));
     }
-    send({ abCtl: "gstate", groups: [...bySession.entries()].map(([session, targetIds]) => ({ session, targetIds })) });
+    send({
+      abCtl: "gstate",
+      groups: [...bySession.entries()].map(([session, agg]) => ({
+        session, targetIds: agg.targetIds, infos: agg.infos,
+      })),
+    });
   } catch (e) {
     console.warn("[cdp-ext] gstate 上报失败", e);
   }
