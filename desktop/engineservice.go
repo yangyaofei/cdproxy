@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -134,8 +135,35 @@ func (s *EngineService) markStopped() {
 	s.log.Info("引擎经管理面停机")
 }
 
-// StartEngine / StopEngine / RestartEngine 托盘与前端控制入口。
-func (s *EngineService) StartEngine() error { return s.startEngine() }
+// UIDumpResult WebView 自检回传（DumpDOM 的 payload 形状）。
+type UIDumpResult struct {
+	Health string            `json:"health"` // doRequest('GET','/health') 的原始 JSON（绑定探活）
+	Error  string            `json:"error"`  // 绑定调用异常（有则填）
+	Errors []string          `json:"errors"` // 页面 error/unhandledrejection 收集（app.js/Alpine 早期异常）
+	Probe  map[string]string `json:"probe"`  // 静态资源 fetch 探活（status:bytes）
+	DOM    string            `json:"dom"`    // document.documentElement.outerHTML
+}
+
+// DumpDOM 调试/测试通道：WebView 把自身 DOM + 绑定探活结果落盘
+//（ABP_UI_DUMP 指定目录）。测试用它替代截图读图——结构即证据。
+func (s *EngineService) DumpDOM(payload string) {
+	dir := os.Getenv("ABP_UI_DUMP")
+	if dir == "" {
+		return
+	}
+	var v UIDumpResult
+	if err := json.Unmarshal([]byte(payload), &v); err != nil {
+		s.log.Warn("DumpDOM payload 解析失败", "err", err)
+		return
+	}
+	_ = os.MkdirAll(dir, 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "dom.html"), []byte(v.DOM), 0o644)
+	meta, _ := json.MarshalIndent(v, "", "  ")
+	_ = os.WriteFile(filepath.Join(dir, "dom-meta.json"), meta, 0o644)
+	s.log.Info("UI 自检落盘", "dir", dir, "dom_bytes", len(v.DOM), "health", v.Health)
+}
+
+// StartEngine / StopEngine / RestartEngine 托盘与前端控制入口。func (s *EngineService) StartEngine() error { return s.startEngine() }
 func (s *EngineService) StopEngine() error  { s.stopEngine(); return nil }
 func (s *EngineService) RestartEngine() error {
 	s.stopEngine()

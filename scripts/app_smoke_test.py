@@ -174,16 +174,56 @@ def t5b_restore_ports():
     check("9224/9225 重新监听", port_listening(9224) and port_listening(WS_PORT))
 
 
-def t6_window_shot():
-    print("T6 窗口渲染截图（二次实例触发）")
-    os.makedirs(SHOT_DIR, exist_ok=True)
+def t6_window_dom():
+    print("T6 窗口渲染 + DOM 自检（替代读图）")
+    dump_dir = os.path.join(SHOT_DIR, "dump")
+    shutil.rmtree(dump_dir, ignore_errors=True)
+    os.makedirs(dump_dir, exist_ok=True)
+    kill_app()
+    env = dict(os.environ, ABP_UI_DUMP=dump_dir)
+    log = open(os.path.join(SHOT_DIR, "app.log"), "ab")
+    subprocess.Popen([APP_BINARY], cwd=os.path.dirname(APP_BINARY),
+                     stdout=log, stderr=log, env=env, start_new_session=True)
+    # 只等就绪，不再起第二进程（避免 SingleInstance 注册前竞态——
+    # 早期第二实例会各自成完整 App 抢端口，dump 反而不触发）
+    deadline = time.time() + 30
+    ok = False
+    while time.time() < deadline:
+        code, _ = http("GET", "/health", timeout=2)
+        if code == 200:
+            ok = True
+            break
+        time.sleep(0.5)
+    time.sleep(1.5)  # SingleInstance 锁注册完成余量
+    check("App（带 ABP_UI_DUMP）就绪", ok)
+    # 自检模式：App 启动即开窗自 dump（无需二次实例，无竞态）
+    dom_path = os.path.join(dump_dir, "dom.html")
+    meta_path = os.path.join(dump_dir, "dom-meta.json")
+    for _ in range(20):
+        if os.path.exists(meta_path):
+            break
+        time.sleep(1)
+    check("dom-meta.json 落盘（绑定链路 UI→DumpDOM 通）", os.path.exists(meta_path))
+    if os.path.exists(meta_path):
+        meta = json.loads(open(meta_path).read())
+        check("绑定探活 /health 返回 ok（UI→doRequest→引擎 全链）",
+              "ok" in str(meta.get("health", "")), str(meta.get("health"))[:60])
+        check("无绑定错误", not meta.get("error"), str(meta.get("error"))[:80])
+        check("页面零 JS 错误（app.js/Alpine 实际执行）", not (meta.get("errors") or []),
+              str((meta.get("errors") or [])[:2])[:100])
+    if os.path.exists(dom_path):
+        dom = open(dom_path, encoding="utf-8", errors="replace").read()
+        check("DOM 非空且含关键结构", len(dom) > 5000 and "abp" in dom.lower(),
+              f"{len(dom)} bytes")
+        # 动态渲染产物：空态文案由 Alpine 渲染（app.js 执行证据），非静态壳
+        for marker in ["暂无会话", "CDP 交互流水"]:
+            check(f"DOM 含动态内容「{marker}」（Alpine 已渲染）", marker in dom)
+        for marker in ["会话", "设置"]:
+            check(f"DOM 含界面文案「{marker}」", marker in dom)
     shot = os.path.join(SHOT_DIR, "window.png")
     try:
-        subprocess.Popen([APP_BINARY], start_new_session=True)  # 二次实例 → OnSecondInstanceLaunch 开窗
-        time.sleep(4)
         subprocess.run(["screencapture", "-x", shot], check=True, timeout=10)
-        check("截图落盘", os.path.exists(shot) and os.path.getsize(shot) > 10000,
-              shot)
+        check("截图落盘（人工兜底）", os.path.exists(shot) and os.path.getsize(shot) > 10000, shot)
     except Exception as e:  # noqa: BLE001
         check("截图流程", False, str(e))
 
@@ -192,7 +232,7 @@ def main():
     only = {a for a in sys.argv[1:] if a.startswith("T")}
     steps = [("T1", t1_cold_start), ("T2", t2_status), ("T3", t3_extension),
              ("T4", t4_e2e), ("T5", t5_ports), ("T5b", t5b_restore_ports),
-             ("T6", t6_window_shot)]
+             ("T6", t6_window_dom)]
     for name, fn in steps:
         if only and name not in only:
             continue

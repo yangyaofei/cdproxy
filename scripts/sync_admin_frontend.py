@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""同步 Admin 前端到桌面 App（Wails）工程。
+"""sync_admin_frontend.py — Admin 前端单一源同步（static/admin → desktop/frontend）。
 
-单一源原则：static/admin 是唯一事实源；desktop/frontend 的 src/admin 与
-index.html 均由本脚本生成（--check 模式校验一致性，CI/发布前跑）。
+Web 版（control 静态服务）与 Wails App 版共用 static/admin 源文件：
+  - app.js / app.css / vendor 原样拷到 desktop/frontend/public/static/…
+    （vite 原样搬运 public/ → dist/，脚本保持经典 defer 加载顺序，
+     不经模块打包——曾因改写为 /src/ 模块入口被 vite 丢弃，App 白屏）
+  - index.html 注入 Wails 绑定引导（window.__abpWails = EngineService
+    绑定 + 同步错误收集器 __abpErrors），其余引用保持 /static/… 原样
 
-变换规则：
-- app.js / app.css / vendor/alpine.min.js 原样拷入 desktop/frontend/src/admin/
-- index.html：静态资源引用 /static/* 改写为 /src/admin/*（Vite 处理），
-  并注入 Wails 绑定引导模块（window.__abpWails.doRequest = EngineService
-  .DoRequest，app.js 的 api() 检测到即走进程内绑定，不依赖外部端口）。
+--check 校验同步一致性（CI/提交前跑）。
 """
-
 from __future__ import annotations
 
 import re
@@ -18,46 +17,44 @@ import shutil
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-SRC = REPO / "static" / "admin"
-DST = REPO / "desktop" / "frontend"
+ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "static" / "admin"
+DST = ROOT / "desktop" / "frontend"
 
 BOOTSTRAP = """  <!-- Wails 绑定引导：注入 window.__abpWails，app.js 的 api() 优先走它 -->
+  <script>
+    // 同步错误收集器（先于 defer 脚本装上，app.js/Alpine 的早期异常不丢）
+    window.__abpErrors = [];
+    window.addEventListener('error', e => window.__abpErrors.push(String(e.message || e.error)));
+    window.addEventListener('unhandledrejection', e => window.__abpErrors.push('promise: ' + String(e.reason)));
+  </script>
   <script type="module">
-    import { DoRequest } from "/bindings/github.com/yangyaofei/agent-browser-proxy/desktop/engineservice.js";
-    window.__abpWails = { doRequest: DoRequest };
+    import { DoRequest, DumpDOM } from "/bindings/github.com/yangyaofei/agent-browser-proxy/desktop/engineservice.js";
+    window.__abpWails = { doRequest: DoRequest, dumpDOM: DumpDOM };
   </script>"""
 
 
 def build_index() -> str:
     html = (SRC / "index.html").read_text(encoding="utf-8")
-    html = re.sub(
-        r'<link rel="stylesheet" href="/static/app.css[^"]*">',
-        '<link rel="stylesheet" href="/src/admin/app.css">',
-        html,
-    )
-    html = re.sub(
-        r'<script src="/static/app\.js[^"]*" defer></script>\s*<script src="/static/vendor/alpine\.min\.js" defer></script>',
-        f"{BOOTSTRAP}\n  <script type=\"module\" src=\"/src/admin/app.js\"></script>\n  <script type=\"module\" src=\"/src/admin/vendor/alpine.min.js\"></script>",
-        html,
-    )
-    if "/static/" in html:
-        raise SystemExit("index.html 仍有未改写的 /static/ 引用")
+    marker = '<script src="/static/app.js'
+    if marker not in html:
+        raise SystemExit("index.html 缺少 /static/app.js 引用（结构变更？）")
+    # 引导注入在 app.js 引用之前（错误收集器须先于一切 defer 脚本）
+    html = html.replace(marker, f"{BOOTSTRAP}\n  {marker}", 1)
     if "__abpWails" not in html:
-        raise SystemExit("绑定引导注入失败（正则未命中 script 标签）")
+        raise SystemExit("绑定引导注入失败")
     return html
 
 
 def main() -> int:
     check = "--check" in sys.argv
-    admin_dst = DST / "src" / "admin"
-    admin_dst.mkdir(parents=True, exist_ok=True)
-    (admin_dst / "vendor").mkdir(exist_ok=True)
+    static_dst = DST / "public" / "static"
+    (static_dst / "vendor").mkdir(parents=True, exist_ok=True)
 
     copies = [
-        (SRC / "app.js", admin_dst / "app.js"),
-        (SRC / "app.css", admin_dst / "app.css"),
-        (SRC / "vendor" / "alpine.min.js", admin_dst / "vendor" / "alpine.min.js"),
+        (SRC / "app.js", static_dst / "app.js"),
+        (SRC / "app.css", static_dst / "app.css"),
+        (SRC / "vendor" / "alpine.min.js", static_dst / "vendor" / "alpine.min.js"),
     ]
     index = build_index()
 
