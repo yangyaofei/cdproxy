@@ -47,6 +47,7 @@ type EngineService struct {
 	// 命令流）统一收敛为一次前端推送，避免事件风暴。
 	emitMu      sync.Mutex
 	emitPending bool
+	lastEmit    time.Time
 }
 
 // NewEngineService 构造。dataDir 解析链见 internal/datadir（显式 > env >
@@ -82,22 +83,34 @@ func (s *EngineService) ServiceStartup(_ context.Context, _ application.ServiceO
 // 前端（Events.On("cdp:state")）——桌面 App 的事件驱动形态，前端收到即
 // 重拉快照（进程内绑定毫秒级），轮询只作兜底。
 func (s *EngineService) emitState() {
+	const throttle = 100 * time.Millisecond
 	s.emitMu.Lock()
+	defer s.emitMu.Unlock()
 	if s.emitPending {
-		s.emitMu.Unlock()
+		return // 冷却期内已有 trailing 计划，合并
+	}
+	// leading：距上次推送超过冷却期，立即推（单发事件零延迟）
+	if time.Since(s.lastEmit) >= throttle {
+		s.lastEmit = time.Now()
+		go s.emitOnce()
 		return
 	}
+	// trailing：冷却期内挂起，冷却到期补推一次
 	s.emitPending = true
-	s.emitMu.Unlock()
-	time.AfterFunc(100*time.Millisecond, func() {
+	time.AfterFunc(throttle-time.Since(s.lastEmit), func() {
 		s.emitMu.Lock()
 		s.emitPending = false
+		s.lastEmit = time.Now()
 		s.emitMu.Unlock()
-		if app := application.Get(); app != nil && app.Event != nil {
-			app.Event.Emit("cdp:state", nil)
-			s.log.Info("UI 状态事件已推送（cdp:state）")
-		}
+		s.emitOnce()
 	})
+}
+
+func (s *EngineService) emitOnce() {
+	if app := application.Get(); app != nil && app.Event != nil {
+		app.Event.Emit("cdp:state", nil)
+		s.log.Info("UI 状态事件已推送（cdp:state）")
+	}
 }
 
 // ServiceShutdown Wails 生命周期：App 退出前停引擎。
