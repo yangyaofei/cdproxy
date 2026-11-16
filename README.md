@@ -41,7 +41,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o var/agent-browser-proxy-linux 
 # 质量门禁 + 测试
 go vet ./...
 go test ./...                                    # 单元测试
-uv run python scripts/smoke_test.py              # 端到端五项（需真实 Chrome，语言无关）
+uv run --project scripts python scripts/smoke_test.py  # 端到端（需真实 Chrome，语言无关）
 ./scripts/concurrency_test.sh 20                  # 并发压测（自动构建二进制，四路并行零串扰）
 ```
 
@@ -66,8 +66,7 @@ uv run python scripts/smoke_test.py              # 端到端五项（需真实 C
 │   └── settings/             # 运行时设置
 ├── desktop/                  # 桌面 App（Wails v3，菜单栏常驻 + 管理窗口）
 ├── static/admin/             # Admin 页（Alpine 无构建 + vendored，go:embed 内嵌；App 前端同源生成）
-├── src/agent_browser_proxy/  # Python 参考实现（语义基准，Go 版的行为对齐依据）
-├── plugin/ab-proxy-plugin    # Python 插件壳（参考；Go 二进制自带 plugin 模式）
+├── plugin/ab-proxy-plugin    # agent-browser 插件壳（兜底拉起服务；Go 二进制自带 plugin 模式）
 ├── scripts/                  # smoke_test.py / sync_admin_frontend.py / concurrency_test.sh
 ├── internal/*/​*_test.go      # Go 单元测试
 └── var/                      # 运行数据（gitignore；Go 版数据目录默认 ~/agent-browser/proxy）

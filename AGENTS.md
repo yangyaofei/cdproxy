@@ -126,18 +126,6 @@ python3 scripts/sync_admin_frontend.py --check
 的二进制会被 macOS 内核在 exec 时 SIGKILL（CODESIGNING Invalid Signature，
 rc=137 且零输出，崩溃报告在 ~/Library/Logs/DiagnosticReports/）。
 
-Python 参考实现（语义基准，行为对齐依据）：
-
-```bash
-uv sync --dev                                   # 安装依赖（含 dev）
-scripts/serve.sh                                # 分离启动服务（脱离进程组）
-uv run python -m agent_browser_proxy status     # 状态（含 keeper/sessions/settings）
-uv run python -m agent_browser_proxy stop       # 停服务（基座不受影响）
-uv run pytest                                   # 单元测试
-uv run python scripts/smoke_test.py             # 端到端五项（需真实 Chrome，服务会自起）
-uv run ruff check src/ tests/ scripts/ plugin/  # lint
-uv run mypy src/                                # 类型检查
-```
 
 Admin 页：服务起来后开 `http://127.0.0.1:9224/`（状态/会话释放/设置/日志尾巴/停机）。
 

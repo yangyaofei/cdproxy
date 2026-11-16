@@ -32,7 +32,9 @@ import (
 var version = "dev"
 
 // updater 公钥（信任根，编译期钉进二进制）：与 denpa-jack 共用同一把
-// Ed25519 密钥材料（minisign 封装转 PKCS#8，见 tmp/keyconv）。
+// Ed25519 密钥材料（minisign 封装转 PKCS#8）。密钥材料不入库——本地经
+// certs/updater.key.pub、CI 经 UPDATER_PUBLIC_KEY Secret 在构建期就位
+//（Taskfile ensure:updater-pub）。
 //
 //go:embed build/updater.key.pub
 var updaterPubKey []byte

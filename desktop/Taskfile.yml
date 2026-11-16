@@ -34,9 +34,25 @@ tasks:
     summary: Packages .app with embedded agent-browser binary
     deps:
       - task: prepare:agent-browser
+      - task: ensure:updater-pub
     cmds:
       - task: darwin:package
       - task: embed:agent-browser
+
+  # updater 公钥就位：certs/updater.key.pub（本地保管中心 / CI 从 Secret
+  # 注入）→ build/updater.key.pub（go:embed 目标）。缺失时写占位——编译可过，
+  # 但 updater 运行时因无效公钥停用（发布链的 manifest verify 会拦占位包）。
+  ensure:updater-pub:
+    summary: Stage updater public key from certs/ (or placeholder for dev)
+    platforms: [darwin]
+    cmds:
+      - |
+        if [ -f ../certs/updater.key.pub ]; then
+          cp ../certs/updater.key.pub build/updater.key.pub
+        elif [ ! -f build/updater.key.pub ]; then
+          printf -- "-----BEGIN PLACEHOLDER PUBLIC KEY-----\ndeveloper build without update support\n-----END PLACEHOLDER PUBLIC KEY-----\n" > build/updater.key.pub
+          echo "警告: 未找到 certs/updater.key.pub，已写入占位公钥（更新功能停用）"
+        fi
 
   prepare:agent-browser:
     summary: Download/verify/stage embedded agent-browser (pinned)

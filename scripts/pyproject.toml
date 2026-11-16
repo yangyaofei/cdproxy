@@ -1,0 +1,8 @@
+[project]
+name = "cdproxy-smoke"
+version = "0.1.0"
+description = "cdproxy 冒烟/测试脚本运行环境（主实现为 Go；本环境只供 scripts/*.py 的 websockets 依赖）"
+requires-python = ">=3.11"
+dependencies = [
+    "websockets>=13.0",
+]

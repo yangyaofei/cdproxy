@@ -7,7 +7,7 @@
 | 资产 | 本地位置 | 用途 | GitHub Secret |
 |---|---|---|---|
 | Ed25519 更新签名私钥（PKCS#8） | `desktop/build/updater.key` | 签 `manifest.json`（updater 信任根） | `UPDATER_SIGNING_KEY`（base64） |
-| Ed25519 公钥 | `desktop/build/updater.key.pub`（**入库**，编译期 embed） | 客户端验签 | — |
+| Ed25519 公钥 | `certs/updater.key.pub`（本地）→ 构建期拷入 `desktop/build/`（go:embed） | 客户端验签 | `UPDATER_PUBLIC_KEY`（base64） |
 | 代码签名 p12（AES 封装） | `certs/cdproxy-dev.p12` | 签 `.app`（身份 `Denpa Jack Dev`，与 denpa-jack 共用证书——TCC 身份连续） | `CDPROXY_CERT_P12_BASE64`（base64） |
 | p12 密码 | denpa-jack `certs/denpa-jack-dev-10y.pw` | 解 p12 | `CDPROXY_CERT_PASSWORD` |
 
@@ -23,6 +23,8 @@
 base64 -i certs/cdproxy-dev.p12 | pbcopy
 # UPDATER_SIGNING_KEY
 base64 -i desktop/build/updater.key | pbcopy
+# UPDATER_PUBLIC_KEY
+base64 -i certs/updater.key.pub | pbcopy
 # CDPROXY_CERT_PASSWORD = denpa-jack-dev-10y.pw 的内容
 ```
 

@@ -65,6 +65,10 @@ jobs:
         run: npm ci
         working-directory: desktop/frontend
 
+      - name: Restore updater public key (from Secret; never in repo)
+        run: |
+          echo "${{ secrets.UPDATER_PUBLIC_KEY }}" | base64 -d > ../certs/updater.key.pub
+
       - name: Build + embed agent-browser (version injected)
         run: wails3 task package:embedded VERSION="${VERSION#v}"
 
