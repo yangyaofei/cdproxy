@@ -22,7 +22,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -30,6 +29,7 @@ import (
 	"time"
 
 	"github.com/yangyaofei/cdproxy/internal/core"
+	"github.com/yangyaofei/cdproxy/internal/datadir"
 )
 
 // version 经 -ldflags -X main.version 注入。
@@ -148,16 +148,9 @@ func intAt(args []string, i int) int {
 }
 
 func defaultDataDir() string {
-	if v := os.Getenv("AB_PROXY_DATA_DIR"); v != "" {
-		return v
-	}
-	home := os.Getenv("HOME")
-	if u, err := user.Current(); err == nil && home == "" {
-		home = u.HomeDir
-	}
-	// 归到我们自己的目录（~/agent-browser/），与 agent-browser 的
-	// 默认家（~/.agent-browser/）隔离——close --all 等批量操作不越界。
-	return filepath.Join(home, "agent-browser", "proxy")
+	// 解析链（datadir.Resolve）：env CDPROXY_DATA_DIR > ~/.cdproxy/pointer.json
+	// > 默认 ~/agent-browser/proxy。CLI --data-dir 显式传入最高优先。
+	return datadir.Resolve("")
 }
 
 func controlBase(args []string) string {

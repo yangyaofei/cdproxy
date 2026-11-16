@@ -21,6 +21,7 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/yangyaofei/cdproxy/internal/core"
+	"github.com/yangyaofei/cdproxy/internal/datadir"
 )
 
 // DoResponse DoRequest 的返回（前端拿到的 JSON 形状）。
@@ -43,18 +44,18 @@ type EngineService struct {
 	onStateChange func(running bool)
 }
 
-// NewEngineService 构造。dataDir 空则默认 ~/agent-browser/proxy（与 CLI
-// 生产部署同目录：同一份 settings/日志，App 与 daemon 二选一运行）。
-// 日志与 CLI 同源：dataDir/service.log（UI 无控制台，文件是唯一事实源）。
+// NewEngineService 构造。dataDir 解析链见 internal/datadir（显式 > env >
+// 指针文件 > 默认 ~/agent-browser/proxy）。日志与 CLI 同源：
+// dataDir/service.log（UI 无控制台，文件是唯一事实源）。
 func NewEngineService(dataDir string, onStateChange func(running bool)) *EngineService {
-	if dataDir == "" {
-		home, _ := os.UserHomeDir()
-		dataDir = filepath.Join(home, "agent-browser", "proxy")
-	}
+	dataDir = datadir.Resolve(dataDir)
 	_ = os.MkdirAll(dataDir, 0o755)
 	logger := newFileLogger(filepath.Join(dataDir, "service.log"))
 	return &EngineService{log: logger, dataDir: dataDir, onStateChange: onStateChange}
 }
+
+// DataDir 当前数据目录（前端「设置 → 数据目录」展示/修改用）。
+func (s *EngineService) DataDir() string { return s.dataDir }
 
 // newFileLogger 文件日志（打开失败回落 stderr）。
 func newFileLogger(path string) *slog.Logger {
@@ -284,9 +285,6 @@ func (s *EngineService) EngineRunning() bool {
 	defer s.mu.Unlock()
 	return s.eng != nil
 }
-
-// DataDir 引擎数据目录（前端展示）。
-func (s *EngineService) DataDir() string { return s.dataDir }
 
 // DoRequest 统一请求入口：method/path/body 与 REST API 完全一致，
 // 进程内执行 control 路由。引擎未运行时返回 503。

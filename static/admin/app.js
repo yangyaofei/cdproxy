@@ -1,4 +1,6 @@
-/* cdproxy Admin 逻辑（Alpine 组件，无外部依赖） */
+/* cdproxy Admin 逻辑（Alpine 组件，无外部依赖）v0.5.0
+ * 双传输：Wails 进程内绑定（__cdpWails.doRequest）优先，回落 REST fetch。
+ */
 
 const DEFAULT_REWRITES = [
   { match: "Target.createTarget", action: "rewrite", set: { background: true }, remove: [], group: "focus", note: "tab 创建不抢焦点（+background:true）" },
@@ -52,6 +54,7 @@ function admin() {
     status: null,
     tab: "sessions",
     viewSessions: [],
+    sideCollapsed: localStorage.getItem('sideCol') === '1',
     logOpen: "",
     sessionLogs: [],
     selLog: -1,
@@ -77,7 +80,9 @@ function admin() {
     routeSavedAt: "",
     routeError: "",
     sourcesLoaded: false,
-    // 接入点编辑器（token 只读展示；保存不提交 token）
+    showExtToken: false,
+    showAllocToken: false,
+    // 接入点编辑器（token 只读展示；保存不提交 token；_show=脱敏开关）
     epForm: [],
     epSavedAt: "",
     epError: "",
@@ -88,6 +93,26 @@ function admin() {
     configFiles: [],
     configView: "",
     configContent: null,
+    // 会话搜索
+    sessionQuery: "",
+    // 规则预设高亮
+    presetActive: "",
+    // agent-browser 二进制选择
+    abMode: "auto",
+    abPath: "",
+    abSavedAt: "",
+    abError: "",
+    abLoaded: false,
+    // 数据目录
+    layout: null,
+    newDataDir: "",
+    ddSavedAt: "",
+    ddError: "",
+    // 日志过滤
+    slogLevel: "all",
+    slogSrc: "all",
+    slogQuery: "",
+    slogAutoScroll: false,
 
     async init() {
       const saved = localStorage.getItem("abp_theme") || "dark";
@@ -101,6 +126,17 @@ function admin() {
         if (!el || el.offsetParent === null) return;
         if (el.getBoundingClientRect().top < innerHeight + 600) this.loadOlderLogs();
       }, 600);
+    },
+
+    /* tab 切换（带页面副作用：懒加载） */
+    toggleSide() { this.sideCollapsed = !this.sideCollapsed; localStorage.setItem('sideCol', this.sideCollapsed ? '1' : '0'); },
+    pageTitle() {
+      return { sessions: '会话', rules: '改写规则', sources: '源 & 接入点', settings: '全局设置', logs: '运行日志' }[this.tab] || '';
+    },
+    go(tab) {
+      this.tab = tab;
+      if (tab === "sources") this.loadSources();
+      if (tab === "settings") { this.loadConfigs(); this.loadLayout(); this.loadAbChoice(); }
     },
 
     toggleTheme() {
@@ -157,7 +193,7 @@ function admin() {
         if (!this.srcForm.ext_token && snap.sources) this.srcForm.ext_token = snap.sources.extension.token;
         // 接入点表：同样仅初始化一次（编辑期间不被轮询覆盖；保存/重置后手动刷新）
         if (!this.epForm.length && snap.endpoints) {
-          this.epForm = JSON.parse(JSON.stringify(snap.endpoints));
+          this.epForm = JSON.parse(JSON.stringify(snap.endpoints)).map(e => ({ ...e, _show: false }));
         }
         if (!this.slogParsed.length) this.loadLogs();
         if (this.logOpen) this.loadSessionLogs(this.logOpen);
@@ -165,6 +201,21 @@ function admin() {
         this.healthy = false;
         console.error("刷新失败:", err);
       }
+    },
+
+    /* 边栏：基座空闲倒计时（粗粒度——无每会话计时数据，按设置上限与存活状态示意） */
+    keeperIdleText() {
+      if (!this.status) return "";
+      if (!this.status.keeper.alive) return "未运行";
+      const s = this.status.settings.keeper_idle_shutdown_seconds;
+      return s === 0 ? "不关闭" : `≤ ${s}s`;
+    },
+    keeperIdlePct() {
+      if (!this.status || !this.status.keeper.alive) return 0;
+      const s = this.status.settings.keeper_idle_shutdown_seconds;
+      if (!s) return 100;
+      const n = (this.status.sessions || []).length;
+      return n ? 100 : 35;
     },
 
     dirty() {
@@ -207,7 +258,18 @@ function admin() {
       }
     },
 
-    // ── 会话 tabs：展开即查（数据面实时，不缓存）──
+    /* ── 会话搜索 ── */
+    filteredSessions() {
+      const q = (this.sessionQuery || "").trim().toLowerCase();
+      if (!q) return this.viewSessions;
+      return this.viewSessions.filter(s =>
+        (s.name || "").toLowerCase().includes(q) ||
+        (s.group_name || "").toLowerCase().includes(q) ||
+        (s.via || "").toLowerCase().includes(q) ||
+        (s.type || "").toLowerCase().includes(q));
+    },
+
+    /* ── 会话 tabs：展开即查（数据面实时，不缓存）── */
     toggleTabs(name) {
       if (this.tabsOpen === name) { this.tabsOpen = ""; return; }
       this.tabsOpen = name;
@@ -228,7 +290,7 @@ function admin() {
       }
     },
 
-    // ── 源页 ──
+    /* ── 源页 ── */
     extRelayUrl() {
       if (!this.status) return "";
       return `ws://127.0.0.1:${this.status.settings.ws_port}/ext`;
@@ -271,7 +333,7 @@ function admin() {
       }
     },
 
-    // ── 令牌与接入点 ──
+    /* ── 令牌与接入点 ── */
     async copyText(text, tip) {
       try {
         await navigator.clipboard.writeText(text);
@@ -283,7 +345,7 @@ function admin() {
     },
 
     endpointURL(ep) {
-      return `ws://127.0.0.1:${this.status.settings.ws_port}/${ep.path}/${ep.token}`;
+      return `ws://127.0.0.1:${this.status.ws_port}/${ep.path}/${ep.token}`;
     },
 
     copyEndpoint(ep) {
@@ -334,7 +396,7 @@ function admin() {
       this.busy = true;
       try {
         const updated = await this.api("PUT", "/settings", { endpoints: eps });
-        this.epForm = JSON.parse(JSON.stringify(updated.endpoints || []));
+        this.epForm = JSON.parse(JSON.stringify(updated.endpoints || [])).map(e => ({ ...e, _show: false }));
         this.epSavedAt = "已保存 " + new Date().toLocaleTimeString();
       } catch (err) {
         this.epError = err.message;
@@ -365,7 +427,64 @@ function admin() {
       }
     },
 
-    // ── settings.json 全文编辑 ──
+    /* ── agent-browser 二进制选择（内置/外部）── */
+    async loadAbChoice() {
+      if (this.abLoaded) return;
+      try {
+        const cur = await this.api("GET", "/settings");
+        const p = cur.agent_browser_binary || "";
+        this.abMode = p ? "external" : "auto";
+        this.abPath = p;
+        this.abLoaded = true;
+      } catch (err) { /* 懒加载失败静默，保存时报错 */ }
+      this.loadSources();
+    },
+
+    async saveAgentBrowser() {
+      this.abError = "";
+      const path = this.abMode === "external" ? this.abPath.trim() : "";
+      if (this.abMode === "external" && !path) { this.abError = "外部模式须填绝对路径"; return; }
+      this.busy = true;
+      try {
+        await this.api("PUT", "/settings", { agent_browser_binary: path });
+        this.abPath = path;
+        this.abSavedAt = "已保存 " + new Date().toLocaleTimeString();
+        await this.loadSources();
+      } catch (err) {
+        this.abError = err.message;
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    /* ── 数据目录（结构展示 + 指针修改）── */
+    async loadLayout() {
+      try {
+        this.layout = await this.api("GET", "/layout");
+      } catch (err) {
+        this.layout = null;
+      }
+    },
+
+    async applyDataDir() {
+      this.ddError = "";
+      const dir = (this.newDataDir || "").trim();
+      if (!dir) return;
+      if (!confirm(`修改数据目录为？\n${dir}\n\n写入指针（重启生效）；数据不自动迁移。`)) return;
+      this.busy = true;
+      try {
+        const r = await this.api("PUT", "/data-dir", { data_dir: dir });
+        this.ddSavedAt = "已写入指针，重启后生效";
+        this.newDataDir = "";
+        await this.loadLayout();
+      } catch (err) {
+        this.ddError = err.message;
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    /* ── settings.json 全文编辑 ── */
     async reloadJsonDraft() {
       try {
         const cur = await this.api("GET", "/settings");
@@ -398,7 +517,7 @@ function admin() {
       }
     },
 
-    // ── 配置文件只读查看 ──
+    /* ── 配置文件只读查看 ── */
     async loadConfigs() {
       if (this.configFiles.length) return;
       try {
@@ -423,18 +542,33 @@ function admin() {
       }
     },
 
-    // ── 改写规则（结构化编辑）──
+    /* ── 改写规则（结构化编辑）── */
     applyPreset(kind) {
       this.rules = JSON.parse(JSON.stringify(kind === "focus" ? DEFAULT_REWRITES : DEFAULT_REWRITES.filter(r => r.group === "base")));
       this.rulesError = "";
+      this.presetActive = kind;
     },
 
     addRule() {
       this.rules.push({ match: "", action: "rewrite", set: {}, remove: [], group: "", note: "" });
+      this.presetActive = "";
     },
 
     delRule(i) {
       this.rules.splice(i, 1);
+      this.presetActive = "";
+    },
+
+    /* 放弃编辑：回到已保存的规则 */
+    async resetRules() {
+      try {
+        const cur = await this.api("GET", "/settings");
+        this.rules = JSON.parse(JSON.stringify(cur.rewrites || []));
+        this.rulesError = "";
+        this.presetActive = "";
+      } catch (err) {
+        this.rulesError = err.message;
+      }
     },
 
     // set 的 JSON 文本输入（key=value 双向绑定由 x-model 直连 setJson 缓存）
@@ -462,6 +596,7 @@ function admin() {
         const updated = await this.api("PUT", "/settings", { rewrites: this.rules });
         this.rules = JSON.parse(JSON.stringify(updated.rewrites || []));
         this.rulesSavedAt = new Date().toLocaleTimeString();
+        this.presetActive = "";
       } catch (err) {
         this.rulesError = err.message;
       } finally {
@@ -469,7 +604,7 @@ function admin() {
       }
     },
 
-    // ── 会话 ──
+    /* ── 会话 ── */
     async release(name) {
       if (!confirm(`释放会话 ${name}？（将关闭其名下 tab）`)) return;
       this.busy = true;
@@ -488,7 +623,7 @@ function admin() {
       } catch (err) { alert("重启失败: " + err.message); } finally { this.busy = false; }
     },
 
-    // ── 会话交互日志 ──
+    /* ── 会话交互日志 ── */
     toggleLogs(name) {
       this.logOpen = this.logOpen === name ? "" : name;
       this.selLog = -1;
@@ -537,7 +672,16 @@ function admin() {
       try { return JSON.stringify(v, null, 2); } catch (err) { return String(v); }
     },
 
-    // ── 服务日志（最新在前；下滑到底自动加载更早一页）──
+    /* ── 服务日志（过滤：级别/来源/关键词；自动滚动到底）── */
+    filteredSlog() {
+      let rows = this.slogParsed;
+      if (this.slogLevel !== "all") rows = rows.filter(e => e.level === this.slogLevel);
+      if (this.slogSrc !== "all") rows = rows.filter(e => (e.rest || "").includes(this.slogSrc) || (e.msg || "").includes(this.slogSrc));
+      const q = (this.slogQuery || "").trim().toLowerCase();
+      if (q) rows = rows.filter(e => (e.msg || "").toLowerCase().includes(q) || (e.rest || "").toLowerCase().includes(q));
+      return rows;
+    },
+
     async loadLogs() {
       this.busy = true;
       try {
@@ -546,9 +690,15 @@ function admin() {
         this.slogHasMore = !!data.hasMore;
         this.slogSkip = 0;
         this.slogParsed = (data.lines || []).map(parseSlogLine).filter(Boolean).reverse();
+        if (this.slogAutoScroll) this.$nextTick(() => this.scrollSlogBottom());
       } catch (err) {
         this.slogParsed = [];
       } finally { this.busy = false; }
+    },
+
+    scrollSlogBottom() {
+      const el = document.getElementById("slogScroll");
+      if (el) el.scrollTop = el.scrollHeight;
     },
 
     async loadOlderLogs() {

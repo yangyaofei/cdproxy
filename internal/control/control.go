@@ -32,6 +32,7 @@ import (
 	"time"
 
 	assets "github.com/yangyaofei/cdproxy" // 根目录 package assets（go:embed 只能嵌包内文件）
+	"github.com/yangyaofei/cdproxy/internal/datadir"
 	"github.com/yangyaofei/cdproxy/internal/interlog"
 	"github.com/yangyaofei/cdproxy/internal/keeper"
 	"github.com/yangyaofei/cdproxy/internal/proxy"
@@ -125,6 +126,53 @@ func (c *Control) Handler() http.Handler {
 	// 配置文件清单与内容（只读白名单：设置页「配置查看」用）
 	mux.HandleFunc("GET /config/files", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"files": c.configFiles()})
+	})
+
+	// GET /layout 数据目录全景：目录结构 + 各文件存在性（设置页「数据目录」
+	// 展示/修改的依据）。path 全部现算（跟随数据目录）。
+	mux.HandleFunc("GET /layout", func(w http.ResponseWriter, _ *http.Request) {
+		dataDir := filepath.Dir(c.logPath)
+		home, _ := os.UserHomeDir()
+		type entry struct {
+			Path  string `json:"path"`
+			Title string `json:"title"`
+			Desc  string `json:"desc"`
+			Exists bool  `json:"exists"`
+		}
+		entries := []entry{
+			{Path: filepath.Join(dataDir, "settings.json"), Title: "settings.json", Desc: "运行设置（本页「保存设置」写入）"},
+			{Path: filepath.Join(dataDir, "logs"), Title: "logs/", Desc: "会话交互流水 <会话名>.jsonl（release 后保留，>100 文件清最老）"},
+			{Path: filepath.Join(dataDir, "keeper-config.json"), Title: "keeper-config.json", Desc: "基座 Chrome 启动配置（autostart 等）"},
+			{Path: filepath.Join(dataDir, "service.log"), Title: "service.log", Desc: "服务日志（App/CLI 同源）"},
+			{Path: filepath.Join(home, ".agent-browser", "config.json"), Title: "~/.agent-browser/config.json", Desc: "agent-browser 插件配置（全局，不在数据目录内）"},
+			{Path: datadir.Path(), Title: datadir.Path(), Desc: "数据目录指针（本页「修改数据目录」写入；重启生效）"},
+		}
+		for i := range entries {
+			if _, err := os.Stat(entries[i].Path); err == nil {
+				entries[i].Exists = true
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data_dir": dataDir, "entries": entries})
+	})
+
+	// PUT /data-dir 修改数据目录指针（写 ~/.cdproxy/pointer.json，重启生效；
+	// 数据不自动迁移——用户自行 mv，结构见 GET /layout）。
+	mux.HandleFunc("PUT /data-dir", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			DataDir string `json:"data_dir"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "body 必须是 {\"data_dir\": \"...\"}"})
+			return
+		}
+		if err := datadir.WritePointer(body.DataDir); err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"pointer": datadir.Path(), "data_dir": body.DataDir,
+			"note": "已写入指针，重启服务后生效；数据不会自动迁移（如需保留请自行 mv 整个目录）",
+		})
 	})
 	mux.HandleFunc("GET /config/files/{key}", func(w http.ResponseWriter, r *http.Request) {
 		key := r.PathValue("key")

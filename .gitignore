@@ -19,3 +19,5 @@ desktop/frontend/src/admin/
 desktop/frontend/index.html
 # 内嵌 agent-browser staging（scripts/prepare_agent_browser.sh 生成）
 desktop/build/agent-browser/
+cdproxy
+tmp/
