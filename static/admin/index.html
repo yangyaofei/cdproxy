@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>cdproxy · Admin</title>
-  <link rel="stylesheet" href="/static/app.css?v=0.6.0">
-  <script src="/static/app.js?v=0.6.0" defer></script>
+  <link rel="stylesheet" href="/static/app.css?v=0.6.1">
+  <script src="/static/app.js?v=0.6.1" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
 </head>
 <body>
@@ -589,15 +589,31 @@
                   </td></tr>
                   <tr><td>选择</td><td>
                     <div class="seg">
-                      <button :class="abMode === 'auto' ? 'on' : ''" @click="abMode = 'auto'">自动（内置优先）</button>
-                      <button :class="abMode === 'external' ? 'on' : ''" @click="abMode = 'external'">外部二进制</button>
+                      <button :class="abMode === 'auto' ? 'on' : ''" @click="abMode = 'auto'; abPath = ''">内嵌（默认）</button>
+                      <button :class="abMode === 'external' ? 'on' : ''" @click="abMode = 'external'; abPath = abLookupPath">外部</button>
                     </div>
-                    <span class="tip"><span class="tip-body">自动 = 优先 App 内置（&lt;App&gt;/Contents/Resources/agent-browser），找不到回落 PATH；外部 = 显式指定绝对路径，优先级最高。</span></span>
+                    <span class="tip"><span class="tip-body">内嵌 = App 包内 Resources/agent-browser（无需任何路径）；外部 = which 自动探测，探测不到才需要手填绝对路径。</span></span>
                   </td></tr>
-                  <tr><td>外部路径</td><td>
-                    <input x-model="abPath" placeholder="/opt/homebrew/bin/agent-browser" class="mono"
-                           style="width:100%" :disabled="abMode !== 'external'">
-                  </td></tr>
+                  <template x-if="abMode === 'external'">
+                    <tr><td>外部二进制</td><td>
+                      <template x-if="abLookupPath">
+                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                          <span class="bdg ok">已探测</span>
+                          <span class="copyable" style="flex:1;min-width:200px">
+                            <span class="val mono" :title="abLookupPath" x-text="abLookupPath"></span>
+                          </span>
+                          <span class="hint">which 自动探测 · 点击「保存」生效</span>
+                        </div>
+                      </template>
+                      <template x-if="!abLookupPath">
+                        <div>
+                          <input x-model="abPath" placeholder="PATH 中未找到 agent-browser，请填绝对路径" class="mono"
+                                 style="width:100%">
+                          <span class="hint" style="margin-top:3px;display:block">未探测到外部 agent-browser（which 无结果）</span>
+                        </div>
+                      </template>
+                    </td></tr>
+                  </template>
                 </table>
                 <div class="toolbar" style="margin:10px 0 0">
                   <button class="primary sm" @click="saveAgentBrowser()" :disabled="busy">保存</button>

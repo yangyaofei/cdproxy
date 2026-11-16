@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os/exec"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -387,10 +388,19 @@ func noCache(next http.Handler) http.Handler {
 // 界面显示的就是实际运行的那个二进制。
 func (c *Control) agentBrowserInfo() map[string]any {
 	bin, src := keeper.ResolveAgentBrowser(c.store.Get().AgentBrowserBinary)
-	if bin == "" {
-		return map[string]any{"found": false, "source": src}
+	info := map[string]any{"source": src, "found": bin != ""}
+	if bin != "" {
+		info["path"] = bin
+		info["version"] = keeper.AgentBrowserVersion(bin)
 	}
-	return map[string]any{"found": true, "path": bin, "source": src, "version": keeper.AgentBrowserVersion(bin)}
+	// path_lookup：PATH 探测结果（which 等价），独立于当前生效 source——
+	// 供 UI「外部」模式自动填路径：探测到只读展示，探测不到才让手填。
+	if p, err := exec.LookPath("agent-browser"); err == nil {
+		info["path_lookup"] = p
+	} else {
+		info["path_lookup"] = ""
+	}
+	return info
 }
 
 // configFiles 配置文件只读白名单（设置页「配置查看」用）：key 稳定，

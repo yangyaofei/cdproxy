@@ -99,6 +99,7 @@ function admin() {
     presetActive: "",
     // agent-browser 二进制选择
     abMode: "auto",
+    abLookupPath: "",   // which 探测的外部 agent-browser 路径（空=未探测到）
     abPath: "",
     abSavedAt: "",
     abError: "",
@@ -353,6 +354,7 @@ function admin() {
     async loadSources() {
       try {
         this.abInfo = await this.api("GET", "/sources/agent-browser");
+        this.abLookupPath = this.abInfo.path_lookup || "";
       } catch (err) {
         this.abInfo = null;
       }
@@ -488,7 +490,7 @@ function admin() {
         const cur = await this.api("GET", "/settings");
         const p = cur.agent_browser_binary || "";
         this.abMode = p ? "external" : "auto";
-        this.abPath = p;
+        this.abPath = p || this.abLookupPath;
         this.abLoaded = true;
       } catch (err) { /* 懒加载失败静默，保存时报错 */ }
       this.loadSources();
@@ -496,8 +498,8 @@ function admin() {
 
     async saveAgentBrowser() {
       this.abError = "";
-      const path = this.abMode === "external" ? this.abPath.trim() : "";
-      if (this.abMode === "external" && !path) { this.abError = "外部模式须填绝对路径"; return; }
+      const path = this.abMode === "external" ? (this.abPath || this.abLookupPath).trim() : "";
+      if (this.abMode === "external" && !path) { this.abError = "外部模式须填绝对路径（PATH 中也未探测到）"; return; }
       this.busy = true;
       try {
         await this.api("PUT", "/settings", { agent_browser_binary: path });
