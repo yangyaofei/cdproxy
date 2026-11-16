@@ -103,9 +103,12 @@ func buildTray() *application.SystemTray {
 		}
 		statusItem.SetLabel(label)
 		tray.SetTooltip("Agent Browser Proxy — " + label)
-		// 引擎启停对 UI 是最重的状态变化，同样走事件推送
-		if app != nil && app.Event != nil {
-			app.Event.Emit("cdp:state", nil)
+		// 引擎启停对 UI 是最重的状态变化。运行→随行完整状态；停止→专用
+		// 离线信号（复用 engine.emitState/emitOffline，保持单一出口）
+		if running {
+			go engine.emitState()
+		} else {
+			go engine.EmitEngineOffline()
 		}
 	}
 	menu.AddSeparator()

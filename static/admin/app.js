@@ -50,7 +50,7 @@ function parseSlogLine(line) {
 
 function admin() {
   return {
-    healthy: false,
+    healthy: null, // null=连接中（初始） / true=在线 / false=离线
     status: null,
     tab: "sessions",
     viewSessions: [],
@@ -58,7 +58,7 @@ function admin() {
     logOpen: "",
     sessionLogs: [],
     selLog: -1,
-    form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, keeper_idle_shutdown_seconds: null, control_port: null, ws_port: null, ports_enabled: null },
+    form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, keeper_idle_shutdown_seconds: null, control_port: null, ws_port: null, ports_enabled: null, admin_web_enabled: null },
     savedAt: "",
     rules: [],
     rulesError: "",
@@ -120,7 +120,7 @@ function admin() {
       await this.refresh();
       this.bindStateEvents();
       this.schedulePoll();
-      // 窗口重新获得焦点立即对账一次（用户切回窗口的瞬间就是最新）
+      // 窗口重新获得焦点立即对账一次（防 WebView 重载丢事件）
       window.addEventListener("focus", () => this.refreshSoon());
       // 触底加载更早日志：轮询哨兵位置（scroll 事件在本环境不可靠，轮询确定性最高；
       // slogLoading/hasMore 在 loadOlderLogs 内防重入，空闲开销为一次 getBoundingClientRect）
@@ -138,7 +138,13 @@ function admin() {
     bindStateEvents() {
       const bind = () => {
         if (!window.__wailsEvents) return false;
-        window.__wailsEvents.On("cdp:state", () => this.refreshSoon());
+        // 官方模式：payload 即完整状态 JSON，直达写入——无请求无防抖。
+        // 引擎停机信号（"engine-offline"）转离线态，数据保留标过期。
+        window.__wailsEvents.On("cdp:state", (data) => {
+          const payload = data && data.data !== undefined ? data.data : data;
+          if (payload === "engine-offline") { this.healthy = false; return; }
+          try { this.applyStatus(JSON.parse(payload)); } catch (e) { /* 非 JSON 忽略 */ }
+        });
         return true;
       };
       if (!bind()) window.addEventListener("wails-events-ready", () => bind(), { once: true });
@@ -151,10 +157,18 @@ function admin() {
     /* 状态轮询：兜底间隔——在线 30s 对账；离线/冷启动 800ms 快探 */
     schedulePoll() {
       clearTimeout(this._pollT);
+      // 双形态分流：App（__wailsEvents 在场=事件已直达）在线零轮询，仅
+      // 离线快探 800ms（引擎停机后无推送者，恢复感知靠这里）；
+      // Admin 网页（无事件通道）维持 5s 轮询（网页的既有形态）。
+      const inApp = !!window.__wailsEvents;
+      let iv;
+      if (inApp) iv = this.healthy ? 0 : 800;
+      else iv = this.healthy ? 5000 : 800;
+      if (!iv) return;
       this._pollT = setTimeout(async () => {
         await this.refresh();
         this.schedulePoll();
-      }, this.healthy ? 30000 : 800);
+      }, iv);
     },
 
     /* tab 切换（带页面副作用：懒加载） */
@@ -192,9 +206,9 @@ function admin() {
       return data;
     },
 
-    async refresh() {
-      try {
-        const snap = await this.api("GET", "/status");
+    // applyStatus 状态快照的唯一落库点：事件直达（payload 即数据）与首问
+    //（bindings）共用——官方模式「变量跟着变」的写入侧。
+    applyStatus(snap) {
         this.status = snap;
         this.healthy = true;
         const lastTs = {};
@@ -212,6 +226,7 @@ function admin() {
           this.form.control_port = snap.settings.control_port;
           this.form.ws_port = snap.settings.ws_port;
           this.form.ports_enabled = snap.settings.ports_enabled;
+          this.form.admin_web_enabled = snap.settings.admin_web_enabled;
           this.rules = JSON.parse(JSON.stringify(snap.settings.rewrites || []));
         }
         // 源页表单：仅在未编辑过时随状态初始化（编辑中不被轮询覆盖）
@@ -225,6 +240,11 @@ function admin() {
           this.epForm = JSON.parse(JSON.stringify(snap.endpoints)).map(e => ({ ...e, _show: false }));
         }
         if (!this.slogParsed.length) this.loadLogs();
+    },
+
+    async refresh() {
+      try {
+        this.applyStatus(await this.api("GET", "/status"));
         if (this.logOpen) this.loadSessionLogs(this.logOpen);
       } catch (err) {
         this.healthy = false;
@@ -255,7 +275,8 @@ function admin() {
         Number(this.form.keeper_idle_shutdown_seconds ?? this.status.settings.keeper_idle_shutdown_seconds) !== this.status.settings.keeper_idle_shutdown_seconds ||
         Number(this.form.control_port) !== this.status.settings.control_port ||
         Number(this.form.ws_port) !== this.status.settings.ws_port ||
-        this.form.ports_enabled !== this.status.settings.ports_enabled
+        this.form.ports_enabled !== this.status.settings.ports_enabled ||
+        this.form.admin_web_enabled !== this.status.settings.admin_web_enabled
       );
     },
 
@@ -269,6 +290,7 @@ function admin() {
           control_port: Number(this.form.control_port),
           ws_port: Number(this.form.ws_port),
           ports_enabled: !!this.form.ports_enabled,
+          admin_web_enabled: !!this.form.admin_web_enabled,
         });
         this.form.disconnect_reap_seconds = updated.disconnect_reap_seconds;
         this.form.alloc_reap_seconds = updated.alloc_reap_seconds;

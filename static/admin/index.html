@@ -29,8 +29,8 @@
         <div class="side-logo">C</div>
         <div class="side-brand-txt" x-show="!sideCollapsed" x-transition.opacity.duration.200ms>
           <div class="side-name">cdproxy <span class="side-ver">vdev</span></div>
-          <div class="side-alive" :class="healthy ? 'on' : 'off'">
-            <span class="dot"></span><span x-text="healthy ? '服务在线' : '服务离线'"></span>
+          <div class="side-alive" :class="healthy === true ? 'on' : (healthy === false ? 'off' : 'wait')">
+            <span class="dot"></span><span x-text="healthy === true ? '服务在线' : (healthy === false ? '服务离线' : '连接中…')"></span>
           </div>
         </div>
       </div>
@@ -42,8 +42,8 @@
             <div class="side-sec">系统状态</div>
             <div class="side-stat">
               <span class="mono">standalone</span>
-              <span class="bdg" :class="healthy ? (status?.sources?.standalone?.connected ? 'ok' : 'idle') : 'warn'"
-                    x-text="healthy ? (status?.sources?.standalone?.connected ? '已连接' : '未连接') : '数据过期'"></span>
+              <span class="bdg" :class="healthy === true ? (status?.sources?.standalone?.connected ? 'ok' : 'idle') : (healthy === false ? 'warn' : 'idle')"
+                    x-text="healthy === true ? (status?.sources?.standalone?.connected ? '已连接' : '未连接') : (healthy === false ? '数据过期' : '…')"></span>
             </div>
             <div class="side-idle" x-show="status?.sources?.standalone?.connected">
               <div class="side-idle-txt"><span>基座空闲</span><span class="mono" x-text="keeperIdleText()"></span></div>
@@ -51,8 +51,8 @@
             </div>
             <div class="side-stat">
               <span class="mono">extension</span>
-              <span class="bdg" :class="healthy ? (status?.sources?.extension?.connected ? 'ok' : 'warn') : 'warn'"
-                    x-text="healthy ? (status?.sources?.extension?.connected ? '已回连' : '未回连') : '数据过期'"></span>
+              <span class="bdg" :class="healthy === true ? (status?.sources?.extension?.connected ? 'ok' : 'warn') : (healthy === false ? 'warn' : 'idle')"
+                    x-text="healthy === true ? (status?.sources?.extension?.connected ? '已回连' : '未回连') : (healthy === false ? '数据过期' : '…')"></span>
             </div>
           </div>
         </template>
@@ -120,16 +120,16 @@
       <header class="topbar">
         <div class="page-title" x-text="pageTitle()"></div>
         <div class="spacer" style="--wails-draggable:drag"></div>
-        <div class="health" :class="healthy ? 'ok' : 'bad'">
+        <div class="health" :class="healthy === true ? 'ok' : (healthy === false ? 'bad' : 'wait')">
           <span class="dot"></span>
-          <span x-text="healthy ? '服务在线' : '服务离线'"></span>
+          <span x-text="healthy === true ? '服务在线' : (healthy === false ? '服务离线' : '连接中…')"></span>
         </div>
         <button class="sm" @click="toggleTheme()" title="切换暗色/亮色">
           <span x-text="document.documentElement.dataset.theme === 'dark' ? '☀ 亮色' : '🌙 暗色'"></span>
         </button>
       </header>
 
-      <div class="offline-banner" x-show="!healthy" x-cloak>
+      <div class="offline-banner" x-show="healthy === false" x-cloak>
         <span class="dot"></span>引擎未运行 · 数据可能过期
         <button class="sm" @click="refresh()">重试</button>
       </div>
@@ -554,6 +554,14 @@
                   <tr><td><label for="s-ports">外部端口总开关</label></td><td style="display:flex;align-items:center;gap:10px">
                     <label class="switch"><input id="s-ports" type="checkbox" x-model="form.ports_enabled"><span class="track"></span></label>
                     <span class="bdg warn" x-show="form.ports_enabled === false">仅 App 内嵌模式</span>
+                  </div>
+                  <div class="form-row">
+                    <div>
+                      <label for="s-adminweb">Admin 网页</label>
+                      <div class="sub">浏览器版管理页（127.0.0.1 端口打开）。默认关闭——管理走本 App；REST API 不受此开关影响</div>
+                    </div>
+                    <label class="switch"><input id="s-adminweb" type="checkbox" x-model="form.admin_web_enabled"><span class="track"></span></label>
+                    <span class="bdg" x-show="form.admin_web_enabled">已开放</span>
                     <span class="tip"><span class="tip-body">关闭 = 控制面与 WS 监听全部停用（桌面 App 内嵌模式：仅 App 界面可用，外部进程连不上）；重新打开即恢复。</span></span>
                   </td></tr>
                 </table>

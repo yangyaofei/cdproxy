@@ -318,3 +318,25 @@ func TestKeeperIdleShutdownClampAndDisable(t *testing.T) {
 		t.Fatalf("0 应原样通过（禁用），实际 %v err=%v", up.KeeperIdleShutdownSeconds, err)
 	}
 }
+
+func TestAdminWebEnabledToggle(t *testing.T) {
+	st := NewStore(filepath.Join(t.TempDir(), "settings.json"))
+	// 默认关（零值即关）
+	if st.Get().AdminWebEnabled {
+		t.Fatal("admin_web_enabled 默认应为关")
+	}
+	// Update 开
+	if _, err := st.Update(map[string]any{"admin_web_enabled": true}); err != nil {
+		t.Fatalf("开启失败: %v", err)
+	}
+	if !st.Get().AdminWebEnabled {
+		t.Fatal("Update 后应为开")
+	}
+	// Update 关（回写磁盘的值再加载仍一致）
+	if _, err := st.Update(map[string]any{"admin_web_enabled": false}); err != nil {
+		t.Fatalf("关闭失败: %v", err)
+	}
+	if st.Get().AdminWebEnabled {
+		t.Fatal("Update 后应为关")
+	}
+}

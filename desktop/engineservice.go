@@ -108,8 +108,20 @@ func (s *EngineService) emitState() {
 
 func (s *EngineService) emitOnce() {
 	if app := application.Get(); app != nil && app.Event != nil {
-		app.Event.Emit("cdp:state", nil)
+		// 官方事件形态：payload 即数据（v3 文档 "Emit(name, data)"）。
+		// 携带完整状态 JSON，前端回调直接写入响应式变量——无请求、无防抖。
+		if resp, err := s.DoRequest("GET", "/status", ""); err == nil && resp.Status == 200 {
+			app.Event.Emit("cdp:state", resp.Body)
+		}
 		s.log.Info("UI 状态事件已推送（cdp:state）")
+	}
+}
+
+// EmitEngineOffline 引擎停机的专用信号（此刻 /status 已不可用，无法随行
+// 状态）——前端收到即转离线态，数据保留并标过期。
+func (s *EngineService) EmitEngineOffline() {
+	if app := application.Get(); app != nil && app.Event != nil {
+		app.Event.Emit("cdp:state", "engine-offline")
 	}
 }
 

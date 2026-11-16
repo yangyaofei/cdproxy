@@ -21,7 +21,7 @@ import (
 
 // knownKeys 合法设置键（Update 对未知键显式报错而非静默忽略——配置写错
 // 必须当场暴露，否则调用方以为生效，事后才发现被吞）。
-var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "rewrites", "downstream_mode", "ext_token", "sources", "routing", "endpoints", "control_port", "ws_port", "ports_enabled", "agent_browser_binary"}
+var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "rewrites", "downstream_mode", "ext_token", "sources", "routing", "endpoints", "control_port", "ws_port", "ports_enabled", "admin_web_enabled", "agent_browser_binary"}
 
 // 各字段的下限（防误配成 0 导致回收风暴）。
 var minValues = map[string]float64{
@@ -113,6 +113,10 @@ type Settings struct {
 	//（App 内嵌模式：仅 Wails 绑定可用，外部进程一律连不上）。
 	// 关闭时存量上游连接断开，回收宽限后清理；重新打开即恢复监听。
 	PortsEnabled bool `json:"ports_enabled"`
+	// AdminWebEnabled 是否开放浏览器版管理页（GET / 与 /static/*）。
+	// 桌面 App 的资产由 Wails 内嵌服务，不经此开关；REST API 也不受影响。
+	// 默认关：管理走 App（事件直达形态），网页仅按需临时打开。
+	AdminWebEnabled bool `json:"admin_web_enabled"`
 	// AgentBrowserBinary agent-browser 二进制覆盖路径（空 = 自动解析：
 	// App 内嵌 bundled → PATH）。桌面 App 的内嵌集成用——CLI daemon
 	// 忽略此键（自己就在 PATH 世界里）。
@@ -390,6 +394,9 @@ func load(path string) Settings {
 	if v, ok := raw["ws_port"].(float64); ok && validPort(int(v)) {
 		out.WsPort = int(v)
 	}
+	if v, ok := raw["admin_web_enabled"].(bool); ok {
+		out.AdminWebEnabled = v
+	}
 	if v, ok := raw["ports_enabled"].(bool); ok {
 		out.PortsEnabled = v
 	}
@@ -558,6 +565,12 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 		if key == "ports_enabled" {
 			if b, isBool := value.(bool); isBool {
 				current.PortsEnabled = b
+			}
+			continue
+		}
+		if key == "admin_web_enabled" {
+			if b, isBool := value.(bool); isBool {
+				current.AdminWebEnabled = b
 			}
 			continue
 		}

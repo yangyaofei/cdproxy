@@ -63,6 +63,17 @@ func New(p *proxy.Proxy, ilg *interlog.Log, store *settings.Store, k keeper.Conf
 }
 
 // Handler 构造路由。
+// adminWebGuard Admin 网页开关守卫：关闭时 /static/* 同样 403。
+func adminWebGuard(c *Control, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !c.store.Get().AdminWebEnabled {
+			http.Error(w, "Admin 网页未开放（admin_web_enabled=false）", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (c *Control) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -70,9 +81,17 @@ func (c *Control) Handler() http.Handler {
 	if err != nil {
 		c.log.Error("内嵌资产缺失", "err", err)
 	}
+	// Admin 网页开关（默认关）：关时不服务浏览器版管理页；App 资产与
+	// REST API 均不经此路径。API 一律放行（plugin/脚本依赖）。
+	adminWebOK := func() bool { return c.store.Get().AdminWebEnabled }
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
+			return
+		}
+		if !adminWebOK() {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			http.Error(w, "Admin 网页未开放（settings.admin_web_enabled=false；请使用桌面 App，或经 API 临时开启）", http.StatusForbidden)
 			return
 		}
 		data, err := fs.ReadFile(admin, "index.html")
@@ -85,7 +104,7 @@ func (c *Control) Handler() http.Handler {
 		_, _ = w.Write(data)
 	})
 	// 静态资源禁缓存（go:embed 随二进制更新，持久 profile 的浏览器会缓存旧版）
-	mux.Handle("GET /static/", http.StripPrefix("/static/", noCache(http.FileServer(http.FS(admin)))))
+	mux.Handle("GET /static/", adminWebGuard(c, http.StripPrefix("/static/", noCache(http.FileServer(http.FS(admin))))))
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

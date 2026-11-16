@@ -73,7 +73,9 @@ uv run python scripts/smoke_test.py              # 端到端五项（需真实 C
 └── var/                      # 运行数据（gitignore；Go 版数据目录默认 ~/agent-browser/proxy）
 ```
 
-## 桌面 App（desktop/，Wails v3）
+## 桌面 App
+
+App 内 UI 为事件驱动（Wails 官方形态）：引擎状态变化点 → `Event.Emit("cdp:state", 完整状态JSON)` → 前端回调直达写入响应式变量——无请求、无防抖；在线时零轮询（仅引擎停机后 800ms 快探恢复感知 + 窗口 focus 对账兜底）。浏览器版 Admin 网页无事件通道，维持 5s 轮询（`admin_web_enabled` 控制，默认关）。（desktop/，Wails v3）
 
 CLI daemon 的桌面宿主：同一引擎（internal/core）编译进主进程，菜单栏常驻
 （无 Dock 图标）+ 托盘菜单（状态/打开管理界面/重启引擎/退出）+ 单实例
