@@ -1,0 +1,46 @@
+name: CI
+
+# 持续集成：push master / PR / 手动。
+# denpa-jack 同款 tracked-file guard——密钥文件一旦被误跟踪立即红灯，
+# 不等发布才发现。
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ci:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Tracked-file guard
+        run: |
+          fail=0
+
+          tracked_secret=$(git ls-files | grep -iE '(^|/)(secrets?\.env.*|.*\.p12|.*\.pw|.*\.pem|.*\.key|.*\.jks)$|(^|/)certs/' || true)
+          if [ -n "$tracked_secret" ]; then
+            echo "::error::疑似凭据/密钥文件被跟踪（私钥只进 GitHub Secrets，本地放 certs/ 且被 ignore；.pub 公钥除外）："
+            echo "$tracked_secret" | head -5
+            fail=1
+          fi
+
+          tracked_tmp=$(git ls-files tmp/ || true)
+          if [ -n "$tracked_tmp" ]; then
+            echo "::error::tmp/ 下不应有被跟踪的文件（忽略规则对已跟踪文件无效）："
+            echo "$tracked_tmp" | head -5
+            fail=1
+          fi
+
+          [ "$fail" -eq 0 ] && echo "通过：没有被误跟踪的凭据/临时文件"
+          exit $fail
+
+      - name: Vet + Test
+        run: |
+          go vet ./cmd/... ./internal/... ./desktop
+          go test ./...
