@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>cdproxy · Admin</title>
-  <link rel="stylesheet" href="/static/app.css?v=0.2.6">
-  <script src="/static/app.js?v=0.2.6" defer></script>
+  <link rel="stylesheet" href="/static/app.css?v=0.3.0">
+  <script src="/static/app.js?v=0.3.0" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
 </head>
 <body>
@@ -27,27 +27,94 @@
     <nav class="tabs">
       <button :class="tab === 'sessions' ? 'on' : ''" @click="tab = 'sessions'">会话</button>
       <button :class="tab === 'rules' ? 'on' : ''" @click="tab = 'rules'">规则</button>
-      <button :class="tab === 'keeper' ? 'on' : ''" @click="tab = 'keeper'">基座</button>
-      <button :class="tab === 'settings' ? 'on' : ''" @click="tab = 'settings'">设置</button>
+      <button :class="tab === 'sources' ? 'on' : ''" @click="tab = 'sources'; loadSources()">源</button>
+      <button :class="tab === 'settings' ? 'on' : ''" @click="tab = 'settings'; loadConfigs()">设置</button>
       <button :class="tab === 'logs' ? 'on' : ''" @click="tab = 'logs'">日志</button>
     </nav>
 
-    <!-- 基座 -->
-    <section x-show="tab === 'keeper'">
-      <h2>基座 Chrome</h2>
+    <!-- 源：双源并存（standalone / extension）+ 路由 -->
+    <section x-show="tab === 'sources'">
       <template x-if="status">
         <div>
+          <h2>源 · standalone <span class="pill" :class="status.sources.standalone.connected ? 'ok' : 'idle'" x-text="status.sources.standalone.connected ? '已连接' : '未连接'"></span>
+            <span class="pill" :class="status.sources.standalone.enabled ? 'ok' : 'bad'" x-text="status.sources.standalone.enabled ? '启用' : '已禁用'"></span></h2>
           <table class="kv">
-            <tr><td>状态</td><td><span class="pill" :class="status.keeper.alive ? 'ok' : 'bad'" x-text="status.keeper.alive ? '存活' : '未运行'"></span></td></tr>
-            <tr><td>基座持有</td><td><code x-text="`agent-browser 会话 ${status.keeper.base_session}`"></code></td></tr>
-            <tr><td>Profile</td><td><code x-text="status.keeper.profile"></code></td></tr>
+            <tr><td>基座 Chrome</td><td><span class="pill" :class="status.keeper.alive ? 'ok' : 'bad'" x-text="status.keeper.alive ? '存活' : '未运行'"></span>
+              <span class="hint">持有者 <code x-text="`agent-browser 会话 ${status.keeper.base_session}`"></code> · Profile <code x-text="status.keeper.profile"></code></span></td></tr>
             <tr><td>空闲关闭</td><td><code x-text="status.settings.keeper_idle_shutdown_seconds === 0 ? '禁用' : status.settings.keeper_idle_shutdown_seconds + 's'"></code></td></tr>
-            <tr><td>chrome 下游</td><td><span class="pill" :class="status.downstream.chrome.connected ? 'ok' : 'idle'" x-text="status.downstream.chrome.connected ? '已连接' : '未连接'"></span></td></tr>
-            <tr><td>extension 下游</td><td><span class="pill" :class="status.downstream.extension.connected ? 'ok' : 'idle'" x-text="status.downstream.extension.connected ? '已回连' : '未回连'"></span></td></tr>
-            <tr><td>新会话默认</td><td><code x-text="status.downstream.default_mode"></code></td></tr>
+            <tr><td>agent-browser</td><td>
+              <template x-if="abInfo">
+                <span>
+                  <span class="pill" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? abInfo.version : '未检测到'"></span>
+                  <span class="hint"><code x-text="abInfo.path || ''"></code>（来源 <code x-text="abInfo.source"></code>）</span>
+                </span>
+              </template>
+            </td></tr>
           </table>
-          <button class="warn" @click="restartKeeper()" :disabled="busy">重启基座</button>
-          <span class="hint">重启只动 chrome 基座（extension 会话不受影响）；无基座时退化为复位扩展连接</span>
+          <div class="logs-toolbar">
+            <button class="sm" @click="restartKeeper()" :disabled="busy">重启基座</button>
+            <button class="sm" @click="toggleSource('standalone', !status.sources.standalone.enabled)" :disabled="busy"
+                    x-text="status.sources.standalone.enabled ? '禁用此源' : '启用此源'"></button>
+            <span class="hint">重启只动基座 Chrome（extension 会话不受影响）；无基座时退化为复位扩展连接</span>
+          </div>
+
+          <h2 style="margin-top:22px">源 · extension <span class="pill" :class="status.sources.extension.connected ? 'ok' : 'idle'" x-text="status.sources.extension.connected ? '已回连' : '未回连'"></span>
+            <span class="pill" :class="status.sources.extension.enabled ? 'ok' : 'bad'" x-text="status.sources.extension.enabled ? '启用' : '已禁用'"></span></h2>
+          <table class="kv">
+            <tr><td>回连接口</td><td><code x-text="extRelayUrl()"></code>
+              <span class="hint">cdp-ext 扩展 options 页 Relay 填此地址</span></td></tr>
+            <tr><td>准入令牌</td><td><input type="text" x-model="srcForm.ext_token" spellcheck="false" style="width:220px">
+              <button class="sm" @click="saveExtToken()" :disabled="busy">保存</button>
+              <span class="hint">须与扩展 options 页 Token 一致；改后扩展自动重连</span></td></tr>
+            <tr><td>未回连排查</td><td class="hint">确认宿主 Chrome 在运行、已装 cdp-ext、Token 一致；扩展 20s 心跳 + 30s alarm 兜底重连</td></tr>
+          </table>
+          <div class="logs-toolbar">
+            <button class="sm" @click="toggleSource('extension', !status.sources.extension.enabled)" :disabled="busy"
+                    x-text="status.sources.extension.enabled ? '禁用此源' : '启用此源'"></button>
+            <span class="hint">禁用后新会话不再路由到此源；存量会话不受影响</span>
+          </div>
+
+          <h2 style="margin-top:22px">路由 · 会话名 → 源 <span class="hint">显式指定（POST /sessions 的 source 参数）&gt; 前缀规则（先中先用）&gt; 默认源</span></h2>
+          <table class="kv">
+            <tr><td>默认源</td><td>
+              <select x-model="routeForm.default_source">
+                <option value="standalone">standalone（基座 Chrome）</option>
+                <option value="extension">extension（宿主浏览器）</option>
+              </select>
+            </td></tr>
+          </table>
+          <div class="rules-editor">
+            <table>
+              <thead><tr><th style="width:30%">会话名前缀</th><th style="width:30%">路由到源</th><th></th></tr></thead>
+              <template x-for="(r, i) in routeForm.rules" :key="i">
+                <tbody>
+                  <tr>
+                    <td class="mono"><input x-model="r.prefix" placeholder="如 ext-"></td>
+                    <td>
+                      <select x-model="r.source">
+                        <option value="standalone">standalone</option>
+                        <option value="extension">extension</option>
+                      </select>
+                    </td>
+                    <td><button class="danger sm" @click="routeForm.rules.splice(i, 1)">✕</button></td>
+                  </tr>
+                </tbody>
+              </template>
+            </table>
+          </div>
+          <div style="margin-top:10px">
+            <button class="sm" @click="routeForm.rules.push({prefix: '', source: 'extension'})">＋ 添加规则</button>
+            <button class="primary" @click="saveRouting()" :disabled="busy">保存路由</button>
+            <span class="ok-text" x-show="routeSavedAt" x-text="'已保存 ' + routeSavedAt"></span>
+            <span class="err-text" x-show="routeError" x-text="routeError"></span>
+          </div>
+
+          <h2 style="margin-top:22px">CDP 接入</h2>
+          <table class="kv">
+            <tr><td>分配会话</td><td class="mono" style="font-size:12px">POST /sessions {"name":"foo"} · 可选 "source":"extension|standalone"</td></tr>
+            <tr><td>连接地址</td><td class="mono" style="font-size:12px" x-text="`ws://127.0.0.1:${status.settings.ws_port}/cdp/<token>`"></td></tr>
+            <tr><td>agent-browser</td><td class="hint">plugin 自动分配（默认路由）；前缀规则命中即换源</td></tr>
+          </table>
         </div>
       </template>
     </section>
@@ -57,22 +124,46 @@
       <h2>会话 <span class="count" x-text="viewSessions.length"></span></h2>
       <div class="table-scroll">
       <table class="list">
-        <thead><tr><th>名称</th><th>状态</th><th>名下 tab</th><th>最近活动</th><th></th></tr></thead>
+        <thead><tr><th>名称</th><th>类型</th><th>状态</th><th>名下 tab</th><th>组名</th><th>最近活动</th><th></th></tr></thead>
         <template x-for="s in viewSessions" :key="s.name">
           <tbody>
             <tr>
               <td x-text="s.name"></td>
+              <td><span class="pill" :class="s.type === 'extension' ? 'ext-b' : 'sa-b'" x-text="s.type || s.downstream"></span></td>
               <td><span class="pill" :class="s.state === 'connected' ? 'ok' : (s.state === 'idle' ? 'idle' : 'off')"
                          x-text="s.state === 'connected' ? '已连接' : (s.state === 'idle' ? '空闲' : '已断开')"></span></td>
-              <td x-text="s.targets"></td>
+              <td><button class="sm linkish" @click="toggleTabs(s.name)" x-text="(tabsOpen === s.name ? '收起 ' : '') + (s.targets ?? 0) + ' 个'"></button></td>
+              <td class="mono" style="font-size:12px" x-text="s.group_name || '—'"></td>
               <td x-text="fmtLast(s.last_ts)"></td>
               <td>
                 <button class="sm" @click="toggleLogs(s.name)" x-text="logOpen === s.name ? '收起' : '日志'"></button>
                 <button class="danger sm" x-show="s.state !== 'released'" @click="release(s.name)" :disabled="busy">释放</button>
               </td>
             </tr>
+            <tr x-show="tabsOpen === s.name">
+              <td colspan="7" style="padding: 0 8px 10px">
+                <div class="logs-wrap">
+                  <div class="logs-toolbar">
+                    <button class="sm" @click="loadTabs(s.name)" :disabled="busy">刷新</button>
+                    <span class="hint">实时查询该会话可见的 tab（展开即查）</span>
+                    <span class="err-text" x-show="tabsError" x-text="tabsError"></span>
+                  </div>
+                  <table class="logt" x-show="sessionTabs.length">
+                    <thead><tr><th style="width:36%">标题</th><th>URL</th><th style="width:280px">targetId</th></tr></thead>
+                    <template x-for="t in sessionTabs" :key="t.targetId">
+                      <tr>
+                        <td x-text="t.title || '（无标题）'"></td>
+                        <td class="wrap mono" style="font-size:12px" x-text="t.url"></td>
+                        <td class="mono" style="font-size:11px" x-text="t.targetId"></td>
+                      </tr>
+                    </template>
+                  </table>
+                  <div class="log-empty" x-show="!sessionTabs.length">（无可见 tab）</div>
+                </div>
+              </td>
+            </tr>
             <tr x-show="logOpen === s.name">
-              <td colspan="5" style="padding: 0 8px 10px">
+              <td colspan="7" style="padding: 0 8px 10px">
                 <div class="logs-wrap">
                   <div class="logs-toolbar">
                     <button class="sm" @click="loadSessionLogs(s.name)" :disabled="busy">刷新</button>
@@ -198,23 +289,6 @@
           </td>
         </tr>
         <tr>
-          <td><label for="s-dsmode">新会话下游</label></td>
-          <td>
-            <select id="s-dsmode" x-model="form.downstream_mode">
-              <option value="chrome">chrome（共享基座 Chrome）</option>
-              <option value="extension">extension（cdp-ext 扩展宿主浏览器）</option>
-            </select>
-            <span class="hint">在线可切，只影响之后的新分配——存量会话继续用原下游直到自然结束</span>
-          </td>
-        </tr>
-        <tr>
-          <td><label for="s-exttoken">扩展令牌</label></td>
-          <td>
-            <input id="s-exttoken" type="text" x-model="form.ext_token" spellcheck="false">
-            <span class="hint">/ext 反向入口准入令牌，须与 cdp-ext 扩展 options 页配置一致；改后扩展需重连</span>
-          </td>
-        </tr>
-        <tr>
           <td><label for="s-cport">控制面端口</label></td>
           <td>
             <input id="s-cport" type="number" min="1" max="65535" step="1" x-model="form.control_port">
@@ -241,6 +315,27 @@
         <span class="hint">保存即生效并持久化（数据目录 settings.json）</span>
         <span class="ok-text" x-show="savedAt" x-text="'已保存 ' + savedAt"></span>
       </div>
+
+      <h2 style="margin-top:22px">settings.json 全文编辑</h2>
+      <p class="hint">表单未覆盖的全部键（rewrites/sources/routing 等）在此整体编辑；保存=解析后作为一次 PATCH 提交（未知键报错回显）</p>
+      <textarea class="json-editor" x-model="jsonDraft" spellcheck="false" rows="14"></textarea>
+      <div style="margin-top:8px">
+        <button class="sm" @click="reloadJsonDraft()" :disabled="busy">重新加载</button>
+        <button class="primary sm" @click="saveJson()" :disabled="busy">保存 JSON</button>
+        <span class="ok-text" x-show="jsonSavedAt" x-text="'已保存 ' + jsonSavedAt"></span>
+        <span class="err-text" x-show="jsonError" x-text="jsonError"></span>
+      </div>
+
+      <h2 style="margin-top:22px">配置文件</h2>
+      <div class="logs-toolbar">
+        <template x-for="f in configFiles" :key="f.key">
+          <button class="sm" :class="configView === f.key ? 'on' : ''" @click="loadConfigFile(f.key)" x-text="f.title"></button>
+        </template>
+        <span class="hint">只读展示 · <span x-text="configFiles.map(f => f.exists ? f.title : '').filter(Boolean).join(' / ') || '（无）'"></span> 已存在</span>
+      </div>
+      <pre class="config-view" x-show="configContent !== null" x-text="configContent"></pre>
+      <p class="hint" x-show="configContent === null">点击文件名查看内容</p>
+
       <h2 style="margin-top:22px">停机</h2>
       <button class="danger" @click="shutdown()" :disabled="busy">停止服务</button>
       <span class="hint">基座 Chrome 不受影响（keeper 独立管理，重新拉起服务即可恢复）</span>

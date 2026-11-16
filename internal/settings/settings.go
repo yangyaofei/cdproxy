@@ -346,7 +346,9 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 			if err != nil {
 				return Settings{}, fmt.Errorf("sources 序列化失败: %v", err)
 			}
-			var src Sources
+			// 子对象合并语义（patch）：缺省字段保持现值——与 PUT /settings
+			// 整体 patch 语义一致；只传 {token} 不会误关两个源。
+			src := current.Sources
 			if err := json.Unmarshal(data, &src); err != nil {
 				return Settings{}, fmt.Errorf("sources 解析失败: %v", err)
 			}
@@ -366,7 +368,8 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 			if err != nil {
 				return Settings{}, fmt.Errorf("routing 序列化失败: %v", err)
 			}
-			var rt Routing
+			// 子对象合并语义（patch）：只传 default_source 不清空 rules
+			rt := current.Routing
 			if err := json.Unmarshal(data, &rt); err != nil {
 				return Settings{}, fmt.Errorf("routing 解析失败: %v", err)
 			}

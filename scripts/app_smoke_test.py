@@ -109,14 +109,18 @@ def t2_status():
     s = st.get("settings", {})
     check("settings 含端口三键", all(k in s for k in
           ("control_port", "ws_port", "ports_enabled")))
-    check("downstream 双链路段", "downstream" in st and "chrome" in st["downstream"]
-          and "extension" in st["downstream"])
+    src = st.get("sources", {})
+    check("sources 双源段", "standalone" in src and "extension" in src
+          and "enabled" in src.get("standalone", {}) and "connected" in src.get("extension", {}))
+    rt = st.get("routing", {})
+    check("routing 默认源+规则表", rt.get("default_source") in ("standalone", "extension")
+          and isinstance(rt.get("rules"), list))
 
 
 def t3_extension():
     print("T3 扩展回连")
     code, st = http("GET", "/status")
-    ext = st.get("downstream", {}).get("extension", {}).get("connected")
+    ext = st.get("sources", {}).get("extension", {}).get("connected")
     check("cdp-ext 已回连（宿主 Chrome 需在跑）", ext is True,
           "" if ext else "未回连：确认日常 Chrome 开着且装了 cdp-ext")
 

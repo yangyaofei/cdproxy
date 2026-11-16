@@ -104,7 +104,7 @@ async function waitExtConnected(timeoutMs = 20000, requireDrop = true) {
   let everFalse = false;
   while (Date.now() - t0 < timeoutMs) {
     const s = await http("GET", "/status");
-    const connected = s.data?.downstream?.extension?.connected === true;
+    const connected = s.data?.sources?.extension?.connected === true;
     if (!connected) everFalse = true; // 观察到断开态，说明确实经历了重连
     if ((!requireDrop || everFalse) && connected) return true;
     await sleep(200);
@@ -118,7 +118,7 @@ await http("PUT", "/settings", { downstream_mode: "extension" });
   // 扩展可能处于上一轮测试遗留的「SW 死等 alarm 唤醒」窗口（≤30s）——等它回来
   const ok = await waitExtConnected(45000, false);
   const s = await http("GET", "/status");
-  check("R0 扩展已回连", ok && s.data?.downstream?.extension?.connected === true);
+  check("R0 扩展已回连", ok && s.data?.sources?.extension?.connected === true);
   if (!ok) { console.error("扩展未回连，前置失败"); process.exit(1); }
 }
 

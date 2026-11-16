@@ -114,6 +114,21 @@ func TestDownstreamModeAndExtToken(t *testing.T) {
 		updated.Routing.Rules[0].Prefix != "sa-" {
 		t.Fatalf("routing 更新异常: %+v", updated.Routing)
 	}
+	// 子对象合并语义：只传 default_source 不清空 rules；只传 token 不动开关
+	updated, err = s.Update(map[string]any{"routing": map[string]any{"default_source": "standalone"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Routing.Rules) != 1 || updated.Routing.Rules[0].Prefix != "sa-" {
+		t.Fatalf("routing 部分更新不应清空 rules: %+v", updated.Routing)
+	}
+	updated, err = s.Update(map[string]any{"sources": map[string]any{"token": "tok-4"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Sources.StandaloneEnabled || updated.Sources.ExtensionEnabled || updated.Sources.ExtensionToken != "tok-4" {
+		t.Fatalf("sources 部分更新不应动开关: %+v", updated.Sources)
+	}
 	// 两源同时禁用被拒
 	if _, err := s.Update(map[string]any{"sources": map[string]any{"standalone_enabled": false, "extension_enabled": false}}); err == nil {
 		t.Fatal("两源同时禁用应报错")

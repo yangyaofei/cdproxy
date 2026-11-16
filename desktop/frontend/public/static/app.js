@@ -55,7 +55,7 @@ function admin() {
     logOpen: "",
     sessionLogs: [],
     selLog: -1,
-    form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, keeper_idle_shutdown_seconds: null, downstream_mode: null, ext_token: null, control_port: null, ws_port: null, ports_enabled: null },
+    form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, keeper_idle_shutdown_seconds: null, control_port: null, ws_port: null, ports_enabled: null },
     savedAt: "",
     rules: [],
     rulesError: "",
@@ -66,6 +66,24 @@ function admin() {
     slogHasMore: false,
     slogLoading: false,
     busy: false,
+    // 会话 tabs 展开即查
+    tabsOpen: "",
+    sessionTabs: [],
+    tabsError: "",
+    // 源页
+    abInfo: null,
+    srcForm: { ext_token: "" },
+    routeForm: { default_source: "standalone", rules: [] },
+    routeSavedAt: "",
+    routeError: "",
+    sourcesLoaded: false,
+    // 设置页 JSON 编辑器 + 配置查看
+    jsonDraft: "",
+    jsonSavedAt: "",
+    jsonError: "",
+    configFiles: [],
+    configView: "",
+    configContent: null,
 
     async init() {
       const saved = localStorage.getItem("abp_theme") || "dark";
@@ -122,13 +140,17 @@ function admin() {
           this.form.disconnect_reap_seconds = snap.settings.disconnect_reap_seconds;
           this.form.alloc_reap_seconds = snap.settings.alloc_reap_seconds;
           this.form.keeper_idle_shutdown_seconds = snap.settings.keeper_idle_shutdown_seconds;
-          this.form.downstream_mode = snap.settings.downstream_mode;
-          this.form.ext_token = snap.settings.ext_token;
           this.form.control_port = snap.settings.control_port;
           this.form.ws_port = snap.settings.ws_port;
           this.form.ports_enabled = snap.settings.ports_enabled;
           this.rules = JSON.parse(JSON.stringify(snap.settings.rewrites || []));
         }
+        // 源页表单：仅在未编辑过时随状态初始化（编辑中不被轮询覆盖）
+        if (!this.sourcesLoaded && snap.routing) {
+          this.routeForm.default_source = snap.routing.default_source;
+          this.routeForm.rules = JSON.parse(JSON.stringify(snap.routing.rules || []));
+        }
+        if (!this.srcForm.ext_token && snap.sources) this.srcForm.ext_token = snap.sources.extension.token;
         if (!this.slogParsed.length) this.loadLogs();
         if (this.logOpen) this.loadSessionLogs(this.logOpen);
       } catch (err) {
@@ -143,8 +165,6 @@ function admin() {
         Number(this.form.disconnect_reap_seconds) !== this.status.settings.disconnect_reap_seconds ||
         Number(this.form.alloc_reap_seconds) !== this.status.settings.alloc_reap_seconds ||
         Number(this.form.keeper_idle_shutdown_seconds ?? this.status.settings.keeper_idle_shutdown_seconds) !== this.status.settings.keeper_idle_shutdown_seconds ||
-        this.form.downstream_mode !== this.status.settings.downstream_mode ||
-        this.form.ext_token !== this.status.settings.ext_token ||
         Number(this.form.control_port) !== this.status.settings.control_port ||
         Number(this.form.ws_port) !== this.status.settings.ws_port ||
         this.form.ports_enabled !== this.status.settings.ports_enabled
@@ -158,8 +178,6 @@ function admin() {
           disconnect_reap_seconds: Number(this.form.disconnect_reap_seconds),
           alloc_reap_seconds: Number(this.form.alloc_reap_seconds),
           keeper_idle_shutdown_seconds: Number(this.form.keeper_idle_shutdown_seconds),
-          downstream_mode: this.form.downstream_mode,
-          ext_token: this.form.ext_token,
           control_port: Number(this.form.control_port),
           ws_port: Number(this.form.ws_port),
           ports_enabled: !!this.form.ports_enabled,
@@ -167,8 +185,6 @@ function admin() {
         this.form.disconnect_reap_seconds = updated.disconnect_reap_seconds;
         this.form.alloc_reap_seconds = updated.alloc_reap_seconds;
         this.form.keeper_idle_shutdown_seconds = updated.keeper_idle_shutdown_seconds;
-        this.form.downstream_mode = updated.downstream_mode;
-        this.form.ext_token = updated.ext_token;
         this.form.control_port = updated.control_port;
         this.form.ws_port = updated.ws_port;
         this.form.ports_enabled = updated.ports_enabled;
@@ -178,6 +194,150 @@ function admin() {
         await this.refresh();
       } catch (err) {
         alert("保存失败: " + err.message);
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    // ── 会话 tabs：展开即查（数据面实时，不缓存）──
+    toggleTabs(name) {
+      if (this.tabsOpen === name) { this.tabsOpen = ""; return; }
+      this.tabsOpen = name;
+      this.loadTabs(name);
+    },
+
+    async loadTabs(name) {
+      this.tabsError = "";
+      this.busy = true;
+      try {
+        const r = await this.api("GET", `/sessions/${encodeURIComponent(name)}/tabs`);
+        this.sessionTabs = r.tabs || [];
+      } catch (err) {
+        this.tabsError = err.message;
+        this.sessionTabs = [];
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    // ── 源页 ──
+    extRelayUrl() {
+      if (!this.status) return "";
+      return `ws://127.0.0.1:${this.status.settings.ws_port}/ext`;
+    },
+
+    async loadSources() {
+      try {
+        this.abInfo = await this.api("GET", "/sources/agent-browser");
+      } catch (err) {
+        this.abInfo = null;
+      }
+    },
+
+    async toggleSource(kind, enable) {
+      if (this.busy) return;
+      // 双源至少留一个：前端先拦（后端同样拒绝）
+      const cur = this.status?.sources || {};
+      const other = kind === "standalone" ? cur.extension?.enabled : cur.standalone?.enabled;
+      if (!enable && !other) { alert("不能两源同时禁用"); return; }
+      this.busy = true;
+      try {
+        await this.api("PUT", "/settings", { sources: { [kind === "standalone" ? "standalone_enabled" : "extension_enabled"]: enable } });
+        await this.refresh();
+      } catch (err) {
+        alert("切换失败: " + err.message);
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    async saveExtToken() {
+      this.busy = true;
+      try {
+        await this.api("PUT", "/settings", { sources: { token: this.srcForm.ext_token.trim() } });
+        await this.refresh();
+      } catch (err) {
+        alert("保存失败: " + err.message);
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    async saveRouting() {
+      this.routeError = "";
+      const rules = this.routeForm.rules
+        .map(r => ({ prefix: (r.prefix || "").trim(), source: r.source }))
+        .filter(r => r.prefix);
+      if (this.routeForm.rules.some(r => (r.prefix || "").trim() && !["standalone", "extension"].includes(r.source))) {
+        this.routeError = "规则 source 须为 standalone 或 extension"; return;
+      }
+      this.busy = true;
+      try {
+        const updated = await this.api("PUT", "/settings", { routing: { default_source: this.routeForm.default_source, rules } });
+        this.routeForm.rules = JSON.parse(JSON.stringify(updated.routing?.rules || []));
+        this.routeForm.default_source = updated.routing?.default_source;
+        this.routeSavedAt = new Date().toLocaleTimeString();
+        await this.refresh();
+      } catch (err) {
+        this.routeError = err.message;
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    // ── settings.json 全文编辑 ──
+    async reloadJsonDraft() {
+      try {
+        const cur = await this.api("GET", "/settings");
+        this.jsonDraft = JSON.stringify(cur, null, 2);
+        this.jsonError = "";
+      } catch (err) {
+        this.jsonError = err.message;
+      }
+    },
+
+    async saveJson() {
+      this.jsonError = "";
+      let obj;
+      try { obj = JSON.parse(this.jsonDraft); } catch (err) {
+        this.jsonError = "JSON 解析失败: " + err.message; return;
+      }
+      if (typeof obj !== "object" || Array.isArray(obj) || obj === null) {
+        this.jsonError = "顶层须为对象"; return;
+      }
+      this.busy = true;
+      try {
+        const updated = await this.api("PUT", "/settings", obj);
+        this.jsonDraft = JSON.stringify(updated, null, 2);
+        this.jsonSavedAt = new Date().toLocaleTimeString();
+        await this.refresh();
+      } catch (err) {
+        this.jsonError = err.message;
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    // ── 配置文件只读查看 ──
+    async loadConfigs() {
+      if (this.configFiles.length) return;
+      try {
+        const r = await this.api("GET", "/config/files");
+        this.configFiles = r.files || [];
+      } catch (err) {
+        this.configFiles = [];
+      }
+    },
+
+    async loadConfigFile(key) {
+      this.busy = true;
+      try {
+        const r = await this.api("GET", `/config/files/${encodeURIComponent(key)}`);
+        this.configView = key;
+        this.configContent = r.content ?? "（空文件）";
+      } catch (err) {
+        this.configView = key;
+        this.configContent = "读取失败: " + err.message;
       } finally {
         this.busy = false;
       }

@@ -447,14 +447,41 @@ func (p *Proxy) AllocSession(name, explicitSource string) (string, error) {
 		// 仅全新（或改绑）会话预开后台 tab；复用路径沿用既有 tab（避免每次 launch 泄漏一个）
 		preopenParams := map[string]any{"url": "about:blank", "background": true}
 		if mode == dsExtension {
+			// 扩展的 createTarget 应答要等归组完成（首个组创建数十毫秒），
+			// fire-and-forget 会让客户端紧随的 getTargets 跑在归属记录之前
+			// （T1 竞态实测复现）。同步等应答：alloc 返回时 tab 已归属。
 			preopenParams["abSession"] = name // 扩展据此归组
-		}
-		if err := p.dsCommand(sess, 0, false, "Target.createTarget", preopenParams, "create"); err != nil {
+			if err := p.dsCommandSync(sess, "Target.createTarget", preopenParams, "create", 3*time.Second); err != nil {
+				p.log.Error("预开 tab 失败（会话仍可用，首个命令会开新 tab）", "session", name, "err", err)
+			}
+		} else if err := p.dsCommand(sess, 0, false, "Target.createTarget", preopenParams, "create"); err != nil {
 			p.log.Error("预开 tab 失败（会话仍可用，首个命令会开新 tab）", "session", name, "err", err)
 		}
 		p.scheduleReap(sess, p.store.Get().AllocReapSeconds)
 	}
 	return fmt.Sprintf("ws://127.0.0.1:%d/cdp/%s", p.wsPort, sess.Token), nil
+}
+
+// dsCommandSync 会话署名的同步下游命令：响应先做 tag 加工（create 归属 /
+// attach 绑定）再投递通道——调用方醒来时归属已就位。用于 alloc 预开等
+// 必须与后续上游命令保持时序的代理主动命令。
+func (p *Proxy) dsCommandSync(sess *state.Session, method string, params map[string]any, tag string, timeout time.Duration) error {
+	ch := make(chan map[string]any, 1)
+	id := p.st.NextSessCallID(sess, tag, method, ch)
+	if err := p.sendDownstreamCommand(sess.Downstream(), id, method, params); err != nil {
+		p.st.TakePending(id)
+		return err
+	}
+	select {
+	case msg := <-ch:
+		if e, ok := msg["error"].(map[string]any); ok {
+			return fmt.Errorf("下游拒绝 %s: %v", method, e)
+		}
+		return nil
+	case <-time.After(timeout):
+		p.st.TakePending(id)
+		return fmt.Errorf("下游应答超时: %s", method)
+	}
 }
 
 // ReleaseSession 释放会话：非借用 tab 尽力关闭（fire-and-forget，按会话

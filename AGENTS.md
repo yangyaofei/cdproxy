@@ -23,7 +23,7 @@ Go 主实现模块（生产二进制；桌面化改造中）：
 | 模块 | 职责 | 红线 |
 |---|---|---|
 | `internal/core` | 引擎编排：settings/interlog/keeper 配置/proxy/control 组装 + 监听生命周期（端口重绑/开关） | CLI 与桌面 App 共用；重绑不得丢会话/令牌状态 |
-| `internal/proxy` | CDP 转发核心 + 双下游链路 + 监听重绑 | 协议语义改动必须过 `scripts/smoke_test.py` 全部六项 |
+| `internal/proxy` | CDP 转发核心 + 双源（standalone/extension）链路 + 监听重绑 | 协议语义改动必须过 `scripts/smoke_test.py` 全部六项 |
 | `internal/state` | 归属表 / 会话表 / sid 绑定 / pending 组 | 不做 IO |
 | `internal/control` | HTTP 控制面 + Admin 静态页；端口类设置变更触发异步重绑回调 | 不写业务，只转发调用 |
 | `internal/settings` | 运行时设置（单文件 settings.json，在线生效） | 端口互斥校验；越下限钳制 |
@@ -55,7 +55,7 @@ Admin 页（GET /）                    keeper：Chrome @127.0.0.1:9222（profil
 |------|------|
 | 基座（keeper） | 共享 Chrome 实例，`~/agent-browser/profile` 承载登录态 |
 | 上游 | agent-browser daemon 到代理的 WS 连接（每 session 一条，token 凭证） |
-| 下游 | 代理到浏览器的连接，**双链路常开并存**：chrome=按需 dial keeper 基座（9222，id 重映射在此发生）；extension=cdp-ext 扩展反向拨入 `GET /ext?token=`（常开待命）。会话在分配时按 settings.downstream_mode 定格绑定一种形态，之后切设置不影响存量会话（平滑切换） |
+| 下游/源 | 代理到浏览器的连接，**双源常开并存**：standalone=按需 dial keeper 基座（9222，id 重映射在此发生）；extension=cdp-ext 扩展反向拨入 `GET /ext?token=`（常开待命）。会话在分配时按解析链（显式 source 参数 > 前缀规则 > `settings.routing.default_source`）定格绑定一个源，之后切路由不影响存量会话（平滑切换） |
 | 归属（ownership） | tab（targetId）属于创建它的 session；getTargets 只见自己的 |
 | 会话组（tab group） | extension 下游：会话名下 tab 自动归入 Chrome 原生组 `ab: <会话名>`；**组 = 唯一真相，成员 = 会话可见性**（proxy 归属表是组事实的投影：拖入=归属、拖出=收回、跨组拖动=领地转移）；组内 tab 可真关（拖入即交出）；release 按扩展配置（close/mark/keep）；组在即领地（墓碑复活/整组认领）；冷启动 gstate 重建无孤儿 |
 | 回收（reap） | 断连 60s / 分配后未连接 300s（运行时设置可调）→ 关名下 tab 摘会话 |
@@ -109,8 +109,8 @@ CGO_ENABLED=0 go build -ldflags="-s -w" -o var/agent-browser-proxy ./cmd/agent-b
 codesign --force --sign - var/agent-browser-proxy
 go vet ./... && go test ./...     # 门禁
 var/agent-browser-proxy serve     # 运行（status/stop 同入口）
-# 双下游常开：chrome 按需拉起；/ext 等扩展回连。
-# 新会话默认下游 = settings.downstream_mode（Admin 页/PUT /settings 在线可切）。
+# 双源常开：standalone 按需拉起；/ext 等扩展回连。
+# 新会话源 = 显式 source > routing.rules 前缀 > routing.default_source（Admin 页「源」tab 在线可切）。
 ```
 
 桌面 App（Wails v3，需 wails3 CLI：`go install github.com/wailsapp/wails/v3/cmd/wails3@latest`）：
@@ -155,7 +155,7 @@ Admin 页：服务起来后开 `http://127.0.0.1:9224/`（状态/会话释放/�
 |----|------|------|--------|
 | 单元 | `tests/unit/`（state / settings 纯逻辑）+ `go test ./...`（含 core 重绑/端口设置） | 无 | 每次改动 |
 | 冒烟 | `scripts/smoke_test.py` 六项判定（`ABP_CONTROL` 可换端口） | 服务 + 真实 Chrome | 改 proxy/keeper 后必跑 |
-| 扩展冒烟 | `scripts/ext_smoke_test.py`（T0–T7：含在线切 downstream_mode 与平滑切换语义，服务需 /ext 可达 + 浏览器装 cdp-ext） | 服务 + 浏览器装 cdp-ext | 改扩展/proxy 转发后必跑 |
+| 扩展冒烟 | `scripts/ext_smoke_test.py`（T0–T7：含在线切默认源与平滑切换语义，服务需 /ext 可达 + 浏览器装 cdp-ext） | 服务 + 浏览器装 cdp-ext | 改扩展/proxy 转发后必跑 |
 | 韧性 E2E | `scripts/ext_restart_test.mjs`（R1–R3：SW target 关闭→持久化+restore 同 sid 续接；模拟点「取消」软休眠→懒重挂；死 sid 诚实报错，16 项） | 同上 + 浏览器带调试端口 | 改 sw.js 会话表/持久化/休眠语义后必跑 |
 | 标签组 E2E | `scripts/ext_group_test.mjs`（G1–G8：自动入组/拖入归属/真关/拖出收回/三策略 release/墓碑复活/整组认领；SW eval 模拟用户组操作） | 同上 + 浏览器带调试端口 | 改组/归属/release 语义后必跑 |
 | 冷启动孤儿 E2E | `scripts/ext_cold_test.mjs`（C1–C5：清持久化+杀 SW 冷启动 → gstate 重建无孤儿；墓碑复活认领） | 同上 | 改 gstate/冷启动语义后必跑 |
