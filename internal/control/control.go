@@ -49,11 +49,15 @@ type Control struct {
 	version    string
 	onShutdown func()
 	onRebind   func()
+	onState    func() // 设置保存等管理面状态变化回调（UI 事件推送）
 	log        *slog.Logger
 }
 
 // New 构造管理面。onRebind 在端口类设置（control_port/ws_port/ports_enabled）
 // 变更后被异步调用——监听重绑由上层编排（见 internal/core）。
+// SetStateNotifier 注入管理面状态变化回调（设置保存成功等）。
+func (c *Control) SetStateNotifier(fn func()) { c.onState = fn }
+
 func New(p *proxy.Proxy, ilg *interlog.Log, store *settings.Store, k keeper.Config, logPath, version string, onShutdown, onRebind func(), log *slog.Logger) *Control {
 	return &Control{proxy: p, ilg: ilg, store: store, keeper: k, logPath: logPath, version: version, onShutdown: onShutdown, onRebind: onRebind, log: log}
 }
@@ -230,6 +234,10 @@ func (c *Control) Handler() http.Handler {
 				time.Sleep(300 * time.Millisecond)
 				c.onRebind()
 			}()
+		}
+		// 设置保存是状态变化（源页/设置页/UI 全量表单），上报 UI 推送
+		if c.onState != nil {
+			c.onState()
 		}
 	})
 

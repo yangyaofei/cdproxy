@@ -31,6 +31,12 @@ BOOTSTRAP = """  <!-- Wails 绑定引导：注入 window.__cdpWails，app.js 的
   <script type="module">
     import { DoRequest, DumpDOM } from "/bindings/github.com/yangyaofei/cdproxy/desktop/engineservice.js";
     window.__cdpWails = { doRequest: DoRequest, dumpDOM: DumpDOM };
+    // 事件系统（@wailsio/runtime）：引擎状态变化（cdp:state）到达即通知 app.js。
+    // 动态 import + 事件就绪广播，app.js 单源保持浏览器/App 双兼容。
+    import("@wailsio/runtime").then(m => {
+      window.__wailsEvents = m.Events;
+      window.dispatchEvent(new Event("wails-events-ready"));
+    }).catch(() => {});
   </script>"""
 
 

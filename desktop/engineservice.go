@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/yangyaofei/cdproxy/internal/core"
@@ -42,6 +43,10 @@ type EngineService struct {
 	// engineStopped 引擎被管理面停机后的标记（Tray 状态展示用）
 	engineStopped bool
 	onStateChange func(running bool)
+	// emitMu/emitPending：状态事件节流（100ms 合并）——高频变化点（组 sync、
+	// 命令流）统一收敛为一次前端推送，避免事件风暴。
+	emitMu      sync.Mutex
+	emitPending bool
 }
 
 // NewEngineService 构造。dataDir 解析链见 internal/datadir（显式 > env >
@@ -73,6 +78,28 @@ func (s *EngineService) ServiceStartup(_ context.Context, _ application.ServiceO
 	return s.startEngine()
 }
 
+// emitState 引擎状态变化的推送出口：节流合并后经 Wails 事件系统广播给
+// 前端（Events.On("cdp:state")）——桌面 App 的事件驱动形态，前端收到即
+// 重拉快照（进程内绑定毫秒级），轮询只作兜底。
+func (s *EngineService) emitState() {
+	s.emitMu.Lock()
+	if s.emitPending {
+		s.emitMu.Unlock()
+		return
+	}
+	s.emitPending = true
+	s.emitMu.Unlock()
+	time.AfterFunc(100*time.Millisecond, func() {
+		s.emitMu.Lock()
+		s.emitPending = false
+		s.emitMu.Unlock()
+		if app := application.Get(); app != nil && app.Event != nil {
+			app.Event.Emit("cdp:state", nil)
+			s.log.Info("UI 状态事件已推送（cdp:state）")
+		}
+	})
+}
+
 // ServiceShutdown Wails 生命周期：App 退出前停引擎。
 func (s *EngineService) ServiceShutdown() error {
 	s.stopEngine()
@@ -94,6 +121,7 @@ func (s *EngineService) startEngine() error {
 	if err != nil {
 		return err
 	}
+	eng.SetUINotifier(s.emitState) // 引擎状态点 → 事件推送（Start 前注入）
 	if err := eng.Start(); err != nil {
 		return err
 	}

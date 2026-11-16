@@ -118,7 +118,10 @@ function admin() {
       const saved = localStorage.getItem("abp_theme") || "dark";
       document.documentElement.dataset.theme = saved;
       await this.refresh();
+      this.bindStateEvents();
       this.schedulePoll();
+      // 窗口重新获得焦点立即对账一次（用户切回窗口的瞬间就是最新）
+      window.addEventListener("focus", () => this.refreshSoon());
       // 触底加载更早日志：轮询哨兵位置（scroll 事件在本环境不可靠，轮询确定性最高；
       // slogLoading/hasMore 在 loadOlderLogs 内防重入，空闲开销为一次 getBoundingClientRect）
       setInterval(() => {
@@ -128,14 +131,30 @@ function admin() {
       }, 600);
     },
 
-    /* 状态轮询：动态间隔——在线 5s 常规；离线/冷启动 800ms 快探
-       （冷启动首轮撞上引擎未就绪时不再被固定 5s 罚等，引擎恢复也更快感知） */
+    /* 事件驱动（桌面 App）：引擎状态变化 → Wails Events 推送 cdp:state →
+       50ms 防抖后立即重拉快照（进程内绑定毫秒级）——状态变化 1 秒内可见。
+       轮询降为兜底：在线 30s 对账、离线 800ms 快探。浏览器模式（Admin 网页）
+       无事件可订，自然回落纯轮询。 */
+    bindStateEvents() {
+      const bind = () => {
+        if (!window.__wailsEvents) return false;
+        window.__wailsEvents.On("cdp:state", () => this.refreshSoon());
+        return true;
+      };
+      if (!bind()) window.addEventListener("wails-events-ready", () => bind(), { once: true });
+    },
+    refreshSoon() {
+      clearTimeout(this._soonT);
+      this._soonT = setTimeout(() => this.refresh(), 50);
+    },
+
+    /* 状态轮询：兜底间隔——在线 30s 对账；离线/冷启动 800ms 快探 */
     schedulePoll() {
       clearTimeout(this._pollT);
       this._pollT = setTimeout(async () => {
         await this.refresh();
         this.schedulePoll();
-      }, this.healthy ? 5000 : 800);
+      }, this.healthy ? 30000 : 800);
     },
 
     /* tab 切换（带页面副作用：懒加载） */

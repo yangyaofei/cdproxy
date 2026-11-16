@@ -103,6 +103,10 @@ func buildTray() *application.SystemTray {
 		}
 		statusItem.SetLabel(label)
 		tray.SetTooltip("Agent Browser Proxy — " + label)
+		// 引擎启停对 UI 是最重的状态变化，同样走事件推送
+		if app != nil && app.Event != nil {
+			app.Event.Emit("cdp:state", nil)
+		}
 	}
 	menu.AddSeparator()
 	menu.Add("重启引擎").OnClick(func(*application.Context) {

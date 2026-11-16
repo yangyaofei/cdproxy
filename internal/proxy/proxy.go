@@ -68,7 +68,11 @@ type dsLink struct {
 }
 
 // Options 保留给未来扩展的下游选项（当前双下游常开，无启动项）。
-type Options struct{}
+// Options 代理可选配置。OnStateChange 在状态变化点（下游链路建/断、会话
+// 分配/释放、组事实重建、设置保存）被调用，供宿主（桌面 App）接事件推送。
+type Options struct {
+	OnStateChange func()
+}
 
 // Proxy 代理服务。
 type Proxy struct {
@@ -79,6 +83,7 @@ type Proxy struct {
 	ilog   *interlog.Log
 	log    *slog.Logger
 	marker string // 日志定位用
+	onState  func() // 状态变化通知（UI 事件推送钩子，nil 安全）
 
 	mu       sync.Mutex // 双下游链路生命周期
 	chrome   *dsLink    // keeper 基座链路（按需建立）
@@ -246,10 +251,23 @@ func (p *Proxy) unownedPageCount() (int, error) {
 }
 
 // New 构造代理。双下游常开：chrome 链路按需建立，extension 链路等回连。
-func New(cfg keeper.Config, wsPort int, store *settings.Store, ilog *interlog.Log, log *slog.Logger) *Proxy {
+func New(cfg keeper.Config, wsPort int, store *settings.Store, ilog *interlog.Log, log *slog.Logger, opts ...Options) *Proxy {
+	var o Options
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	return &Proxy{
 		cfg: cfg, wsPort: wsPort, store: store,
 		st: state.New(), ilog: ilog, log: log,
+		onState: o.OnStateChange,
+	}
+}
+
+// notifyState 状态变化点统一出口（UI 事件推送）。高频变化（组 sync）由
+// 宿主侧节流合并，这里只负责如实上报。
+func (p *Proxy) notifyState() {
+	if p.onState != nil {
+		p.onState()
 	}
 }
 
@@ -374,6 +392,7 @@ func validSourceKind(s string) (bool, string) {
 // 旧 session（旧 token），若返回新生成的 token，daemon 拿来连接会命中
 // 4401 unknown session（close 后立即重开必现）。
 func (p *Proxy) AllocSession(name, explicitSource string) (string, error) {
+	defer p.notifyState() // 会话表变化（分配/复用）→ UI 推送
 	// 先建会话再连基座：活动守卫按会话计数放行，顺序反了会把
 	// provider 分配路径整个拒绝（插件报 exited unsuccessfully）
 	mode := p.ResolveSource(name, explicitSource)
@@ -495,6 +514,7 @@ func (p *Proxy) dsCommandSync(sess *state.Session, method string, params map[str
 // 终点：同时关闭其上游连接——原生等价反应（浏览器消亡连接必断），daemon
 // 立即感知 session 已过期，而不是持有僵尸连接继续「成功」收发。
 func (p *Proxy) ReleaseSession(name string) {
+	defer p.notifyState()
 	defer p.ilog.DetachFile(name)
 	sess, targets := p.st.Release(name)
 	if sess == nil {
@@ -706,6 +726,7 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 
 // attachUpstream 接管一条已认证的上游连接：顶替旧连接、读循环分发。
 func (p *Proxy) attachUpstream(sess *state.Session, conn *websocket.Conn, r *http.Request) {
+	defer p.notifyState()
 	conn.SetReadLimit(64 << 20)
 	// 顶替：旧连接存在则关闭（其读循环因 WS 不再匹配而不会误清状态）
 	if old := sess.WS(); old != nil && sess.Connected() {
@@ -961,6 +982,7 @@ func (p *Proxy) handleExtension(w http.ResponseWriter, r *http.Request) {
 	})
 	go p.pingLoop(r.Context(), conn, 20*time.Second)
 	p.log.Info("扩展已回连（成为 extension 下游）")
+	p.notifyState()
 	go p.dsRecvLoop(link)
 }
 
@@ -1028,6 +1050,8 @@ func (p *Proxy) onDownstreamDead(link *dsLink, reason error) {
 		// 扩展断开同理：等扩展自行退避重连（回连即重建 extension 侧状态）
 		p.log.Info("extension 下游断开（等待扩展自行回连）", "err", reason)
 	}
+	// 链路死亡是状态变化（源页 connected/会话回收）
+	defer p.notifyState()
 }
 
 // notifyOwnershipCleared 下游重建导致归属全清后，向受影响会话合成原生等价
@@ -1246,6 +1270,7 @@ func (p *Proxy) onExtControl(msg map[string]any) {
 // SW 重启完全无感。上报的 sessions 仅作日志核对（与本地绑定数不一致时警告，
 // 组对账与回收路径会自行收敛差异）。
 func (p *Proxy) onExtRestore(msg map[string]any) {
+	defer p.notifyState()
 	p.mu.Lock()
 	p.extAdoptGen++ // 作废待定的延迟清账
 	p.mu.Unlock()
@@ -1364,6 +1389,7 @@ func (p *Proxy) projectGroup(sess *state.Session, tids []string, infos map[strin
 // 以此重建 extension 形态的整个归属投影——proxy 不再维护独立的创建账本：
 // 组在即领地在，组没了归属就没了。重建即对账：漂移在每条连接上被纠正。
 func (p *Proxy) onExtGstate(msg map[string]any) {
+	defer p.notifyState()
 	p.mu.Lock()
 	p.extAdoptGen++       // 证明扩展活着：作废冷启动兜底计时器
 	p.extGstateSeen = true

@@ -38,6 +38,7 @@ type Options struct {
 
 // Core 引擎实例。
 type Core struct {
+	onUIState func() // 宿主注入：状态变化回调（App 事件推送）
 	opts   Options
 	logger *slog.Logger
 
@@ -120,6 +121,10 @@ func (c *Core) ControlHandler() http.Handler {
 	return c.ctlHandler
 }
 
+// SetUINotifier 注入状态变化回调（引擎各状态点统一上报，宿主转发为
+// 前端事件——桌面 App 的事件驱动形态）。
+func (c *Core) SetUINotifier(fn func()) { c.onUIState = fn }
+
 // Start 启动引擎。ports_enabled=false 时只起保活与内部状态，
 // 不绑定任何外部监听（App 内嵌模式）。
 func (c *Core) Start() error {
@@ -129,9 +134,12 @@ func (c *Core) Start() error {
 		return fmt.Errorf("引擎已启动")
 	}
 	_, wsPort := c.effectivePorts()
-	c.proxy = proxy.New(c.kcfg, wsPort, c.store, c.ilg, c.logger)
+	c.proxy = proxy.New(c.kcfg, wsPort, c.store, c.ilg, c.logger, proxy.Options{
+		OnStateChange: c.onUIState, // 状态变化 → 宿主（App）事件推送
+	})
 	c.ctl = control.New(c.proxy, c.ilg, c.store, c.kcfg, c.logPath, c.opts.Version,
 		c.opts.OnShutdown, c.rebind, c.logger)
+		c.ctl.SetStateNotifier(c.onUIState)
 	c.ctlHandler = nil // 引擎重建后旧 handler 失效，惰性重建
 
 	if err := c.proxy.Start(); err != nil {
