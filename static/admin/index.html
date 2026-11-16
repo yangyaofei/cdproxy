@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>cdproxy · Admin</title>
-  <link rel="stylesheet" href="/static/app.css?v=0.6.2">
-  <link rel="stylesheet" href="/static/vendor/tabulator.min.css?v=0.6.2">
-  <script src="/static/vendor/tabulator.min.js?v=0.6.2" defer></script>
-  <script src="/static/app.js?v=0.6.2" defer></script>
+  <link rel="stylesheet" href="/static/vendor/tabulator.min.css?v=0.7.2">
+  <link rel="stylesheet" href="/static/app.css?v=0.7.2">
+  <script src="/static/vendor/tabulator.min.js?v=0.7.2" defer></script>
+  <script src="/static/app.js?v=0.7.2" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
 </head>
 <body>
@@ -30,7 +30,7 @@
       <div class="side-brand">
         <div class="side-logo">C</div>
         <div class="side-brand-txt" x-show="!sideCollapsed" x-transition.opacity.duration.200ms>
-          <div class="side-name">cdproxy <span class="side-ver">vdev</span></div>
+          <div class="side-name">cdproxy <span class="side-ver"><span x-text="status ? 'v'+(status.version||'dev') : 'v?'"></span></span></div>
           <div class="side-alive" :class="healthy === true ? 'on' : (healthy === false ? 'off' : 'wait')">
             <span class="dot"></span><span x-text="healthy === true ? '服务在线' : (healthy === false ? '服务离线' : '连接中…')"></span>
           </div>
@@ -73,27 +73,27 @@
           <span class="t" x-show="!sideCollapsed">会话</span>
           <span class="count" x-show="!sideCollapsed && viewSessions.length" x-text="viewSessions.length"></span>
           <span class="count-dot" x-show="sideCollapsed && viewSessions.length"></span>
-          <span class="tip" x-show="sideCollapsed">会话</span>
+          <span class="sbtip" x-show="sideCollapsed">会话</span>
         </button>
         <button :class="tab === 'rules' ? 'cur' : ''" @click="go('rules')">
           <svg class="ic"><use href="#i-rules"/></svg>
           <span class="t" x-show="!sideCollapsed">规则</span>
-          <span class="tip" x-show="sideCollapsed">改写规则</span>
+          <span class="sbtip" x-show="sideCollapsed">改写规则</span>
         </button>
         <button :class="tab === 'sources' ? 'cur' : ''" @click="go('sources')">
           <svg class="ic"><use href="#i-cable"/></svg>
           <span class="t" x-show="!sideCollapsed">源 &amp; 接入点</span>
-          <span class="tip" x-show="sideCollapsed">源 &amp; 接入点</span>
+          <span class="sbtip" x-show="sideCollapsed">源 &amp; 接入点</span>
         </button>
         <button :class="tab === 'settings' ? 'cur' : ''" @click="go('settings')">
           <svg class="ic"><use href="#i-gear"/></svg>
           <span class="t" x-show="!sideCollapsed">全局设置</span>
-          <span class="tip" x-show="sideCollapsed">全局设置</span>
+          <span class="sbtip" x-show="sideCollapsed">全局设置</span>
         </button>
         <button :class="tab === 'logs' ? 'cur' : ''" @click="go('logs')">
           <svg class="ic"><use href="#i-term"/></svg>
           <span class="t" x-show="!sideCollapsed">运行日志</span>
-          <span class="tip" x-show="sideCollapsed">运行日志</span>
+          <span class="sbtip" x-show="sideCollapsed">运行日志</span>
         </button>
       </nav>
 
@@ -113,7 +113,7 @@
         <svg class="ic" x-show="sideCollapsed"><use href="#i-right"/></svg>
         <span class="t" x-show="!sideCollapsed">收起边栏</span>
         <span class="ver mono" x-show="!sideCollapsed" x-text="status ? 'v' + status.version : 'vdev'"></span>
-        <span class="tip" x-show="sideCollapsed">展开边栏</span>
+        <span class="sbtip" x-show="sideCollapsed">展开边栏</span>
       </button>
     </aside>
 
@@ -126,10 +126,19 @@
           <span class="dot"></span>
           <span x-text="healthy === true ? '服务在线' : (healthy === false ? '服务离线' : '连接中…')"></span>
         </div>
+        <button class="sm" @click="checkUpdate()" x-show="canUpdate" x-cloak title="检查 cdproxy 新版本"
+                :disabled="updateBusy" x-text="updateBusy ? '检查中…' : '⟳ 更新'"></button>
         <button class="sm" @click="toggleTheme()" title="切换暗色/亮色">
           <span x-text="document.documentElement.dataset.theme === 'dark' ? '☀ 亮色' : '🌙 暗色'"></span>
         </button>
       </header>
+
+      <!-- 更新事件提示条（App 形态：wails:updater:* 事件驱动；网页版隐藏） -->
+      <div class="update-banner" x-show="updateMsg" x-cloak :class="updateKind">
+        <span x-text="updateMsg"></span>
+        <button class="sm" x-show="updateKind === 'ready'" @click="installUpdate()">重启并更新</button>
+        <button class="sm ghost" @click="updateMsg = ''">✕</button>
+      </div>
 
       <div class="offline-banner" x-show="healthy === false" x-cloak>
         <span class="dot"></span>引擎未运行 · 数据可能过期
@@ -171,7 +180,7 @@
                     <tr><td>agent-browser</td><td>
                       <template x-if="abInfo">
                         <span>
-                          <span class="bdg" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? 'v' + abInfo.version : '未检测到'"></span>
+                          <span class="bdg" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? 'v' + abInfo.version : '未检测到'" title="版本"></span>
                           <span class="bdg plain" :class="abInfo.source === 'bundled' ? 'ext' : ''" x-text="abSourceText(abInfo.source)"></span>
                           <div class="copyable" style="margin-top:4px">
                             <span class="val mono" :title="abInfo.path || ''" x-text="abInfo.path || ''"></span>
@@ -257,7 +266,7 @@
                 </div>
                 <div class="rules-editor">
                   <table>
-                    <thead><tr><th style="width:24%">path</th><th style="width:15%">源</th><th style="width:17%">会话名/组</th><th style="width:34%">令牌</th><th style="width:44px"></th></tr></thead>
+                    <thead><tr><th>path</th><th>源</th><th>会话名/组</th><th>令牌</th><th></th></tr></thead>
                     <template x-for="(ep, i) in epForm" :key="i">
                       <tr>
                         <td class="mono"><input x-model="ep.path" placeholder="path" class="mono">
@@ -310,7 +319,7 @@
                 </table>
                 <div class="rules-editor">
                   <table>
-                    <thead><tr><th style="width:40%">会话名前缀</th><th style="width:40%">路由到源</th><th style="width:44px"></th></tr></thead>
+                    <thead><tr><th>会话名前缀</th><th>路由到源</th><th></th></tr></thead>
                     <template x-for="(r, i) in routeForm.rules" :key="i">
                       <tr>
                         <td class="mono"><input x-model="r.prefix" placeholder="如 ext-" class="mono"></td>
@@ -387,7 +396,7 @@
                 <button class="danger sm" x-show="selSession().state !== 'released'" @click="release(selSession().name)" :disabled="busy">释放</button>
               </div>
               <table class="logt" x-show="sessionTabs.length">
-                <thead><tr><th style="width:34%">标题</th><th>URL</th><th style="width:270px">targetId</th></tr></thead>
+                <thead><tr><th>标题</th><th>URL</th><th>targetId</th></tr></thead>
                 <template x-for="t in sessionTabs" :key="t.targetId">
                   <tr>
                     <td x-text="t.title || '（无标题）'"></td>
@@ -399,7 +408,7 @@
               <div class="log-empty" x-show="!sessionTabs.length">（无可见 tab · 点「刷新 tab」实时查询）</div>
               <div x-show="logOpen === (selSession() || {}).name" style="margin-top:10px">
                 <table class="logt" x-show="sessionLogs.length">
-                  <thead><tr><th style="width:80px">时间</th><th style="width:34px">向</th><th style="width:23%">Method</th><th style="width:140px">ID</th><th style="width:110px">Action</th><th>摘要</th></tr></thead>
+                  <thead><tr><th>时间</th><th>向</th><th>Method</th><th>ID</th><th>Action</th><th>摘要</th></tr></thead>
                   <template x-for="(e, i) in sessionLogs" :key="i">
                     <tbody>
                       <tr :class="selLog === i ? 'sel' : ''" @click="selLog = (selLog === i ? -1 : i)">
@@ -458,7 +467,7 @@
             </p>
             <div class="rules-editor">
               <table>
-                <thead><tr><th style="width:21%">match</th><th style="width:9%">action</th><th style="width:17%">set（JSON）</th><th style="width:14%">remove（点路径）</th><th style="width:9%">group</th><th>note</th><th style="width:36px"></th></tr></thead>
+                <thead><tr><th>match</th><th>action</th><th>set（JSON）</th><th>remove（点路径）</th><th>group</th><th>note</th><th></th></tr></thead>
                 <template x-for="(r, i) in rules" :key="i">
                   <tr>
                     <td class="mono"><input x-model="r.match" @change="rulesError = ''; presetActive = ''" class="mono"></td>
@@ -493,20 +502,23 @@
                 <h2>运行时设置</h2>
                 <p class="sub">表单化参数；长说明悬停 ⓘ 查看</p>
                 <table class="kv">
-                  <tr><td><label for="s-disconnect">断连回收宽限</label></td><td style="display:flex;align-items:center;gap:8px">
+                  <tr><td><label for="s-disconnect">断连回收宽限</label></td><td><div class="rowflex">
                     <input id="s-disconnect" type="number" min="5" step="1" x-model="form.disconnect_reap_seconds" class="mono">
                     <span class="hint">s</span>
                     <span class="tip"><span class="tip-body">上游断连后多久回收会话与名下 tab（容忍 daemon 重启）。</span></span>
+                  </div>
                   </td></tr>
-                  <tr><td><label for="s-alloc">未连接回收</label></td><td style="display:flex;align-items:center;gap:8px">
+                  <tr><td><label for="s-alloc">未连接回收</label></td><td><div class="rowflex">
                     <input id="s-alloc" type="number" min="5" step="1" x-model="form.alloc_reap_seconds" class="mono">
                     <span class="hint">s</span>
                     <span class="tip"><span class="tip-body">分配后从未连接的回收时限（防泄漏）。</span></span>
+                  </div>
                   </td></tr>
-                  <tr><td><label for="s-idle">基座空闲关闭</label></td><td style="display:flex;align-items:center;gap:8px">
+                  <tr><td><label for="s-idle">基座空闲关闭</label></td><td><div class="rowflex">
                     <input id="s-idle" type="number" min="0" step="1" x-model="form.keeper_idle_shutdown_seconds" class="mono">
                     <span class="hint">s</span>
                     <span class="tip"><span class="tip-body">连续无会话且无人工页面达到该秒数后关闭基座（登录态在磁盘零损失，下次分配冷启动）；0 = 不启用。人工在基座里打开的页面会计入活动。</span></span>
+                  </div>
                   </td></tr>
                 </table>
               </div>
@@ -514,26 +526,27 @@
               <div class="card">
                 <h2>网络端口</h2>
                 <table class="kv">
-                  <tr><td><label for="s-cport">控制面端口</label></td><td style="display:flex;align-items:center;gap:8px">
+                  <tr><td><label for="s-cport">控制面端口</label></td><td><div class="rowflex">
                     <input id="s-cport" type="number" min="1" max="65535" step="1" x-model="form.control_port" class="mono">
                     <span class="tip"><span class="tip-body">管理 REST/Admin 页端口；保存后监听自动重建（约 1s，本页连接可能闪断后自愈）。</span></span>
+                  </div>
                   </td></tr>
-                  <tr><td><label for="s-wport">代理 WS 端口</label></td><td style="display:flex;align-items:center;gap:8px">
+                  <tr><td><label for="s-wport">代理 WS 端口</label></td><td><div class="rowflex">
                     <input id="s-wport" type="number" min="1" max="65535" step="1" x-model="form.ws_port" class="mono">
                     <span class="tip"><span class="tip-body">/cdp/&lt;token&gt;、/ext 与接入点共用端口；保存后监听重建，daemon/扩展自动重连。</span></span>
+                  </div>
                   </td></tr>
-                  <tr><td><label for="s-ports">外部端口总开关</label></td><td style="display:flex;align-items:center;gap:10px">
+                  <tr><td><label for="s-ports">外部端口总开关</label></td><td><div class="rowflex" style="gap:10px">
                     <label class="switch"><input id="s-ports" type="checkbox" x-model="form.ports_enabled"><span class="track"></span></label>
                     <span class="bdg warn" x-show="form.ports_enabled === false">仅 App 内嵌模式</span>
                   </div>
-                  <div class="form-row">
-                    <div>
-                      <label for="s-adminweb">Admin 网页</label>
-                      <div class="sub">浏览器版管理页（127.0.0.1 端口打开）。默认关闭——管理走本 App；REST API 不受此开关影响</div>
-                    </div>
+                  </td></tr>
+                  <tr><td><label for="s-adminweb">Admin 网页</label></td><td><div class="rowflex" style="gap:10px">
                     <label class="switch"><input id="s-adminweb" type="checkbox" x-model="form.admin_web_enabled"><span class="track"></span></label>
                     <span class="bdg" x-show="form.admin_web_enabled">已开放</span>
-                    <span class="tip"><span class="tip-body">关闭 = 控制面与 WS 监听全部停用（桌面 App 内嵌模式：仅 App 界面可用，外部进程连不上）；重新打开即恢复。</span></span>
+                    <span class="hint" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">浏览器版管理页（127.0.0.1 端口打开）。默认关——管理走本 App；REST API 不受影响</span>
+                    <span class="tip"><span class="tip-body">浏览器版管理页（127.0.0.1 端口打开）。默认关闭——管理走本 App；REST API 不受此开关影响。</span></span>
+                  </div>
                   </td></tr>
                 </table>
                 <div class="toolbar" style="margin:12px 0 0">
@@ -550,9 +563,9 @@
                   <tr><td>检测状态</td><td>
                     <template x-if="abInfo">
                       <span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                        <span class="bdg" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? 'v' + abInfo.version : '未检测到'"></span>
+                        <span class="bdg" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? 'v' + abInfo.version : '未检测到'" title="版本"></span>
                         <span class="bdg plain" :class="abInfo.source === 'bundled' ? 'ext' : ''" x-text="abSourceText(abInfo.source)"></span>
-                        <span class="copyable" style="flex:1;min-width:220px">
+                        <span class="copyable" style="flex:1;min-width:0">
                           <span class="val mono" :title="abInfo.path || ''" x-text="abInfo.path || ''"></span>
                         </span>
                       </span>
@@ -570,7 +583,7 @@
                       <template x-if="abLookupPath">
                         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                           <span class="bdg ok">已探测</span>
-                          <span class="copyable" style="flex:1;min-width:200px">
+                          <span class="copyable" style="flex:1;min-width:0">
                             <span class="val mono" :title="abLookupPath" x-text="abLookupPath"></span>
                           </span>
                           <span class="hint">which 自动探测 · 点击「保存」生效</span>
@@ -689,7 +702,7 @@
           </div>
           <div class="log-scroll" id="slogScroll">
             <table class="slogt" x-show="filteredSlog().length">
-              <thead><tr><th style="width:140px">时间</th><th style="width:60px">级别</th><th style="width:28%">消息</th><th>属性</th></tr></thead>
+              <thead><tr><th>时间</th><th>级别</th><th>消息</th><th>属性</th></tr></thead>
               <template x-for="(e, i) in filteredSlog()" :key="i">
                 <tr>
                   <td class="mono" :title="e.ts" x-text="e.timeShort"></td>

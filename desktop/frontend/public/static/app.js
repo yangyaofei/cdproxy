@@ -95,7 +95,8 @@ function admin() {
     configContent: null,
     // 会话搜索
     sessionQuery: "",
-    selSessionName: "",   // master-detail 选中会话
+    selSessionName: "",
+    updateMsg: "", updateKind: "", updateBusy: false, canUpdate: false,   // master-detail 选中会话
     sessGrid: null,       // Tabulator 实例（会话表）
     // 规则预设高亮
     presetActive: "",
@@ -118,9 +119,17 @@ function admin() {
     slogAutoScroll: false,
 
     async init() {
+      // 窄窗判定先行（首帧即正确，不等 refresh）
+      if (window.innerWidth <= 960) this.sideCollapsed = true;
+      // 初始 tab 即会话页时也要建表（go() 之外的路径）。
+      // 须等 Alpine 渲染完 + 容器可测量（display:none 下建表会使 Tabulator
+      // renderer 拿不到尺寸 → verticalFillMode 空指针），故推迟到下一帧。
+      requestAnimationFrame(() => setTimeout(() => this.ensureGrid(), 60));
       const saved = localStorage.getItem("abp_theme") || "dark";
       document.documentElement.dataset.theme = saved;
       await this.refresh();
+      this.bindUpdaterEvents();
+      this.bindResponsive();
       this.bindStateEvents();
       this.schedulePoll();
       // 窗口重新获得焦点立即对账一次（防 WebView 重载丢事件）
@@ -325,6 +334,49 @@ function admin() {
     },
 
     /* ── 会话表（Tabulator）：列宽弹性 + 窄窗自动折叠次要列 ── */
+    /* ── 应用更新（App 形态；wails:updater:* 事件驱动提示条）── */
+    bindResponsive() {
+      // 窄窗自动收起侧栏为图标栏（临时态：不写 localStorage，宽回来自动展开）
+      const apply = () => {
+        if (window.innerWidth <= 960 && !this.sideCollapsed) this.sideCollapsed = true;
+        else if (window.innerWidth > 960 && localStorage.getItem("sideCol") !== "1") this.sideCollapsed = false;
+      };
+      window.addEventListener("resize", apply);
+      apply();
+    },
+
+    bindUpdaterEvents() {
+      document.addEventListener("cdp-updater", (ev) => {
+        const { type, data } = ev.detail || {};
+        if (type === "runtime-ready") { this.canUpdate = true; return; }
+        if (!type || !type.startsWith("wails:updater:")) return;
+        this.canUpdate = true;
+        const kind = type.split(":").pop();
+        if (kind === "update-available" && data) {
+          this.updateMsg = `发现新版本 v${data.version || "?"}，正在下载…`; this.updateKind = "info";
+        } else if (kind === "no-update") {
+          this.updateMsg = "已是最新版本"; this.updateKind = "ok";
+          setTimeout(() => { if (this.updateKind === "ok") this.updateMsg = ""; }, 4000);
+        } else if (kind === "download-progress" && data) {
+          const pct = data.total ? Math.round((data.written / data.total) * 100) : 0;
+          this.updateMsg = `下载更新中 ${pct}%`; this.updateKind = "info";
+        } else if (kind === "update-ready") {
+          this.updateMsg = "新版本已就绪，重启后生效"; this.updateKind = "ready";
+        } else if (kind === "error" && data) {
+          this.updateMsg = `更新失败：${data.message || data.stage || "未知"}`; this.updateKind = "err";
+        }
+      });
+    },
+
+    async checkUpdate() {
+      if (!window.__cdpWails || !window.__cdpWails.checkForUpdate) return;
+      this.updateBusy = true;
+      try { await window.__cdpWails.checkForUpdate(); } finally { this.updateBusy = false; }
+    },
+    async installUpdate() {
+      if (window.__cdpWails && window.__cdpWails.restartForUpdate) await window.__cdpWails.restartForUpdate();
+    },
+
     selSession() {
       return this.viewSessions.find(s => s.name === this.selSessionName) || null;
     },
@@ -332,8 +384,16 @@ function admin() {
     ensureGrid() {
       if (this.sessGrid) return;
       if (typeof Tabulator === "undefined") return; // Tabulator 未加载（admin 网页降级）
+      const holder = document.querySelector("#sessions-grid");
+      if (!holder || holder.offsetParent === null) {
+        // 容器未挂/不可见（Alpine 未渲染完）：重试直至可见（上限 ~3s），避免首屏永远无表
+        this._gridTries = (this._gridTries || 0) + 1;
+        if (this._gridTries < 30) setTimeout(() => this.ensureGrid(), 100);
+        return;
+      }
       this.sessGrid = new Tabulator("#sessions-grid", {
         data: this.filteredSessions(),
+        renderVertical: "basic",
         layout: "fitColumns",
         resizableColumns: true,
         responsiveLayout: "collapse",
@@ -384,6 +444,12 @@ function admin() {
     gridSync() {
       if (!this.sessGrid) return this.ensureGrid();
       const cur = this.selSessionName;
+      // replaceData 须等实例完成模块初始化（首渲染前 replaceData 会触发
+      // renderer.verticalFillMode 空指针——Tabulator 内部事件链未挂好）
+      if (this.sessGrid.moduleExists && !this.sessGrid.initialized) {
+        setTimeout(() => this.gridSync(), 120);
+        return;
+      }
       this.sessGrid.replaceData(this.filteredSessions());
       // 选中行高亮 + 选中会话消失时清详情
       if (cur && !this.viewSessions.some(s => s.name === cur)) {

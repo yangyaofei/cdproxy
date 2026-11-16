@@ -60,6 +60,32 @@ func NewEngineService(dataDir string, onStateChange func(running bool)) *EngineS
 // DataDir 当前数据目录（前端「设置 → 数据目录」展示/修改用）。
 func (s *EngineService) DataDir() string { return s.dataDir }
 
+// Version 应用版本（编译期 -X main.version 注入；UI 侧栏/更新提示共用）。
+func (s *EngineService) Version() string { return version }
+
+// RestartForUpdate 更新就绪后的重启安装（helper swap：等本进程退出→
+// 原子替换→回滚保护→拉起新版）。
+func (s *EngineService) RestartForUpdate() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := application.Get().Updater.Restart(ctx); err != nil {
+			s.log.Error("重启更新失败", "err", err)
+		}
+	}()
+}
+
+// CheckForUpdate 前端触发的手动检查（结果经 wails:updater:* 事件回 UI）。
+func (s *EngineService) CheckForUpdate() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if _, err := application.Get().Updater.Check(ctx); err != nil {
+			s.log.Error("检查更新失败", "err", err)
+		}
+	}()
+}
+
 // newFileLogger 文件日志（打开失败回落 stderr）。
 func newFileLogger(path string) *slog.Logger {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)

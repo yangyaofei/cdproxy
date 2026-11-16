@@ -74,7 +74,7 @@ body {
   padding: 14px 12px; background: var(--canvas); border-right: 1px solid var(--border);
   overflow-x: hidden; overflow-y: auto; transition: width .3s ease-in-out, padding .3s ease-in-out;
 }
-.sidebar.collapsed { width: 64px; padding: 14px 8px; }
+.sidebar.collapsed { width: 64px; flex: 0 0 64px; padding: 14px 8px; }
 .sidebar * { transition: opacity .2s ease-in-out; }
 .side-brand { display: flex; align-items: center; gap: 10px; padding: 2px 4px; min-height: 34px; }
 .sidebar.collapsed .side-brand { justify-content: center; padding: 2px 0; }
@@ -126,15 +126,15 @@ body {
   position: absolute; top: 6px; right: 10px; width: 7px; height: 7px; border-radius: 50%;
   background: var(--accent-h); box-shadow: 0 0 0 2px var(--canvas);
 }
-/* 收起态 tooltip：hover 图标右侧浮出 */
-.tip {
+/* 收起态 tooltip：hover 图标右侧浮出（.sbtip 避开行内 ⓘ 说明类 .tip）*/
+.sbtip {
   position: absolute; left: calc(100% + 10px); top: 50%; transform: translateY(-50%) scale(.92);
   background: #1E2536; border: 1px solid var(--border-strong); color: #F1F5F9; font-size: 12px;
   padding: 4px 9px; border-radius: 5px; box-shadow: 0 6px 18px rgba(0,0,0,.4);
   white-space: nowrap; pointer-events: none; opacity: 0; z-index: 60; transition: opacity .12s ease-in-out .1s, transform .12s ease-in-out .1s;
 }
-[data-theme="light"] .tip { background: #2A3346; }
-.side-menu button:hover .tip, .side-collapse:hover .tip { opacity: 1; transform: translateY(-50%) scale(1); }
+[data-theme="light"] .sbtip { background: #2A3346; }
+.side-menu button:hover .sbtip, .side-collapse:hover .sbtip { opacity: 1; transform: translateY(-50%) scale(1); }
 .side-quick { display: flex; flex-direction: column; gap: 1px; }
 .sidebar.collapsed .side-quick { opacity: 0; pointer-events: none; height: 0; overflow: hidden; }
 .side-quick button {
@@ -183,7 +183,7 @@ body {
 @keyframes breathe { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
 .content { flex: 1; overflow-y: auto; padding: 20px 22px 40px; }
-.content > section { max-width: 1560px; margin: 0 auto; }
+.content > section { max-width: 1880px; margin: 0 auto; }
 
 /* ── 卡片与栅格 ──────────────────────────────────────────────── */
 .card {
@@ -437,10 +437,9 @@ table.logt tr.sel td { background: var(--elev); }
 .tree .row .exists { color: var(--ok-fg); font-size: 10px; }
 
 /* 窄屏折叠 */
+/* 窄窗不藏侧栏（导航唯一入口）——≤960 由 JS 自动收起为图标栏 */
 @media (max-width: 960px) {
-  .sidebar { display: none; }
   .topbar { padding-left: 12px; }
-  .tabbar button { padding: 0 8px; font-size: 12px; }
 }
 
 /* ══════ Tabulator 主题适配（暗色对接现有 CSS 变量）══════ */
@@ -471,3 +470,119 @@ table.logt tr.sel td { background: var(--elev); }
 .tabulator .tabulator-collapse-handle { color: var(--tx3, #7C8AA0); }
 /* 折叠列的展开形态：标题/值 列表沿用 mono 微字号 */
 .tabulator .tabulator-responsive-collapse table { font-size: 11.5px; }
+
+/* ══════ 更新提示条 ══════ */
+.update-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 14px; margin: 0 0 8px;
+  border-radius: 8px; font-size: 12.5px;
+  background: var(--card, #14181F);
+  border: 1px solid var(--border-strong, #2F3742);
+}
+.update-banner.info { border-color: var(--accent, #4f8cff); }
+.update-banner.ok { border-color: var(--ok, #3fb96a); }
+.update-banner.ready { border-color: var(--ok, #3fb96a); background: color-mix(in srgb, var(--ok, #3fb96a) 12%, var(--card, #14181F)); }
+.update-banner.err { border-color: var(--bad, #e0564f); }
+.update-banner .sm.ghost { border: none; background: transparent; color: var(--tx3); }
+
+/* ══════ 响应式治理批（容器查询：卡片为容器，窗口缩放/窄容器自适应）══════ */
+/* 根因治理：长路径/令牌撑破布局=flex/grid 子项 min-width:auto 拒绝收缩 +
+   table-layout:auto 由内容反推列宽。此处统一钉死收缩语义。 */
+.card { container-type: inline-size; }
+
+/* 键值表（源页检测行/设置表单）：fixed 布局 + 值列可收缩 */
+table.kv { table-layout: fixed; }
+table.kv td:last-child { overflow: hidden; }
+table.kv td:last-child .copyable { max-width: 100%; }
+
+/* 数据表：最小宽交给容器分档（不再恒定撑出滚动条） */
+.table-scroll table.list { min-width: 620px; }
+
+/* 输入框在 flex/grid 内允许收缩（默认 min-width:auto 是横向溢出元凶） */
+input, select, textarea { min-width: 0; }
+
+@container (max-width: 720px) {
+  /* 规则编辑器：取消硬最小宽，隐藏次要列（group/note），行高紧凑 */
+  .rules-editor table { min-width: 0; }
+  .rules-editor th:nth-child(5), .rules-editor td:nth-child(5),
+  .rules-editor th:nth-child(6), .rules-editor td:nth-child(6) { display: none; }
+  /* 键值表首列（标签）收窄，给值列让位 */
+  table.kv td:first-child { width: 104px; font-size: 11.5px; }
+  /* 工具栏换行友好 */
+  .toolbar { flex-wrap: wrap; row-gap: 6px; }
+}
+
+@container (min-width: 721px) {
+  .rules-editor table { min-width: 860px; }
+}
+
+
+/* ══════ 响应式修订（deepseek 窄窗评审 P0/P1）══════ */
+/* 规则表窄档：恢复横向滚动兜底（禁止 overflow 硬裁切），输入省略号 */
+@container (max-width: 720px) {
+  .rules-editor { overflow-x: auto; }
+  .rules-editor table { min-width: 640px; table-layout: fixed; }
+  .rules-editor input, .rules-editor select {
+    width: 100%; min-width: 0;
+    text-overflow: ellipsis; overflow: hidden; white-space: nowrap;
+  }
+  .rules-editor td.mono, .rules-editor td { overflow: hidden; }
+  /* table-layout:fixed 下列宽只认 thead th——窄档重排列宽（match/action 完整可见） */
+  .rules-editor thead th:nth-child(1) { width: 27%; }
+  .rules-editor thead th:nth-child(2) { width: 15%; }
+  .rules-editor thead th:nth-child(3) { width: 30%; }
+  .rules-editor thead th:nth-child(4) { width: 28%; }
+  .rules-editor thead th:nth-child(5), .rules-editor thead th:nth-child(6) { display: none; }
+  .rules-editor td:nth-child(5), .rules-editor td:nth-child(6) { display: none; }
+}
+/* Tabulator 暗色主题强化（表头/占位行曾露默认浅色） */
+.tabulator .tabulator-header .tabulator-col-content,
+.tabulator .tabulator-header .tabulator-col-title {
+  background: transparent; color: var(--tx3, #7C8AA0);
+}
+.tabulator .tabulator-header, .tabulator .tabulator-header .tabulator-col {
+  background: var(--card, #14181F) !important;
+  color: var(--tx3, #7C8AA0);
+}
+.tabulator .tabulator-placeholder,
+.tabulator .tabulator-placeholder .tabulator-placeholder-contents {
+  background: transparent !important;
+  color: var(--tx3, #7C8AA0); font-size: 12px;
+}
+.tabulator .tabulator-placeholder span { color: inherit; }
+/* 日志属性列：标识符不被劈开（anywhere 改 break-word 语义 + 列宽下限） */
+.logt td.wrap, .slogt td.wrap { overflow-wrap: break-word; word-break: normal; }
+/* 顶栏/工具栏右侧留白 */
+.toolbar > :last-child { margin-right: 2px; }
+
+
+/* ══════ 规则表列宽（th 内联已删，宽度集中于此；table-layout:fixed 认 thead）══════ */
+.rules-editor thead th:nth-child(1) { width: 22%; }  /* match */
+.rules-editor thead th:nth-child(2) { width: 11%; }  /* action */
+.rules-editor thead th:nth-child(3) { width: 19%; }  /* set */
+.rules-editor thead th:nth-child(4) { width: 16%; }  /* remove */
+.rules-editor thead th:nth-child(5) { width: 10%; }  /* group */
+.rules-editor thead th:nth-child(6) { width: 14%; }  /* note */
+.rules-editor thead th:nth-child(7) { width: 40px; } /* 删除 */
+/* value 列输入在窄档保 96px 起（select 文字 rewrite/fake 完整可见） */
+@container (max-width: 720px) {
+  .rules-editor thead th:nth-child(1) { width: 30%; }
+  .rules-editor thead th:nth-child(2) { width: 17%; }
+  .rules-editor thead th:nth-child(3) { width: 29%; }
+  .rules-editor thead th:nth-child(4) { width: 24%; }
+  .rules-editor thead th:nth-child(5), .rules-editor thead th:nth-child(6),
+  .rules-editor td:nth-child(5), .rules-editor td:nth-child(6) { display: none; }
+}
+/* 设置页值列 flex 行（替代 td 上的 display:flex —— td 变 flex 脱离 table-cell 布局致标签错位） */
+td .rowflex { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+
+
+/* ══════ 日志表列宽配比（消息列可读优先：96px 孤字 → 比例分配）══════ */
+table.slogt th:nth-child(1), table.slogt td:nth-child(1) { width: 108px; }
+table.slogt th:nth-child(2), table.slogt td:nth-child(2) { width: 56px; }
+table.slogt th:nth-child(3), table.slogt td:nth-child(3) { width: 32%; }
+table.slogt th:nth-child(4), table.slogt td:nth-child(4) { width: 36%; }
+@container (max-width: 720px) {
+  table.slogt th:nth-child(3), table.slogt td:nth-child(3) { width: 40%; }
+  table.slogt th:nth-child(4), table.slogt td:nth-child(4) { width: 32%; }
+}
