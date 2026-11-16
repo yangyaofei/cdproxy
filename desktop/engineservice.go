@@ -8,20 +8,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/yangyaofei/cdproxy/internal/core"
+	"github.com/yangyaofei/cdproxy/internal/keeper"
 	"github.com/yangyaofei/cdproxy/internal/datadir"
 )
 
@@ -231,96 +228,20 @@ type AgentBrowserInfo struct {
 	Source  string `json:"source"` // setting | bundled | path | none
 }
 
-// bundledAgentBrowser bundled 候选：env 覆盖（开发模式直指 staging 目录，
-// 对应 OpenChamber 的 *_BUNDLED_CLI_DIR 交接）→ 可执行文件相对
-// .app/Contents/Resources/agent-browser/。
-func bundledAgentBrowser() string {
-	if v := os.Getenv("AB_AGENT_BROWSER_BUNDLED_DIR"); v != "" {
-		p := filepath.Join(v, "agent-browser")
-		if fileExecutable(p) {
-			return p
-		}
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	// dev 二进制：desktop/bin/abp-desktop → staging 在 ../build/agent-browser/
-	for _, rel := range []string{"../build/agent-browser/agent-browser", "../Resources/agent-browser/agent-browser"} {
-		if p := filepath.Join(filepath.Dir(exe), rel); fileExecutable(p) {
-			return p
-		}
+// AgentBrowserInfo 绑定入口（版本探活在解析里同步跑一次，界面低频调用可接受）。
+// settingAgentBrowser 引擎在运行时读 settings 显式覆盖（引擎未起时为空）。
+func (s *EngineService) settingAgentBrowser() string {
+	if s.eng != nil {
+		return s.eng.Store().Get().AgentBrowserBinary
 	}
 	return ""
 }
 
-func fileExecutable(p string) bool {
-	fi, err := os.Stat(p)
-	return err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0
-}
-
-// resolveAgentBrowser 解析链（settings 覆盖 → bundled → PATH），逐级记 source。
-func (s *EngineService) resolveAgentBrowser() AgentBrowserInfo {
-	if s.eng != nil {
-		if p := s.eng.Store().Get().AgentBrowserBinary; p != "" && fileExecutable(p) {
-			return AgentBrowserInfo{Path: p, Source: "setting", Version: abVersion(p)}
-		}
-	}
-	if p := bundledAgentBrowser(); p != "" {
-		return AgentBrowserInfo{Path: p, Source: "bundled", Version: abVersion(p)}
-	}
-	if p, err := exec.LookPath("agent-browser"); err == nil {
-		return AgentBrowserInfo{Path: p, Source: "path", Version: abVersion(p)}
-	}
-	return AgentBrowserInfo{Source: "none"}
-}
-
-func abVersion(bin string) string {
-	out, err := exec.Command(bin, "--version").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// AgentBrowserInfo 绑定入口（版本探活在解析里同步跑一次，界面低频调用可接受）。
 func (s *EngineService) AgentBrowser() AgentBrowserInfo {
-	return s.resolveAgentBrowser()
+	bin, src := keeper.ResolveAgentBrowser(s.settingAgentBrowser())
+	return AgentBrowserInfo{Path: bin, Source: src, Version: keeper.AgentBrowserVersion(bin)}
 }
 
-// AgentBrowserInstall 把解析到的 agent-browser 安装到用户 PATH（写符号链接）。
-// 目标目录按序探测可写者：/usr/local/bin → ~/bin。返回安装路径与是否在
-// 当前 PATH 中（不在则前端提示用户加 PATH）。
-func (s *EngineService) AgentBrowserInstall() (map[string]any, error) {
-	info := s.resolveAgentBrowser()
-	if info.Source == "none" {
-		return nil, errors.New("无可安装的 agent-browser（setting/bundled/PATH 均未命中）")
-	}
-	home, _ := os.UserHomeDir()
-	candidates := []string{"/usr/local/bin", filepath.Join(home, "bin")}
-	var targetDir string
-	for _, d := range candidates {
-		if fi, err := os.Stat(d); err == nil && fi.IsDir() && unixWritable(d) {
-			targetDir = d
-			break
-		}
-	}
-	if targetDir == "" {
-		// ~/bin 兜底创建（无 sudo 场景）
-		targetDir = filepath.Join(home, "bin")
-		if err := os.MkdirAll(targetDir, 0o755); err != nil {
-			return nil, fmt.Errorf("创建 %s 失败: %w", targetDir, err)
-		}
-	}
-	dst := filepath.Join(targetDir, "agent-browser")
-	_ = os.Remove(dst) // 旧链接/旧版本直接替换
-	if err := os.Symlink(info.Path, dst); err != nil {
-		return nil, fmt.Errorf("安装失败 %s: %w", dst, err)
-	}
-	inPath := strings.Contains(os.Getenv("PATH"), targetDir)
-	return map[string]any{"installedTo": dst, "from": info.Path, "version": info.Version,
-		"inPath": inPath, "pathHint": targetDir}, nil
-}
 
 // unixWritable 目录当前用户是否可写（实测创建探针文件，免 x/sys 依赖）。
 func unixWritable(dir string) bool {

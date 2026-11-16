@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>cdproxy · Admin</title>
-  <link rel="stylesheet" href="/static/app.css?v=0.5.7">
-  <script src="/static/app.js?v=0.5.7" defer></script>
+  <link rel="stylesheet" href="/static/app.css?v=0.6.0">
+  <script src="/static/app.js?v=0.6.0" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
 </head>
 <body>
@@ -170,7 +170,7 @@
                       <template x-if="abInfo">
                         <span>
                           <span class="bdg" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? 'v' + abInfo.version : '未检测到'"></span>
-                          <span class="bdg plain" x-text="abInfo.source"></span>
+                          <span class="bdg plain" :class="abInfo.source === 'bundled' ? 'ext' : ''" x-text="abSourceText(abInfo.source)"></span>
                           <div class="copyable" style="margin-top:4px">
                             <span class="val mono" :title="abInfo.path || ''" x-text="abInfo.path || ''"></span>
                             <button class="sm" @click="copyText(abInfo.path || '', '路径已复制')">⧉</button>
@@ -580,7 +580,7 @@
                     <template x-if="abInfo">
                       <span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                         <span class="bdg" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? 'v' + abInfo.version : '未检测到'"></span>
-                        <span class="bdg plain" x-text="abInfo.source"></span>
+                        <span class="bdg plain" :class="abInfo.source === 'bundled' ? 'ext' : ''" x-text="abSourceText(abInfo.source)"></span>
                         <span class="copyable" style="flex:1;min-width:220px">
                           <span class="val mono" :title="abInfo.path || ''" x-text="abInfo.path || ''"></span>
                         </span>

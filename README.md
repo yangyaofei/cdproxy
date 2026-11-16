@@ -73,6 +73,13 @@ uv run python scripts/smoke_test.py              # 端到端五项（需真实 C
 └── var/                      # 运行数据（gitignore；Go 版数据目录默认 ~/agent-browser/proxy）
 ```
 
+## 内嵌 agent-browser（架构约束）
+
+- **唯一解析链**：`settings.agent_browser_binary`（显式外部覆盖）> `.app/Contents/Resources/agent-browser/`（内嵌）> PATH（CLI 部署兜底）。UI 检测显示、keeper 实际拉起、版本探活三处共用 `keeper.ResolveAgentBrowser`——界面显示的就是实际运行的那个二进制。
+- **内嵌版永不离开 bundle**：不存在「安装到 PATH」功能；只从 Resources 内部路径运行。
+- **HOME 沙箱归仓**：keeper 拉起的 agent-browser 进程链 HOME 指向 `<数据目录>/ab-home`——agent-browser 状态根硬拼 `HOME/.agent-browser`（源码无 env 可重定向），会话文件/auth/加密钥/tmp 与基座 Chrome 副产物经此全部归数据目录，不污染用户主目录。socket 目录用 `AGENT_BROWSER_SOCKET_DIR` 解耦到 `<数据目录>/ab-sockets`（Unix socket 104 字节上限，不随 HOME 深度超限）。
+- 用户手动执行的外部 agent-browser（brew/PATH 版）数据在用户 HOME，不属 proxy 管辖。
+
 ## 桌面 App
 
 App 内 UI 为事件驱动（Wails 官方形态）：引擎状态变化点 → `Event.Emit("cdp:state", 完整状态JSON)` → 前端回调直达写入响应式变量——无请求、无防抖；在线时零轮询（仅引擎停机后 800ms 快探恢复感知 + 窗口 focus 对账兜底）。浏览器版 Admin 网页无事件通道，维持 5s 轮询（`admin_web_enabled` 控制，默认关）。（desktop/，Wails v3）

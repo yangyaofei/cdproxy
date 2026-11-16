@@ -347,6 +347,9 @@ function admin() {
       return `ws://127.0.0.1:${this.status.settings.ws_port}/ext`;
     },
 
+    abSourceText(src) {
+      return { bundled: "内嵌", setting: "外部·指定", path: "外部·PATH", none: "无" }[src] || src;
+    },
     async loadSources() {
       try {
         this.abInfo = await this.api("GET", "/sources/agent-browser");

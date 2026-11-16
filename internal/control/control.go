@@ -16,7 +16,6 @@
 package control
 
 import (
-	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -25,7 +24,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -384,35 +382,15 @@ func noCache(next http.Handler) http.Handler {
 	})
 }
 
-// agentBrowserInfo standalone 源的 agent-browser 安装检测（解析链：
-// settings.agent_browser_binary → AB_AGENT_BROWSER_BUNDLED_DIR 内嵌目录 →
-// PATH；App 模式经 env 交接 bundled 目录）。
+// agentBrowserInfo standalone 源的 agent-browser 检测：与 keeper 实际
+// 拉起、版本探活共用唯一解析链（显式覆盖 > 内嵌 bundle > PATH）——
+// 界面显示的就是实际运行的那个二进制。
 func (c *Control) agentBrowserInfo() map[string]any {
-	if p := c.store.Get().AgentBrowserBinary; p != "" {
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
-			return map[string]any{"found": true, "path": p, "source": "setting", "version": abVersion(p)}
-		}
+	bin, src := keeper.ResolveAgentBrowser(c.store.Get().AgentBrowserBinary)
+	if bin == "" {
+		return map[string]any{"found": false, "source": src}
 	}
-	if dir := os.Getenv("AB_AGENT_BROWSER_BUNDLED_DIR"); dir != "" {
-		p := filepath.Join(dir, "agent-browser")
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
-			return map[string]any{"found": true, "path": p, "source": "bundled", "version": abVersion(p)}
-		}
-	}
-	if p, err := exec.LookPath("agent-browser"); err == nil {
-		return map[string]any{"found": true, "path": p, "source": "path", "version": abVersion(p)}
-	}
-	return map[string]any{"found": false, "source": "none"}
-}
-
-func abVersion(bin string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, bin, "--version").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
+	return map[string]any{"found": true, "path": bin, "source": src, "version": keeper.AgentBrowserVersion(bin)}
 }
 
 // configFiles 配置文件只读白名单（设置页「配置查看」用）：key 稳定，

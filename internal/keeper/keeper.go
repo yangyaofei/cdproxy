@@ -88,10 +88,22 @@ func IdleTimeoutString(seconds float64) string {
 }
 
 // isolatedEnv 最小环境：HOME/PATH 之外全剥（防 provider 环境变量级联递归）。
-func isolatedEnv() []string {
+// HOME 重定向到数据目录下的专用 home（HOME 沙箱）：agent-browser 的状态根
+// 硬拼 HOME/.agent-browser（源码 get_state_dir，无 env 可重定向），会话
+// 文件/auth/加密钥/tmp 与基座 Chrome 的副产物经此全部归仓数据目录，
+// 不污染用户主目录。PATH 保留（Chrome 二进制查找仍需）。
+// AGENT_BROWSER_SOCKET_DIR 显式指向短目录：daemon 的 Unix socket 路径
+// 有 104 字节上限，跟随沙箱 HOME 会随数据目录深度超限（易失 IPC 端点，
+// 与持久数据解耦，不违反归仓语义）。
+func isolatedEnv(dataDir string) []string {
+	home := filepath.Join(dataDir, "ab-home")
+	_ = os.MkdirAll(home, 0o755)
+	sockDir := filepath.Join(dataDir, "ab-sockets")
+	_ = os.MkdirAll(sockDir, 0o755)
 	return []string{
-		"HOME=" + os.Getenv("HOME"),
+		"HOME=" + home,
 		"PATH=" + os.Getenv("PATH"),
+		"AGENT_BROWSER_SOCKET_DIR=" + sockDir,
 	}
 }
 
@@ -101,7 +113,7 @@ func (c Config) runKeeper(args []string, timeout time.Duration) (string, error) 
 	defer cancel()
 	full := append([]string{"--session", c.Session, "--config", c.ConfigPath}, args...)
 	cmd := exec.CommandContext(ctx, c.AgentBrowser, full...)
-	cmd.Env = isolatedEnv()
+	cmd.Env = isolatedEnv(filepath.Dir(c.ConfigPath))
 	out, err := cmd.Output()
 	if err != nil {
 		// 带上 stderr：exit status 1 无法定位，stderr 才有 agent-browser 的真实报错

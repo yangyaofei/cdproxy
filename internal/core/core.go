@@ -72,6 +72,11 @@ func New(opts Options) (*Core, error) {
 	}
 	kcfg.Headed = !opts.Headless
 	kcfg.ConfigPath = filepath.Join(opts.DataDir, "keeper-config.json")
+	// agent-browser 二进制走唯一解析链（显式覆盖 > 内嵌 bundle > PATH），
+	// 与 UI 检测/版本探活共用——App 形态下基座由内嵌版运行。
+	if bin, _ := keeper.ResolveAgentBrowser(store.Get().AgentBrowserBinary); bin != "" {
+		kcfg.AgentBrowser = bin
+	}
 
 	c := &Core{
 		opts: opts, logger: opts.Logger,
