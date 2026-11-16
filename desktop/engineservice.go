@@ -20,7 +20,7 @@ import (
 	"sync"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
-	"github.com/yangyaofei/agent-browser-proxy/internal/core"
+	"github.com/yangyaofei/cdproxy/internal/core"
 )
 
 // DoResponse DoRequest 的返回（前端拿到的 JSON 形状）。

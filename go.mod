@@ -1,4 +1,4 @@
-module github.com/yangyaofei/agent-browser-proxy
+module github.com/yangyaofei/cdproxy
 
 go 1.27
 

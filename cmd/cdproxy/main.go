@@ -1,4 +1,4 @@
-// agent-browser-proxy 主入口。
+// cdproxy 主入口。
 //
 // 子命令：
 //
@@ -29,21 +29,21 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yangyaofei/agent-browser-proxy/internal/core"
+	"github.com/yangyaofei/cdproxy/internal/core"
 )
 
 // version 经 -ldflags -X main.version 注入。
 var version = "dev"
 
-const usage = `agent-browser-proxy ` + "v" + `%s — Chrome CDP 隔离代理（Keeper + 多会话 WS 路由）
+const usage = `cdproxy ` + "v" + `%s — Chrome CDP 隔离代理（Keeper + 多会话 WS 路由）
 
 用法:
-  agent-browser-proxy serve    [--chrome <path>] [--profile <dir>] [--cdp-port 9222]
+  cdproxy serve    [--chrome <path>] [--profile <dir>] [--cdp-port 9222]
                                [--control-port 9224] [--ws-port 9225] [--headless]
                                [--data-dir ~/.agent-browser/proxy]
-  agent-browser-proxy status   [--control-port 9224]
-  agent-browser-proxy stop     [--control-port 9224]
-  agent-browser-proxy plugin   (stdin/stdout 插件协议；无参数+管道 stdin 时自动进入)
+  cdproxy status   [--control-port 9224]
+  cdproxy stop     [--control-port 9224]
+  cdproxy plugin   (stdin/stdout 插件协议；无参数+管道 stdin 时自动进入)
 
 下游形态（双链路常开并存，settings.downstream_mode 决定新会话默认走哪条，
 Admin 页 / PUT /settings 可在线切换——只影响新分配，存量会话继续用原下游）:
@@ -186,7 +186,7 @@ func runServe(args []string) int {
 	logger.Info("服务启动", "version", version, "data_dir", opts.dataDir)
 
 	// PID 文件（stop 的 SIGTERM 兜底用）
-	pidPath := filepath.Join(opts.dataDir, "agent-browser-proxy.pid")
+	pidPath := filepath.Join(opts.dataDir, "cdproxy.pid")
 	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
 		logger.Warn("PID 文件写入失败", "err", err)
 	}
@@ -280,7 +280,7 @@ func runStop(args []string) int {
 	if code == 200 {
 		fmt.Println("停机指令已发送")
 		// 等待退出（PID 消失）
-		pidPath := filepath.Join(defaultDataDir(), "agent-browser-proxy.pid")
+		pidPath := filepath.Join(defaultDataDir(), "cdproxy.pid")
 		for i := 0; i < 30; i++ {
 			if _, err := os.Stat(pidPath); os.IsNotExist(err) {
 				fmt.Println("服务已停止")
@@ -292,7 +292,7 @@ func runStop(args []string) int {
 		return 0
 	}
 	// HTTP 不通 → PID 兜底 SIGTERM
-	pidPath := filepath.Join(defaultDataDir(), "agent-browser-proxy.pid")
+	pidPath := filepath.Join(defaultDataDir(), "cdproxy.pid")
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "服务不可达且无 PID 文件\n")

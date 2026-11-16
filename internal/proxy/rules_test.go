@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/yangyaofei/agent-browser-proxy/internal/settings"
+	"github.com/yangyaofei/cdproxy/internal/settings"
 )
 
 func mustParams(t *testing.T, s string) map[string]any {

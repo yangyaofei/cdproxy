@@ -1,5 +1,5 @@
 #!/bin/bash
-# serve.sh — 分离启动 agent-browser-proxy（脱离调用方进程组，防会话退出连坐）
+# serve.sh — 分离启动 cdproxy（脱离调用方进程组，防会话退出连坐）
 # 用法: scripts/serve.sh [--chrome PATH] [--profile PATH] [--cdp-port N] [--control-port N] [--ws-port N]
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

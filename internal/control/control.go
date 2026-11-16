@@ -27,11 +27,11 @@ import (
 	"strings"
 	"time"
 
-	assets "github.com/yangyaofei/agent-browser-proxy" // 根目录 package assets（go:embed 只能嵌包内文件）
-	"github.com/yangyaofei/agent-browser-proxy/internal/interlog"
-	"github.com/yangyaofei/agent-browser-proxy/internal/keeper"
-	"github.com/yangyaofei/agent-browser-proxy/internal/proxy"
-	"github.com/yangyaofei/agent-browser-proxy/internal/settings"
+	assets "github.com/yangyaofei/cdproxy" // 根目录 package assets（go:embed 只能嵌包内文件）
+	"github.com/yangyaofei/cdproxy/internal/interlog"
+	"github.com/yangyaofei/cdproxy/internal/keeper"
+	"github.com/yangyaofei/cdproxy/internal/proxy"
+	"github.com/yangyaofei/cdproxy/internal/settings"
 )
 
 // Control 管理面服务。

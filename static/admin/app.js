@@ -1,4 +1,4 @@
-/* agent-browser-proxy Admin 逻辑（Alpine 组件，无外部依赖） */
+/* cdproxy Admin 逻辑（Alpine 组件，无外部依赖） */
 
 const DEFAULT_REWRITES = [
   { match: "Target.createTarget", action: "rewrite", set: { background: true }, remove: [], group: "focus", note: "tab 创建不抢焦点（+background:true）" },
@@ -89,8 +89,8 @@ function admin() {
 
     async api(method, path, body) {
       // 桌面 App（Wails）：进程内绑定执行同一套 control 路由（端口关闭也可用）
-      if (window.__abpWails) {
-        const r = await window.__abpWails.doRequest(method, path, body === undefined ? "" : JSON.stringify(body));
+      if (window.__cdpWails) {
+        const r = await window.__cdpWails.doRequest(method, path, body === undefined ? "" : JSON.stringify(body));
         const data = r.body ? JSON.parse(r.body) : {};
         if (r.status >= 400) throw new Error(data.error || `${method} ${path} → ${r.status}`);
         return data;

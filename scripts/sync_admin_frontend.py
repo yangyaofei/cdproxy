@@ -5,7 +5,7 @@ Web 版（control 静态服务）与 Wails App 版共用 static/admin 源文件�
   - app.js / app.css / vendor 原样拷到 desktop/frontend/public/static/…
     （vite 原样搬运 public/ → dist/，脚本保持经典 defer 加载顺序，
      不经模块打包——曾因改写为 /src/ 模块入口被 vite 丢弃，App 白屏）
-  - index.html 注入 Wails 绑定引导（window.__abpWails = EngineService
+  - index.html 注入 Wails 绑定引导（window.__cdpWails = EngineService
     绑定 + 同步错误收集器 __abpErrors），其余引用保持 /static/… 原样
 
 --check 校验同步一致性（CI/提交前跑）。
@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "static" / "admin"
 DST = ROOT / "desktop" / "frontend"
 
-BOOTSTRAP = """  <!-- Wails 绑定引导：注入 window.__abpWails，app.js 的 api() 优先走它 -->
+BOOTSTRAP = """  <!-- Wails 绑定引导：注入 window.__cdpWails，app.js 的 api() 优先走它 -->
   <script>
     // 同步错误收集器（先于 defer 脚本装上，app.js/Alpine 的早期异常不丢）
     window.__abpErrors = [];
@@ -29,8 +29,8 @@ BOOTSTRAP = """  <!-- Wails 绑定引导：注入 window.__abpWails，app.js 的
     window.addEventListener('unhandledrejection', e => window.__abpErrors.push('promise: ' + String(e.reason)));
   </script>
   <script type="module">
-    import { DoRequest, DumpDOM } from "/bindings/github.com/yangyaofei/agent-browser-proxy/desktop/engineservice.js";
-    window.__abpWails = { doRequest: DoRequest, dumpDOM: DumpDOM };
+    import { DoRequest, DumpDOM } from "/bindings/github.com/yangyaofei/cdproxy/desktop/engineservice.js";
+    window.__cdpWails = { doRequest: DoRequest, dumpDOM: DumpDOM };
   </script>"""
 
 
@@ -41,7 +41,7 @@ def build_index() -> str:
         raise SystemExit("index.html 缺少 /static/app.js 引用（结构变更？）")
     # 引导注入在 app.js 引用之前（错误收集器须先于一切 defer 脚本）
     html = html.replace(marker, f"{BOOTSTRAP}\n  {marker}", 1)
-    if "__abpWails" not in html:
+    if "__cdpWails" not in html:
         raise SystemExit("绑定引导注入失败")
     return html
 

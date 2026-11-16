@@ -6,7 +6,7 @@
   1. 装有 cdp-ext 的 Chrome 已运行（自动测试：Playwright Chromium 经
      CDP Extensions.loadUnpacked 加载，无任何调试端口）
   2. 本服务已运行（/ext 常开；downstream_mode 不限，脚本会自行切换）：
-     var/agent-browser-proxy serve --control-port 9234 --ws-port 9235 --data-dir var/ext
+     var/cdproxy serve --control-port 9234 --ws-port 9235 --data-dir var/ext
 
 T0 会把 downstream_mode 切到 extension（走 Admin 同款 PUT /settings 路径，
 顺带验证在线切换）；测试结束切回 chrome。

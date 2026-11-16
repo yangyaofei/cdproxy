@@ -7,7 +7,7 @@ package proxy
 import (
 	"strings"
 
-	"github.com/yangyaofei/agent-browser-proxy/internal/settings"
+	"github.com/yangyaofei/cdproxy/internal/settings"
 )
 
 // ruleOutcome 规则链的执行结果。

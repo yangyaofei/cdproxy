@@ -14,11 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yangyaofei/agent-browser-proxy/internal/control"
-	"github.com/yangyaofei/agent-browser-proxy/internal/interlog"
-	"github.com/yangyaofei/agent-browser-proxy/internal/keeper"
-	"github.com/yangyaofei/agent-browser-proxy/internal/proxy"
-	"github.com/yangyaofei/agent-browser-proxy/internal/settings"
+	"github.com/yangyaofei/cdproxy/internal/control"
+	"github.com/yangyaofei/cdproxy/internal/interlog"
+	"github.com/yangyaofei/cdproxy/internal/keeper"
+	"github.com/yangyaofei/cdproxy/internal/proxy"
+	"github.com/yangyaofei/cdproxy/internal/settings"
 )
 
 // Options 构造参数。ControlPort/WsPort 为启动覆盖（0=用 settings 值），

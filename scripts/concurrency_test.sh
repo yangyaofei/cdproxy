@@ -16,15 +16,15 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export AGENT_BROWSER_SOCKET_DIR="$DIR/var/ab-sock"
 mkdir -p "$AGENT_BROWSER_SOCKET_DIR"
 CFG="$DIR/var/full-config.json"
-BIN="$DIR/var/agent-browser-proxy"
+BIN="$DIR/var/cdproxy"
 # 自含：Go 二进制缺失则构建；config 缺失则按 examples 样例生成（指向本仓库二进制）
 if [ ! -x "$BIN" ]; then
   echo "构建 Go 二进制…"
-  (cd "$DIR" && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN" ./cmd/agent-browser-proxy) || exit 1
+  (cd "$DIR" && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN" ./cmd/cdproxy) || exit 1
 fi
 if [ ! -f "$CFG" ]; then
   mkdir -p "$DIR/var"
-  sed "s|/Users/yangyaofei/workspace/agent-browser-proxy/var/agent-browser-proxy|$BIN|" \
+  sed "s|/Users/yangyaofei/workspace/cdproxy/var/cdproxy|$BIN|" \
     "$DIR/examples/agent-browser-config.json" > "$CFG"
 fi
 OUT="$DIR/var/conc-results"

@@ -1,4 +1,4 @@
-// agent-browser-proxy 桌面 App（Wails v3）。
+// cdproxy 桌面 App（Wails v3）。
 //
 // 形态：菜单栏常驻（ActivationPolicyAccessory，无 Dock 图标）+ 托盘菜单
 // （状态/打开管理界面/重启引擎/退出）+ 懒创建的管理窗口。引擎
@@ -74,10 +74,10 @@ func showUI() {
 				    try { const r = await fetch(u); probe[u] = r.status + ':' + (await r.text()).length } catch (e) { probe[u] = 'ERR:' + String(e) }
 				  }
 				  try {
-				    const r = await window.__abpWails.doRequest('GET', '/health', '');
-				    window.__abpWails.dumpDOM(JSON.stringify({health: r && r.body, errors: window.__abpErrors, probe, dom: document.documentElement.outerHTML}))
+				    const r = await window.__cdpWails.doRequest('GET', '/health', '');
+				    window.__cdpWails.dumpDOM(JSON.stringify({health: r && r.body, errors: window.__abpErrors, probe, dom: document.documentElement.outerHTML}))
 				  } catch (e) {
-				    window.__abpWails.dumpDOM(JSON.stringify({error: String(e), errors: window.__abpErrors, probe, dom: document.documentElement.outerHTML}))
+				    window.__cdpWails.dumpDOM(JSON.stringify({error: String(e), errors: window.__abpErrors, probe, dom: document.documentElement.outerHTML}))
 				  }
 				})()`)
 			}
@@ -162,7 +162,7 @@ func main() {
 			DisableQuitOnLastWindowClosed: true,
 		},
 		SingleInstance: &application.SingleInstanceOptions{
-			UniqueID: "com.yangyaofei.agent-browser-proxy.desktop",
+			UniqueID: "com.yangyaofei.cdproxy.desktop",
 			OnSecondInstanceLaunch: func(_ application.SecondInstanceData) {
 				showUI()
 			},

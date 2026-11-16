@@ -41,10 +41,10 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/yangyaofei/agent-browser-proxy/internal/interlog"
-	"github.com/yangyaofei/agent-browser-proxy/internal/keeper"
-	"github.com/yangyaofei/agent-browser-proxy/internal/settings"
-	"github.com/yangyaofei/agent-browser-proxy/internal/state"
+	"github.com/yangyaofei/cdproxy/internal/interlog"
+	"github.com/yangyaofei/cdproxy/internal/keeper"
+	"github.com/yangyaofei/cdproxy/internal/settings"
+	"github.com/yangyaofei/cdproxy/internal/state"
 )
 
 // writeTimeout 单帧写超时（防慢消费方拖死路由）。
