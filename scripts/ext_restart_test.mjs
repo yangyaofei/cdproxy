@@ -22,9 +22,19 @@ const check = (name, ok, detail = "") => {
   if (!ok) process.exitCode = 1;
 };
 
+// 分配令牌：从管理面 /status 自取（POST /sessions 需要 Bearer 准入）
+let _tok = "";
+const allocToken = async () => {
+  if (_tok) return _tok;
+  const r = await http("GET", "/status");
+  _tok = r?.data?.sources?.alloc_token || r?.sources?.alloc_token || "";
+  return _tok;
+};
+
 const http = async (method, path, body) => {
   const resp = await fetch(CONTROL + path, {
-    method, headers: { "Content-Type": "application/json" },
+    method, headers: { "Content-Type": "application/json",
+      ...(method === "POST" && path === "/sessions" ? { Authorization: `Bearer ${await allocToken()}` } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   return { code: resp.status, data: await resp.json().catch(() => ({})) };

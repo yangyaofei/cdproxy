@@ -115,6 +115,11 @@ def t2_status():
     rt = st.get("routing", {})
     check("routing 默认源+规则表", rt.get("default_source") in ("standalone", "extension")
           and isinstance(rt.get("rules"), list))
+    eps = st.get("endpoints", [])
+    check("接入点内置两条+令牌", len(eps) >= 2 and any(e.get("path") == "standalone" for e in eps)
+          and any(e.get("path") == "extension" and len(e.get("token", "")) >= 16 for e in eps))
+    check("分配令牌已生成", len(st.get("sources", {}).get("alloc_token", "")) >= 16)
+    check("实际 ws_port 暴露", isinstance(st.get("ws_port"), int) and st["ws_port"] > 0)
 
 
 def t3_extension():

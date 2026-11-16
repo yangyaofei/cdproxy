@@ -332,6 +332,45 @@ func httpPost(url string, payload []byte) ([]byte, int) {
 	return body, resp.StatusCode
 }
 
+// httpPostAuth 带 Bearer 准入令牌的 POST（alloc 路径凭证）。
+func httpPostAuth(url string, payload []byte, token string) ([]byte, int) {
+	req, err := http.NewRequest("POST", url, strings.NewReader(string(payload)))
+	if err != nil {
+		return nil, 0
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	return body, resp.StatusCode
+}
+
+// allocToken 分配令牌解析链：env 显式指定 > 管理面 /status 自取（回环
+// 信任域内读取——管理面与代理面分离，代理面准入凭证由管理面分发）。
+func allocToken(base string) string {
+	if v := os.Getenv("AB_PROXY_ALLOC_TOKEN"); v != "" {
+		return v
+	}
+	resp, err := http.Get(base + "/status")
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var st struct {
+		Sources struct {
+			AllocToken string `json:"alloc_token"`
+		} `json:"sources"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&st)
+	return st.Sources.AllocToken
+}
+
 // ── plugin（agent-browser stdio 协议桥）──────────────────────────
 
 // pluginResponse 协议信封。
@@ -372,7 +411,13 @@ func runPlugin() int {
 			respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Error: fmt.Sprintf("服务拉起失败: %v", err)})
 			return 1
 		}
-		body, code := httpPost(controlBase(nil)+"/sessions", mustJSON(map[string]string{"name": session}))
+		base := controlBase(nil)
+		body, code := httpPostAuth(base+"/sessions", mustJSON(map[string]string{"name": session}), allocToken(base))
+		if code == http.StatusUnauthorized {
+			respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1",
+				Error: "alloc 被拒（401）：分配令牌无效或管理面不可读——用 AB_PROXY_ALLOC_TOKEN 显式指定，或在 Admin「源」页查看分配令牌"})
+			return 1
+		}
 		if code != 200 {
 			respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Error: fmt.Sprintf("alloc 失败 (HTTP %d): %s", code, string(body))})
 			return 1

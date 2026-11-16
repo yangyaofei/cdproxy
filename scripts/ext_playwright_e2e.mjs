@@ -18,8 +18,13 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "✓" : "✗"} ${name}${detail ? " — " + detail : ""}`);
 };
 
+// 分配令牌：从管理面 /status 自取（POST /sessions 需要 Bearer 准入）
+const _st = await fetch(`${CONTROL}/status`).then((r) => r.json());
+const allocToken = _st?.sources?.alloc_token || "";
+
 const alloc = await fetch(`${CONTROL}/sessions`, {
-  method: "POST", headers: { "Content-Type": "application/json" },
+  method: "POST",
+  headers: { "Content-Type": "application/json", Authorization: `Bearer ${allocToken}` },
   body: JSON.stringify({ name: `pw-e2e-${Date.now()}` }),
 }).then((r) => r.json());
 

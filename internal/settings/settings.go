@@ -5,12 +5,15 @@
 package settings
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -18,7 +21,7 @@ import (
 
 // knownKeys 合法设置键（Update 对未知键显式报错而非静默忽略——配置写错
 // 必须当场暴露，否则调用方以为生效，事后才发现被吞）。
-var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "rewrites", "downstream_mode", "ext_token", "sources", "routing", "control_port", "ws_port", "ports_enabled", "agent_browser_binary"}
+var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "rewrites", "downstream_mode", "ext_token", "sources", "routing", "endpoints", "control_port", "ws_port", "ports_enabled", "agent_browser_binary"}
 
 // 各字段的下限（防误配成 0 导致回收风暴）。
 var minValues = map[string]float64{
@@ -96,6 +99,9 @@ type Settings struct {
 	Sources Sources `json:"sources"`
 	// Routing 会话 → 源 路由（显式指定 > 前缀规则 > 默认源）。
 	Routing Routing `json:"routing"`
+	// Endpoints 常驻 CDP 接入点表（连接即会话；内置 standalone/extension
+	// 两条，可增删自定义）。nil（配置缺失）= 首启自动生成内置两条。
+	Endpoints []Endpoint `json:"endpoints"`
 	// ControlPort 管理面（REST/Admin 页）监听端口。变更经进程内重绑生效
 	//（监听重建，无需换进程）；会话/令牌状态全程保留。
 	ControlPort int `json:"control_port"`
@@ -135,8 +141,25 @@ type Sources struct {
 	// ExtensionEnabled extension 源（用户宿主 Chrome + cdp-ext 回连）开关。
 	ExtensionEnabled bool `json:"extension_enabled"`
 	// ExtensionToken /ext 反向入口的准入令牌（扩展 options 页配同一值）。
-	// 空串 = 不校验（仅回环监听，与控制面同信任级）。
+	// 首次启动自动生成强随机（旧默认 dev 已废除——自动换新并记日志）。
 	ExtensionToken string `json:"token"`
+	// AllocToken POST /sessions（agent-browser plugin 分配路径）的准入令牌，
+	// 客户端以 Authorization: Bearer <token> 携带。首次启动自动生成。
+	AllocToken string `json:"alloc_token"`
+}
+
+// Endpoint 常驻 CDP 接入点：URL 路径即源选择器，独立 token 即凭证。
+// 连接 ws://host:<ws_port>/<path>/<token>（或同路径 + Bearer 头）= 以
+// session 名（默认=path）分配/复用会话并接管连接——连接即会话。
+type Endpoint struct {
+	// Path URL 路径段（[a-z0-9-]，不可用保留字 cdp/ext）。
+	Path string `json:"path"`
+	// Source 目标源（standalone | extension）。
+	Source string `json:"source"`
+	// Token 准入令牌（首建自动生成；PUT 更新时忽略此字段，重置走专用动作）。
+	Token string `json:"token"`
+	// Session 会话名（决定组名 ab: <session> 与认领身份；空 = path）。
+	Session string `json:"session"`
 }
 
 // Routing 会话 → 源 的路由策略。
@@ -162,14 +185,13 @@ func validRoutes(rules []SourceRoute) error {
 // Defaults 返回默认设置。
 func Defaults() Settings {
 	return Settings{
-		DisconnectReapSeconds: 60.0,
-		AllocReapSeconds:      300.0,
+		DisconnectReapSeconds:     60.0,
+		AllocReapSeconds:          300.0,
 		KeeperIdleShutdownSeconds: 600.0,
-		Rewrites:              DefaultRewrites(),
+		Rewrites:                  DefaultRewrites(),
 		Sources: Sources{
 			StandaloneEnabled: true,
 			ExtensionEnabled:  true,
-			ExtensionToken:    "dev",
 		},
 		Routing: Routing{
 			DefaultSource: SourceStandalone,
@@ -179,6 +201,85 @@ func Defaults() Settings {
 		WsPort:       9225,
 		PortsEnabled: true,
 	}
+}
+
+// newSecretToken 强随机准入令牌（24 hex 字符；crypto/rand）。
+func newSecretToken() string {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand 不可用: " + err.Error())
+	}
+	return hex.EncodeToString(b)
+}
+
+// endpointPathRE 接入点路径段：小写字母/数字/连字符，2-32 位。
+var endpointPathRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,31}$`)
+
+// wsReservedPaths WS mux 上的保留路径（字面路由优先，接入点不可占用）。
+var wsReservedPaths = map[string]bool{"cdp": true, "ext": true}
+
+// validEndpoints 接入点表校验（含 session 名规范化：空 → path）。
+func validEndpoints(eps []Endpoint) error {
+	seen := map[string]bool{}
+	for i, ep := range eps {
+		if !endpointPathRE.MatchString(ep.Path) {
+			return fmt.Errorf("endpoints[%d].path 须为 2-32 位小写字母/数字/连字符: %q", i, ep.Path)
+		}
+		if wsReservedPaths[ep.Path] {
+			return fmt.Errorf("endpoints[%d].path %q 是保留路径", i, ep.Path)
+		}
+		if seen[ep.Path] {
+			return fmt.Errorf("endpoints[%d].path %q 重复", i, ep.Path)
+		}
+		seen[ep.Path] = true
+		if !validSource(ep.Source) {
+			return fmt.Errorf("endpoints[%d].source 必须是 standalone|extension", i)
+		}
+		s := strings.TrimSpace(ep.Session)
+		if s == "" {
+			s = ep.Path
+		}
+		if len(s) > 64 {
+			return fmt.Errorf("endpoints[%d].session 过长（≤64）", i)
+		}
+	}
+	return nil
+}
+
+// ensureSecrets 补齐/强化凭证（首启与弱默认废除）：返回是否发生变更
+// （调用方负责持久化）。规则：ext/alloc 令牌空或 "dev" → 生成强随机；
+// endpoints 缺失 → 生成内置两条；单条 token 空 → 生成。
+func ensureSecrets(s *Settings, warns *[]string) bool {
+	changed := false
+	weak := func(t string) bool { return strings.TrimSpace(t) == "" || t == "dev" }
+	if weak(s.Sources.ExtensionToken) {
+		if s.Sources.ExtensionToken == "dev" {
+			*warns = append(*warns, "扩展令牌为旧默认值 dev，已自动换强随机——请到「源」页复制新令牌并更新 cdp-ext options 页")
+		}
+		s.Sources.ExtensionToken = newSecretToken()
+		changed = true
+	}
+	if weak(s.Sources.AllocToken) {
+		if s.Sources.AllocToken == "dev" {
+			*warns = append(*warns, "分配令牌为旧默认值 dev，已自动换强随机——请到「源」页复制并更新 agent-browser plugin 配置")
+		}
+		s.Sources.AllocToken = newSecretToken()
+		changed = true
+	}
+	if s.Endpoints == nil {
+		s.Endpoints = []Endpoint{
+			{Path: "standalone", Source: SourceStandalone},
+			{Path: "extension", Source: SourceExtension},
+		}
+		changed = true
+	}
+	for i := range s.Endpoints {
+		if strings.TrimSpace(s.Endpoints[i].Token) == "" {
+			s.Endpoints[i].Token = newSecretToken()
+			changed = true
+		}
+	}
+	return changed
 }
 
 // validPort 端口合法区间（1-65535）。
@@ -194,6 +295,17 @@ type Store struct {
 // NewStore 构造并加载（缺失/损坏回落默认值）。
 func NewStore(path string) *Store {
 	s := &Store{path: path, settings: load(path)}
+	// 凭证补齐/强化对全新安装同样生效（无文件路径 Defaults 的令牌为空）；
+	// 变更即回盘，保证 UI/测试读到的是持久值。
+	var warns []string
+	if ensureSecrets(&s.settings, &warns) {
+		for _, w := range warns {
+			slog.Warn(w)
+		}
+		if err := save(path, s.settings); err != nil {
+			slog.Error("settings 初始存盘失败", "path", path, "err", err)
+		}
+	}
 	return s
 }
 
@@ -289,6 +401,17 @@ func load(path string) Settings {
 		slog.Warn("settings.json 端口冲突，回落默认端口", "port", out.ControlPort)
 		out.ControlPort, out.WsPort = 9224, 9225
 	}
+	// endpoints 表（缺失键 = 首启 → nil 走 ensureSecrets 生成内置两条；
+	// 显式空数组 = 用户删光，尊重）
+	if v, ok := raw["endpoints"].([]any); ok {
+		data, _ := json.Marshal(v)
+		var eps []Endpoint
+		if err := json.Unmarshal(data, &eps); err == nil && validEndpoints(eps) == nil {
+			out.Endpoints = eps
+		} else {
+			slog.Warn("settings.json endpoints 校验失败，回落内置两条", "err", err)
+		}
+	}
 	return out
 }
 
@@ -357,6 +480,11 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 			} else {
 				src.ExtensionToken = strings.TrimSpace(src.ExtensionToken)
 			}
+			if strings.TrimSpace(src.AllocToken) == "" {
+				src.AllocToken = current.Sources.AllocToken // 空串=不修改
+			} else {
+				src.AllocToken = strings.TrimSpace(src.AllocToken)
+			}
 			if !src.StandaloneEnabled && !src.ExtensionEnabled {
 				return Settings{}, errors.New("两个源不能同时禁用（至少保留一个可用源）")
 			}
@@ -380,6 +508,36 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 				return Settings{}, err
 			}
 			current.Routing = rt
+			continue
+		}
+		if key == "endpoints" {
+			data, err := json.Marshal(value)
+			if err != nil {
+				return Settings{}, fmt.Errorf("endpoints 序列化失败: %v", err)
+			}
+			var eps []Endpoint
+			if err := json.Unmarshal(data, &eps); err != nil {
+				return Settings{}, fmt.Errorf("endpoints 解析失败: %v", err)
+			}
+			// token 不走 PUT（UI 不回显完整值）：按 path 匹配保留现有令牌，
+			// 新 path 生成新令牌——防止表单提交时误清/误换凭证。
+			old := map[string]string{}
+			for _, ep := range current.Endpoints {
+				old[ep.Path] = ep.Token
+			}
+			for i := range eps {
+				eps[i].Session = strings.TrimSpace(eps[i].Session)
+				eps[i].Token = ""
+				if t, ok := old[eps[i].Path]; ok && t != "" {
+					eps[i].Token = t
+				} else {
+					eps[i].Token = newSecretToken()
+				}
+			}
+			if err := validEndpoints(eps); err != nil {
+				return Settings{}, err
+			}
+			current.Endpoints = eps
 			continue
 		}
 		if key == "rewrites" {
@@ -475,6 +633,53 @@ func save(path string, s Settings) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// ResetExtensionToken 重置 /ext 准入令牌（旧令牌立即失效；在场扩展连接
+// 不断，但重连需新令牌——扩展 options 页同步更新）。
+func (s *Store) ResetExtensionToken() Settings {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settings.Sources.ExtensionToken = newSecretToken()
+	if err := save(s.path, s.settings); err != nil {
+		slog.Error("settings 存盘失败", "path", s.path, "err", err)
+	}
+	slog.Info("已重置扩展令牌（旧令牌吊销）")
+	return s.settings
+}
+
+// ResetAllocToken 重置 POST /sessions 准入令牌（旧令牌立即失效）。
+func (s *Store) ResetAllocToken() Settings {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settings.Sources.AllocToken = newSecretToken()
+	if err := save(s.path, s.settings); err != nil {
+		slog.Error("settings 存盘失败", "path", s.path, "err", err)
+	}
+	slog.Info("已重置分配令牌（旧令牌吊销）")
+	return s.settings
+}
+
+// ResetEndpointToken 重置接入点令牌（旧令牌立即失效）。写时复制：
+// Get/Update 返回的快照与内部切片共享底层数组，原地改写会让读者看到
+// 变化（数据竞争）——重建新切片替换。
+func (s *Store) ResetEndpointToken(path string) (Settings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.settings.Endpoints {
+		if s.settings.Endpoints[i].Path == path {
+			next := make([]Endpoint, len(s.settings.Endpoints))
+			copy(next, s.settings.Endpoints)
+			next[i].Token = newSecretToken()
+			s.settings.Endpoints = next
+			if err := save(s.path, s.settings); err != nil {
+				return Settings{}, err
+			}
+			slog.Info("已重置接入点令牌（旧令牌吊销）", "path", path)
+			return s.settings, nil
+		}
+	}
+	return Settings{}, fmt.Errorf("接入点不存在: %s", path)
 }
 
 func clampMin(v, min float64) float64 {

@@ -118,8 +118,9 @@ CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleas
 | `alloc_reap_seconds` | 300 | 分配后从未连接的回收时限（防泄漏） |
 | `keeper_idle_shutdown_seconds` | 600 | 基座空闲自动关闭阈值（0 = 不启用） |
 | `rewrites` | 不抢焦点+基座保护 | 上游命令改写规则（命令向守卫） |
-| `sources` | 双源启用+token=dev | `standalone_enabled` / `extension_enabled`（两源至少留一）/ `token`（`/ext` 准入令牌，须与扩展 options 页一致）。子对象为合并语义（只传 token 不动开关） |
+| `sources` | 双源启用 + 自动令牌 | `standalone_enabled` / `extension_enabled`（两源至少留一）/ `token`（`/ext` 准入令牌）/ `alloc_token`（`POST /sessions` 准入）。令牌首启自动生成强随机（旧默认 dev 已废除）；子对象为合并语义（只传 token 不动开关）；重置走专用动作（吊销语义） |
 | `routing` | standalone + `ext-`→extension | 会话名→源路由：`default_source` + `rules[]{prefix,source}`（先中先用）。解析链=显式 source 参数 > 前缀规则 > 默认源；只影响新分配 |
+| `endpoints` | 内置 standalone/extension 两条 | 常驻 CDP 接入点 `{path, source, token, session}`：连接 `ws://…/<path>/<token>` 即以 session 名（默认=path）分配/复用会话。PUT 整表替换（token 按path 保留，新条目自动生成）；重置走 `POST /endpoints/{path}/reset-token`（吊销） |
 | `control_port` | 9224 | 管理面（REST/Admin 页）端口。变更经进程内重绑生效（会话/令牌状态保留） |
 | `ws_port` | 9225 | 上游 WS（`/cdp/<token>` 与 `/ext`）端口。重绑语义同上；存量连接由客户端自动重连 |
 | `ports_enabled` | true | 外部端口总开关。false = 控制面与 WS 监听全部关闭（桌面 App 内嵌模式，仅 App 绑定可用） |

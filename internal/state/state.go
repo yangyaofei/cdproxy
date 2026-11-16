@@ -32,6 +32,21 @@ type Session struct {
 	autoAttach    bool   // root 级 Target.setAutoAttach(autoAttach=true) 已启用
 	discoverTargets bool // root 级 Target.setDiscoverTargets(discover=true) 已启用
 	downstream    string // 会话绑定的下游形态：chrome | extension（分配时定格）
+	origin        string // 最近一次连接入口：alloc（/cdp token）| endpoint:<path>
+}
+
+// Origin 返回最近一次连接入口（alloc | endpoint:<path>）。
+func (s *Session) Origin() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.origin
+}
+
+// SetOrigin 记录连接入口（在连接接管时调用）。
+func (s *Session) SetOrigin(o string) {
+	s.mu.Lock()
+	s.origin = o
+	s.mu.Unlock()
 }
 
 // Downstream 返回会话绑定的下游形态（chrome | extension）。
@@ -454,6 +469,7 @@ func (st *State) Snapshot() []map[string]any {
 			"connected":  sess.Connected(),
 			"targets":    len(sess.ownedTargets),
 			"downstream": sess.Downstream(),
+			"via":        sess.Origin(),
 		})
 	}
 	return out

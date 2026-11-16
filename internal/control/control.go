@@ -17,6 +17,7 @@ package control
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -199,6 +200,21 @@ func (c *Control) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
+		// 准入凭证：Authorization: Bearer <sources.alloc_token>。
+		// agent-browser plugin 侧配置同一值（程序自动配置 provider 的那条
+		// 路径也需要凭证——"谁想连就连"是被禁止的）。
+		auth := r.Header.Get("Authorization")
+		token := ""
+		if len(auth) > 7 && strings.EqualFold(auth[:7], "Bearer ") {
+			token = strings.TrimSpace(auth[7:])
+		}
+		want := c.store.Get().Sources.AllocToken
+		if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(want)) != 1 {
+			c.log.Warn("会话分配被拒（凭证无效）", "remote", r.RemoteAddr)
+			writeJSON(w, http.StatusUnauthorized, map[string]string{
+				"error": "缺少或无效的分配令牌（Authorization: Bearer <token>，令牌在 Admin「源」页）"})
+			return
+		}
 		var body struct {
 			Name   string `json:"name"`
 			Source string `json:"source"` // 可选：显式指定源（standalone|extension），缺省走路由
@@ -218,6 +234,30 @@ func (c *Control) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"name": body.Name, "cdpUrl": cdpURL})
+	})
+
+	// 令牌重置（吊销语义：新值立即生效并落盘，旧值当场作废）。
+	mux.HandleFunc("POST /sources/alloc-token/reset", func(w http.ResponseWriter, _ *http.Request) {
+		s := c.store.ResetAllocToken()
+		writeJSON(w, http.StatusOK, map[string]string{"alloc_token": s.Sources.AllocToken})
+	})
+	mux.HandleFunc("POST /sources/ext-token/reset", func(w http.ResponseWriter, _ *http.Request) {
+		s := c.store.ResetExtensionToken()
+		writeJSON(w, http.StatusOK, map[string]string{"token": s.Sources.ExtensionToken})
+	})
+	mux.HandleFunc("POST /endpoints/{path}/reset-token", func(w http.ResponseWriter, r *http.Request) {
+		s, err := c.store.ResetEndpointToken(r.PathValue("path"))
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		for _, ep := range s.Endpoints {
+			if ep.Path == r.PathValue("path") {
+				writeJSON(w, http.StatusOK, map[string]string{"path": ep.Path, "token": ep.Token})
+				return
+			}
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "接入点不存在"})
 	})
 
 	mux.HandleFunc("POST /sessions/{name}/release", func(w http.ResponseWriter, r *http.Request) {

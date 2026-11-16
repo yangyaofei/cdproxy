@@ -133,13 +133,86 @@ func TestDownstreamModeAndExtToken(t *testing.T) {
 	if _, err := s.Update(map[string]any{"sources": map[string]any{"standalone_enabled": false, "extension_enabled": false}}); err == nil {
 		t.Fatal("两源同时禁用应报错")
 	}
-	// 默认值
+	// 默认值：令牌自动生成（强随机、非 dev），内置两条接入点
 	fresh := NewStore(filepath.Join(t.TempDir(), "none.json"))
-	if fresh.Get().Routing.DefaultSource != SourceStandalone || fresh.Get().Sources.ExtensionToken != "dev" {
-		t.Fatalf("默认应为 standalone/dev: %+v", fresh.Get())
+	if fresh.Get().Routing.DefaultSource != SourceStandalone {
+		t.Fatalf("默认应为 standalone: %+v", fresh.Get().Routing)
 	}
 	if len(fresh.Get().Routing.Rules) != 1 || fresh.Get().Routing.Rules[0].Prefix != "ext-" {
 		t.Fatalf("默认路由规则应含 ext- 前缀: %+v", fresh.Get().Routing)
+	}
+	ft := fresh.Get().Sources.ExtensionToken
+	fa := fresh.Get().Sources.AllocToken
+	if len(ft) < 16 || ft == "dev" || len(fa) < 16 {
+		t.Fatalf("首启应生成强随机令牌: ext=%q alloc=%q", ft, fa)
+	}
+	eps := fresh.Get().Endpoints
+	if len(eps) != 2 || eps[0].Path != "standalone" || eps[1].Path != "extension" {
+		t.Fatalf("首启应生成内置两条接入点: %+v", eps)
+	}
+	for _, ep := range eps {
+		if len(ep.Token) < 16 {
+			t.Fatalf("接入点令牌应自动生成: %+v", ep)
+		}
+	}
+	// 弱默认 dev 在加载时被废除换新（旧文件迁移路径）
+	devPath := filepath.Join(t.TempDir(), "dev.json")
+	os.WriteFile(devPath, []byte(`{"sources":{"token":"dev","alloc_token":"dev"}}`), 0o644)
+	ds := NewStore(devPath)
+	if ds.Get().Sources.ExtensionToken == "dev" || ds.Get().Sources.AllocToken == "dev" {
+		t.Fatalf("dev 默认令牌应被自动废除: %+v", ds.Get().Sources)
+	}
+}
+
+func TestEndpointsUpdate(t *testing.T) {
+	store, _ := newStore(t)
+	base := store.Get()
+	tokSA := base.Endpoints[0].Token
+	// 整表更新：改 session 名 + 新增自定义端点；token 不随 PUT 变（按 path 保留）
+	updated, err := store.Update(map[string]any{"endpoints": []any{
+		map[string]any{"path": "standalone", "source": "standalone", "session": "base-work"},
+		map[string]any{"path": "extension", "source": "extension"},
+		map[string]any{"path": "work", "source": "extension", "session": "research"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Endpoints) != 3 {
+		t.Fatalf("应有三条接入点: %+v", updated.Endpoints)
+	}
+	if updated.Endpoints[0].Token != tokSA {
+		t.Fatalf("PUT 不应更换现有接入点令牌: %q vs %q", updated.Endpoints[0].Token, tokSA)
+	}
+	if updated.Endpoints[0].Session != "base-work" || updated.Endpoints[2].Session != "research" {
+		t.Fatalf("session 名未生效: %+v", updated.Endpoints)
+	}
+	if len(updated.Endpoints[2].Token) < 16 {
+		t.Fatalf("新接入点应自动生成令牌: %+v", updated.Endpoints[2])
+	}
+	// 非法：保留字 / 重复 / 非法 source
+	if _, err := store.Update(map[string]any{"endpoints": []any{map[string]any{"path": "cdp", "source": "standalone"}}}); err == nil {
+		t.Fatal("保留字 path 应被拒绝")
+	}
+	if _, err := store.Update(map[string]any{"endpoints": []any{
+		map[string]any{"path": "a", "source": "standalone"},
+		map[string]any{"path": "a", "source": "extension"},
+	}}); err == nil {
+		t.Fatal("重复 path 应被拒绝")
+	}
+	if _, err := store.Update(map[string]any{"endpoints": []any{map[string]any{"path": "ok", "source": "bogus"}}}); err == nil {
+		t.Fatal("非法 source 应被拒绝")
+	}
+	// 重置令牌：新值生效；reset 是写时复制——旧快照（updated）不受影响
+	oldTok := updated.Endpoints[2].Token
+	after, err := store.ResetEndpointToken("work")
+	if err != nil || after.Endpoints[2].Token == oldTok {
+		t.Fatalf("重置应换新令牌: err=%v old=%s new=%s", err, oldTok, after.Endpoints[2].Token)
+	}
+	if updated.Endpoints[2].Token != oldTok {
+		t.Fatalf("reset 不应改动旧快照（写时复制）: %s", updated.Endpoints[2].Token)
+	}
+	if _, err := store.ResetEndpointToken("nope"); err == nil {
+		t.Fatal("重置不存在的接入点应报错")
 	}
 }
 

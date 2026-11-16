@@ -29,6 +29,7 @@ package proxy
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -276,6 +277,11 @@ func (p *Proxy) listenWS(port int) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /cdp/{token}", p.handleUpstream)
 	mux.HandleFunc("GET /ext", p.handleExtension)
+	// 常驻接入点：/{path}/{token}（URL 即完整凭证）与 /{path}
+	//（Authorization: Bearer <token>）。字面路由 /cdp、/ext 优先，
+	// 接入点 path 另有保留字校验（settings.validEndpoints）。
+	mux.HandleFunc("GET /{path}/{token}", p.handleEndpointWS)
+	mux.HandleFunc("GET /{path}", p.handleEndpointWS)
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -565,7 +571,8 @@ const ExtGroupPrefix = "ab: "
 func (p *Proxy) Status() map[string]any {
 	cfg := p.store.Get()
 	sessions := p.st.Snapshot()
-	// 会话项补充源视角字段：type（=downstream 值）、group_name（extension）
+	// 会话项补充源视角字段：type（=downstream 值）、group_name（extension）、
+	// via（最近连接入口：alloc | endpoint:<path>）
 	for _, m := range sessions {
 		kind, _ := m["downstream"].(string)
 		m["type"] = kind
@@ -587,16 +594,98 @@ func (p *Proxy) Status() map[string]any {
 				"connected": p.linkConnected(dsExtension),
 				"token":     cfg.Sources.ExtensionToken,
 			},
+			// alloc_token 管理面可见（用户要在「源」页复制去配置 plugin）。
+			"alloc_token": cfg.Sources.AllocToken,
 		},
 		"routing": map[string]any{
 			"default_source": cfg.Routing.DefaultSource,
 			"rules":          cfg.Routing.Rules,
 		},
-		"sessions": sessions,
+		// 接入点表（含完整 token——管理面即配置分发面，复制即用）。
+		"endpoints": cfg.Endpoints,
+		"sessions":  sessions,
+		// 实际监听端口（flag 覆盖与 settings 值可能不同；UI/测试以此为准）。
+		"ws_port": p.actualWSPort(),
 	}
 }
 
+// actualWSPort 当前上游 WS 实际监听端口。
+func (p *Proxy) actualWSPort() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.wsPort
+}
+
 // ── 上游（session 连接）───────────────────────────────────────────
+
+// bearerToken 从 Authorization 头取 Bearer 凭证（大小写不敏感；空串=无）。
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	if len(h) > 7 && strings.EqualFold(h[:7], "Bearer ") {
+		return strings.TrimSpace(h[7:])
+	}
+	return ""
+}
+
+// tokenEqual 常量时间比较（抗时序侧信道；本机回环场景属纵深防御）。
+func tokenEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// handleEndpointWS 常驻接入点入口：/{path}/{token} 或 /{path}+Bearer 头。
+// 认证 → 按 endpoint.source 分配/复用 endpoint.session 会话 → 接管连接
+//（与 /cdp/<token> 同一上游语义：顶替、事件路由、守卫全一致）。
+func (p *Proxy) handleEndpointWS(w http.ResponseWriter, r *http.Request) {
+	path := r.PathValue("path")
+	token := r.PathValue("token")
+	if token == "" {
+		token = bearerToken(r)
+	}
+	var ep *settings.Endpoint
+	cfg := p.store.Get()
+	for i := range cfg.Endpoints {
+		if cfg.Endpoints[i].Path == path {
+			ep = &cfg.Endpoints[i]
+			break
+		}
+	}
+	if ep == nil || token == "" || !tokenEqual(ep.Token, token) {
+		// 拒绝留痕：path 进日志（无敏感），token 只进前缀。
+		p.log.Warn("接入点认证失败", "path", path,
+			"token_prefix", token[:min(8, len(token))], "via_bearer", r.PathValue("token") == "")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "接入点不存在或令牌无效"})
+		return
+	}
+	name := sessionNameOf(ep)
+	if _, err := p.AllocSession(name, ep.Source); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	sess := p.st.FindByName(name)
+	if sess == nil { // AllocSession 成功后必然在场；防御性兜底
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	sess.SetOrigin("endpoint:" + ep.Path)
+	p.log.Info("接入点连接", "endpoint", ep.Path, "session", sess.Name, "source", ep.Source)
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	if err != nil {
+		return
+	}
+	p.attachUpstream(sess, conn, r)
+}
+
+// sessionNameOf 接入点的会话名（配置空 = path）。
+func sessionNameOf(ep *settings.Endpoint) string {
+	if s := strings.TrimSpace(ep.Session); s != "" {
+		return s
+	}
+	return ep.Path
+}
 
 func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
@@ -611,15 +700,21 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(4401, "unknown session")
 		return
 	}
+	sess.SetOrigin("alloc")
+	p.attachUpstream(sess, conn, r)
+}
+
+// attachUpstream 接管一条已认证的上游连接：顶替旧连接、读循环分发。
+func (p *Proxy) attachUpstream(sess *state.Session, conn *websocket.Conn, r *http.Request) {
 	conn.SetReadLimit(64 << 20)
 	// 顶替：旧连接存在则关闭（其读循环因 WS 不再匹配而不会误清状态）
 	if old := sess.WS(); old != nil && sess.Connected() {
-		p.log.Warn("顶替同会话旧连接", "session", sess.Name, "token_prefix", token[:min(8, len(token))])
+		p.log.Warn("顶替同会话旧连接", "session", sess.Name)
 		_ = old.Close(4400, "superseded")
 	}
 	replaced := sess.WS() != nil && sess.Connected()
 	sess.SetWS(conn)
-	p.log.Info("会话已连接", "session", sess.Name, "token_prefix", token[:min(8, len(token))], "superseded", replaced)
+	p.log.Info("会话已连接", "session", sess.Name, "origin", sess.Origin(), "superseded", replaced)
 	go p.pingLoop(r.Context(), conn, 20*time.Second)
 	defer func() {
 		if sess.ClearWSIfCurrent(conn) {

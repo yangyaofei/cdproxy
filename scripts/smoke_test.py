@@ -24,12 +24,22 @@ CONTROL = os.environ.get("ABP_CONTROL", "http://127.0.0.1:9224")
 RUN_ID = str(int(time.time()))
 
 
+def alloc_token() -> str:
+    """分配令牌：从管理面 /status 自取（与 agent-browser plugin 同链路）。"""
+    try:
+        with urllib.request.urlopen(CONTROL + "/status", timeout=10) as resp:
+            return json.loads(resp.read())["sources"]["alloc_token"]
+    except Exception:
+        return ""
+
+
 def http_post(path: str, body: dict) -> dict:
     """同步 POST 控制面。"""
     req = urllib.request.Request(
         CONTROL + path,
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json",
+                 "Authorization": "Bearer " + alloc_token()},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=60) as resp:

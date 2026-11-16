@@ -155,7 +155,8 @@ Admin 页：服务起来后开 `http://127.0.0.1:9224/`（状态/会话释放/�
 |----|------|------|--------|
 | 单元 | `tests/unit/`（state / settings 纯逻辑）+ `go test ./...`（含 core 重绑/端口设置） | 无 | 每次改动 |
 | 冒烟 | `scripts/smoke_test.py` 六项判定（`ABP_CONTROL` 可换端口） | 服务 + 真实 Chrome | 改 proxy/keeper 后必跑 |
-| 扩展冒烟 | `scripts/ext_smoke_test.py`（T0–T7：含在线切默认源与平滑切换语义，服务需 /ext 可达 + 浏览器装 cdp-ext） | 服务 + 浏览器装 cdp-ext | 改扩展/proxy 转发后必跑 |
+| 接入点冒烟 | `scripts/ext_endpoint_test.mjs`（E0-E8：端点直连双源/错 token 401/Bearer 等价/重置吊销/自定义端点/顶替/无令牌 401；依赖 `npm --prefix var/pwtest i ws`） | 服务 | 改接入点/认证逻辑后必跑 |
+| 扩展冒烟 | `scripts/ext_smoke_test.py`（T0–T7：含在线切默认源与平滑切换语义，服务需 /ext 可达 + 浏览器装 cdp-ext；测试实例需 `PUT /settings {"sources":{"token":"dev"}}` 对齐测试扩展默认令牌） | 服务 + 浏览器装 cdp-ext | 改扩展/proxy 转发后必跑 |
 | 韧性 E2E | `scripts/ext_restart_test.mjs`（R1–R3：SW target 关闭→持久化+restore 同 sid 续接；模拟点「取消」软休眠→懒重挂；死 sid 诚实报错，16 项） | 同上 + 浏览器带调试端口 | 改 sw.js 会话表/持久化/休眠语义后必跑 |
 | 标签组 E2E | `scripts/ext_group_test.mjs`（G1–G8：自动入组/拖入归属/真关/拖出收回/三策略 release/墓碑复活/整组认领；SW eval 模拟用户组操作） | 同上 + 浏览器带调试端口 | 改组/归属/release 语义后必跑 |
 | 冷启动孤儿 E2E | `scripts/ext_cold_test.mjs`（C1–C5：清持久化+杀 SW 冷启动 → gstate 重建无孤儿；墓碑复活认领） | 同上 | 改 gstate/冷启动语义后必跑 |

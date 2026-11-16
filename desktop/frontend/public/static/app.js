@@ -77,6 +77,10 @@ function admin() {
     routeSavedAt: "",
     routeError: "",
     sourcesLoaded: false,
+    // 接入点编辑器（token 只读展示；保存不提交 token）
+    epForm: [],
+    epSavedAt: "",
+    epError: "",
     // 设置页 JSON 编辑器 + 配置查看
     jsonDraft: "",
     jsonSavedAt: "",
@@ -151,6 +155,10 @@ function admin() {
           this.routeForm.rules = JSON.parse(JSON.stringify(snap.routing.rules || []));
         }
         if (!this.srcForm.ext_token && snap.sources) this.srcForm.ext_token = snap.sources.extension.token;
+        // 接入点表：同样仅初始化一次（编辑期间不被轮询覆盖；保存/重置后手动刷新）
+        if (!this.epForm.length && snap.endpoints) {
+          this.epForm = JSON.parse(JSON.stringify(snap.endpoints));
+        }
         if (!this.slogParsed.length) this.loadLogs();
         if (this.logOpen) this.loadSessionLogs(this.logOpen);
       } catch (err) {
@@ -258,6 +266,78 @@ function admin() {
         await this.refresh();
       } catch (err) {
         alert("保存失败: " + err.message);
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    // ── 令牌与接入点 ──
+    async copyText(text, tip) {
+      try {
+        await navigator.clipboard.writeText(text);
+        this.epSavedAt = tip || "已复制";
+        setTimeout(() => { this.epSavedAt = ""; }, 2000);
+      } catch (err) {
+        alert("复制失败（非安全上下文）: " + text);
+      }
+    },
+
+    endpointURL(ep) {
+      return `ws://127.0.0.1:${this.status.settings.ws_port}/${ep.path}/${ep.token}`;
+    },
+
+    copyEndpoint(ep) {
+      if (!ep.path || !ep.token) { this.epError = "path/令牌缺失"; return; }
+      this.copyText(this.endpointURL(ep), "连接 URL 已复制");
+    },
+
+    epTokenPreview(ep) {
+      return ep.token ? ep.token.slice(0, 8) + "…" : "（保存后自动生成）";
+    },
+
+    async resetToken(kind) {
+      if (kind === "ext" && !confirm("重置扩展令牌？旧令牌立即吊销，扩展 options 页须同步更新")) return;
+      if (kind === "alloc" && !confirm("重置分配令牌？旧令牌立即吊销（正在用它的脚本会 401）")) return;
+      this.busy = true;
+      try {
+        const path = kind === "ext" ? "/sources/ext-token/reset" : "/sources/alloc-token/reset";
+        await this.api("POST", path, {});
+        await this.refresh();
+      } catch (err) {
+        alert("重置失败: " + err.message);
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    async resetEndpointToken(ep) {
+      if (!confirm(`重置接入点 ${ep.path} 的令牌？旧令牌立即吊销`)) return;
+      this.busy = true;
+      try {
+        const r = await this.api("POST", `/endpoints/${encodeURIComponent(ep.path)}/reset-token`, {});
+        ep.token = r.token;
+      } catch (err) {
+        this.epError = err.message;
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    async saveEndpoints() {
+      this.epError = "";
+      const eps = [];
+      for (const ep of this.epForm) {
+        const path = (ep.path || "").trim();
+        if (!path) continue;
+        eps.push({ path, source: ep.source, session: (ep.session || "").trim() });
+      }
+      this.busy = true;
+      try {
+        const updated = await this.api("PUT", "/settings", { endpoints: eps });
+        this.epForm = JSON.parse(JSON.stringify(updated.endpoints || []));
+        this.epSavedAt = "已保存 " + new Date().toLocaleTimeString();
+      } catch (err) {
+        this.epError = err.message;
       } finally {
         this.busy = false;
       }
