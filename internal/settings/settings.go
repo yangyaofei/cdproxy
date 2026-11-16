@@ -18,7 +18,7 @@ import (
 
 // knownKeys 合法设置键（Update 对未知键显式报错而非静默忽略——配置写错
 // 必须当场暴露，否则调用方以为生效，事后才发现被吞）。
-var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "rewrites", "downstream_mode", "ext_token"}
+var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "rewrites", "downstream_mode", "ext_token", "control_port", "ws_port", "ports_enabled"}
 
 // 各字段的下限（防误配成 0 导致回收风暴）。
 var minValues = map[string]float64{
@@ -99,6 +99,17 @@ type Settings struct {
 	// ExtToken /ext 反向入口的准入令牌（扩展 options 页配同一值）。
 	// 空串 = 不校验（仅回环监听，与控制面同信任级）。
 	ExtToken string `json:"ext_token"`
+	// ControlPort 管理面（REST/Admin 页）监听端口。变更经进程内重绑生效
+	//（监听重建，无需换进程）；会话/令牌状态全程保留。
+	ControlPort int `json:"control_port"`
+	// WsPort 上游 CDP WS（/cdp/<token> 与 /ext 反向入口）监听端口。
+	// 变更语义同 ControlPort：重绑监听，存量上游连接断开后由客户端
+	//（daemon/扩展）自动重连。
+	WsPort int `json:"ws_port"`
+	// PortsEnabled 外部端口总开关。false = 控制面与 WS 监听全部关闭
+	//（App 内嵌模式：仅 Wails 绑定可用，外部进程一律连不上）。
+	// 关闭时存量上游连接断开，回收宽限后清理；重新打开即恢复监听。
+	PortsEnabled bool `json:"ports_enabled"`
 }
 
 // Defaults 返回默认设置。
@@ -110,8 +121,14 @@ func Defaults() Settings {
 		Rewrites:              DefaultRewrites(),
 		DownstreamMode:        "chrome",
 		ExtToken:              "dev",
+		ControlPort:           9224,
+		WsPort:                9225,
+		PortsEnabled:          true,
 	}
 }
+
+// validPort 端口合法区间（1-65535）。
+func validPort(p int) bool { return p >= 1 && p <= 65535 }
 
 // Store 设置的加载/校验/保存（并发安全）。
 type Store struct {
@@ -160,6 +177,20 @@ func load(path string) Settings {
 	}
 	if v, ok := raw["ext_token"].(string); ok && strings.TrimSpace(v) != "" {
 		out.ExtToken = strings.TrimSpace(v)
+	}
+	if v, ok := raw["control_port"].(float64); ok && validPort(int(v)) {
+		out.ControlPort = int(v)
+	}
+	if v, ok := raw["ws_port"].(float64); ok && validPort(int(v)) {
+		out.WsPort = int(v)
+	}
+	if v, ok := raw["ports_enabled"].(bool); ok {
+		out.PortsEnabled = v
+	}
+	// 端口互斥校验：冲突回落默认并警告（load 不失败——损坏文件已有回落语义）
+	if out.ControlPort == out.WsPort {
+		slog.Warn("settings.json 端口冲突，回落默认端口", "port", out.ControlPort)
+		out.ControlPort, out.WsPort = 9224, 9225
 	}
 	return out
 }
@@ -225,6 +256,33 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 			current.Rewrites = rules
 			continue
 		}
+		if key == "ports_enabled" {
+			if b, isBool := value.(bool); isBool {
+				current.PortsEnabled = b
+			}
+			continue
+		}
+		if key == "control_port" || key == "ws_port" {
+			// REST 路径 decode 出 float64；Go 原生调用（App 绑定层）传 int
+			port := 0
+			switch v := value.(type) {
+			case float64:
+				port = int(v)
+			case int:
+				port = v
+			case int64:
+				port = int(v)
+			}
+			if port == 0 || !validPort(port) {
+				return Settings{}, fmt.Errorf("%s 必须是 1-65535 的整数", key)
+			}
+			if key == "control_port" {
+				current.ControlPort = port
+			} else {
+				current.WsPort = port
+			}
+			continue
+		}
 		num, ok := value.(float64)
 		if !ok {
 			continue
@@ -242,6 +300,10 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 				current.KeeperIdleShutdownSeconds = clampMin(num, 60)
 			}
 		}
+	}
+	// 合并后互斥校验：两端口不得同值（拒绝整次 patch，防把生效配置改坏）
+	if current.ControlPort == current.WsPort {
+		return Settings{}, fmt.Errorf("control_port 与 ws_port 不能相同（均为 %d）", current.ControlPort)
 	}
 	s.settings = current
 	if err := save(s.path, current); err != nil {

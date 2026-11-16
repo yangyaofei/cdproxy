@@ -219,24 +219,67 @@ func New(cfg keeper.Config, wsPort int, store *settings.Store, ilog *interlog.Lo
 // /ext 反向入口常开注册（扩展拨入即成为 extension 下游，与 chrome 下游
 // 并存——谁在装谁的浏览器，互不干扰）。
 func (p *Proxy) Start() error {
+	if err := p.listenWS(p.wsPort); err != nil {
+		return err
+	}
+	p.startBaseKeepAlive()
+	return nil
+}
+
+// listenWS 绑定上游 WS 监听（先关旧监听，幂等）。只动监听器与既有上游
+// 连接，不触碰下游链路（扩展/基座连接与端口重绑解耦——重绑端口不该
+// 把健康的下游也折腾一遍）。
+func (p *Proxy) listenWS(port int) error {
+	if p.server != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = p.server.Shutdown(ctx)
+		cancel()
+		p.server = nil
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /cdp/{token}", p.handleUpstream)
 	mux.HandleFunc("GET /ext", p.handleExtension)
-	addr := fmt.Sprintf("127.0.0.1:%d", p.wsPort)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("上游端口绑定失败 %s: %w", addr, err)
 	}
 	p.server = &http.Server{Handler: mux}
+	// 局部捕获：goroutine 与 StopListener/listenWS 并发时 p.server 可能被置换
+	srv := p.server
 	go func() {
-		if err := p.server.Serve(ln); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			p.log.Error("上游服务退出", "err", err)
 		}
 	}()
+	p.mu.Lock()
+	p.wsPort = port
+	p.mu.Unlock()
 	p.log.Info("代理 WS 服务已启动", "addr", addr,
 		"default_downstream", p.store.Get().DownstreamMode, "/ext", "常开")
-	p.startBaseKeepAlive()
 	return nil
+}
+
+// RestartListener 以新端口重建上游监听（会话/令牌状态保留；存量上游
+// 连接随旧监听关闭而断开，由 daemon/扩展自动重连）。
+func (p *Proxy) RestartListener(port int) error {
+	return p.listenWS(port)
+}
+
+// StopListener 关闭上游监听（ports_enabled=false 的 App 内嵌模式）。
+// 下游链路不动；扩展侧连接随监听关闭而断开，其退避重连在端口重开后
+// 自动恢复。
+func (p *Proxy) StopListener() {
+	if p.server == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = p.server.Shutdown(ctx)
+	cancel()
+	p.mu.Lock()
+	p.server = nil
+	p.mu.Unlock()
+	p.log.Info("代理 WS 监听已关闭（外部端口停用）")
 }
 
 // Stop 停止上游服务并断开全部连接。

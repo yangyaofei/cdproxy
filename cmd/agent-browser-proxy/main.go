@@ -29,11 +29,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yangyaofei/agent-browser-proxy/internal/control"
-	"github.com/yangyaofei/agent-browser-proxy/internal/interlog"
-	"github.com/yangyaofei/agent-browser-proxy/internal/keeper"
-	"github.com/yangyaofei/agent-browser-proxy/internal/proxy"
-	"github.com/yangyaofei/agent-browser-proxy/internal/settings"
+	"github.com/yangyaofei/agent-browser-proxy/internal/core"
 )
 
 // version 经 -ldflags -X main.version 注入。
@@ -180,12 +176,13 @@ func controlBase(args []string) string {
 func runServe(args []string) int {
 	opts := parseServeOptions(args)
 
+	// 数据目录先行：日志文件要落在里面（MkdirAll 曾在 core.New 里，
+	// 但 newLogger 先于 core.New 执行，目录缺失会静默回落 stderr）
 	if err := os.MkdirAll(opts.dataDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "数据目录创建失败: %v\n", err)
 		return 1
 	}
-	logPath := filepath.Join(opts.dataDir, "service.log")
-	logger := newLogger(logPath)
+	logger := newLogger(filepath.Join(opts.dataDir, "service.log"))
 	logger.Info("服务启动", "version", version, "data_dir", opts.dataDir)
 
 	// PID 文件（stop 的 SIGTERM 兜底用）
@@ -195,39 +192,46 @@ func runServe(args []string) int {
 	}
 	defer func() { _ = os.Remove(pidPath) }()
 
-	// keeper 配置（基座由 agent-browser 会话持有——见 keeper 包说明）
-	kcfg := keeper.Defaults()
-	if opts.profile != "" {
-		kcfg.ProfileDir = opts.profile
-	}
-	kcfg.Headed = !opts.headless
-	kcfg.ConfigPath = filepath.Join(opts.dataDir, "keeper-config.json")
-
-	store := settings.NewStore(filepath.Join(opts.dataDir, "settings.json"))
-	ilg := interlog.New(filepath.Join(opts.dataDir, "logs"))
-
+	// 引擎组装下沉 internal/core（CLI 与桌面 App 共用）；端口 flags 是
+	// 启动覆盖（兼容旧脚本），启动后 settings 是运行时唯一事实源
 	shutdown := make(chan struct{})
-	p := proxy.New(kcfg, opts.wsPort, store, ilg, logger)
-	if err := p.Start(); err != nil {
-		logger.Error("代理启动失败", "err", err)
+	eng, err := core.New(core.Options{
+		DataDir:     opts.dataDir,
+		Version:     version,
+		ControlPort: opts.controlPort,
+		WsPort:      opts.wsPort,
+		Headless:    opts.headless,
+		ProfileDir:  opts.profile,
+		OnShutdown:  func() { close(shutdown) },
+		Logger:      logger,
+	})
+	if err != nil {
+		logger.Error("引擎初始化失败", "err", err)
+		return 1
+	}
+	if err := eng.Start(); err != nil {
+		logger.Error("服务启动失败", "err", err)
 		return 1
 	}
 
-	ctl := control.New(p, ilg, store, kcfg, logPath, version, func() { close(shutdown) }, logger)
-	controlAddr := fmt.Sprintf("127.0.0.1:%d", opts.controlPort)
-	if _, err := control.StartControl(controlAddr, ctl.Handler(), logger); err != nil {
-		logger.Error("管理面启动失败", "err", err)
-		return 1
+	s := eng.Store().Get()
+	controlPort, wsPort := opts.controlPort, opts.wsPort
+	if controlPort == 0 {
+		controlPort = s.ControlPort
+	}
+	if wsPort == 0 {
+		wsPort = s.WsPort
 	}
 	logger.Info("服务就绪",
-		"control", controlAddr,
-		"proxy_ws", fmt.Sprintf("ws://127.0.0.1:%d/cdp/<token>", opts.wsPort),
-		"default_downstream", store.Get().DownstreamMode,
+		"control", fmt.Sprintf("127.0.0.1:%d", controlPort),
+		"proxy_ws", fmt.Sprintf("ws://127.0.0.1:%d/cdp/<token>", wsPort),
+		"default_downstream", s.DownstreamMode,
 		"cdp", fmt.Sprintf("127.0.0.1:%d", opts.cdpPort),
+		"ports_enabled", s.PortsEnabled,
 	)
 	logger.Info("/ext 反向入口常开（等 cdp-ext 扩展回连）",
-		"ext_ws", fmt.Sprintf("ws://127.0.0.1:%d/ext", opts.wsPort),
-		"token", store.Get().ExtToken)
+		"ext_ws", fmt.Sprintf("ws://127.0.0.1:%d/ext", wsPort),
+		"token", s.ExtToken)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -237,7 +241,7 @@ func runServe(args []string) int {
 	case <-shutdown:
 		logger.Info("收到管理面停机指令")
 	}
-	p.Stop()
+	eng.Stop()
 	logger.Info("服务已停止")
 	return 0
 }

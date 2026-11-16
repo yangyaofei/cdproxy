@@ -91,6 +91,13 @@ CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleas
 | `rewrites` | 不抢焦点+基座保护 | 上游命令改写规则（命令向守卫） |
 | `downstream_mode` | chrome | 新会话默认下游：chrome=共享基座；extension=cdp-ext 扩展宿主浏览器。**在线可切**，只影响新分配，存量会话继续用原下游 |
 | `ext_token` | dev | `/ext` 反向入口准入令牌（须与扩展 options 页一致） |
+| `control_port` | 9224 | 管理面（REST/Admin 页）端口。变更经进程内重绑生效（会话/令牌状态保留） |
+| `ws_port` | 9225 | 上游 WS（`/cdp/<token>` 与 `/ext`）端口。重绑语义同上；存量连接由客户端自动重连 |
+| `ports_enabled` | true | 外部端口总开关。false = 控制面与 WS 监听全部关闭（桌面 App 内嵌模式，仅 App 绑定可用） |
+
+> 端口类设置变更后监听在进程内重建（旧监听先关、约 300ms 后绑新值）——
+> 无需换进程；`--control-port`/`--ws-port` flags 降级为**启动覆盖**（兼容
+> 旧脚本），启动后 settings 是运行时唯一事实源。
 
 > 原则：proxy 是单向阀门——命令向（agent→浏览器）可守卫改写，事件向
 > （浏览器→agent）只过滤转发、**永不回写**。曾有的 `popup_policy`（监听

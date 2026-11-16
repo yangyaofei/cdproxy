@@ -43,12 +43,14 @@ type Control struct {
 	logPath  string
 	version  string
 	onShutdown func()
+	onRebind  func()
 	log      *slog.Logger
 }
 
-// New 构造管理面。
-func New(p *proxy.Proxy, ilg *interlog.Log, store *settings.Store, k keeper.Config, logPath, version string, onShutdown func(), log *slog.Logger) *Control {
-	return &Control{proxy: p, ilg: ilg, store: store, keeper: k, logPath: logPath, version: version, onShutdown: onShutdown, log: log}
+// New 构造管理面。onRebind 在端口类设置（control_port/ws_port/ports_enabled）
+// 变更后被异步调用——监听重绑由上层编排（见 internal/core）。
+func New(p *proxy.Proxy, ilg *interlog.Log, store *settings.Store, k keeper.Config, logPath, version string, onShutdown, onRebind func(), log *slog.Logger) *Control {
+	return &Control{proxy: p, ilg: ilg, store: store, keeper: k, logPath: logPath, version: version, onShutdown: onShutdown, onRebind: onRebind, log: log}
 }
 
 // Handler 构造路由。
@@ -125,12 +127,23 @@ func (c *Control) Handler() http.Handler {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "settings 必须是 JSON 对象: " + err.Error()})
 			return
 		}
+		before := c.store.Get()
 		updated, err := c.store.Update(patch)
 		if err != nil {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, updated)
+		// 端口类变更：响应先写完，再异步触发监听重绑（本连接随旧监听关闭，
+		// 客户端按响应里的新值重连）
+		portsChanged := before.ControlPort != updated.ControlPort ||
+			before.WsPort != updated.WsPort || before.PortsEnabled != updated.PortsEnabled
+		if portsChanged && c.onRebind != nil {
+			go func() {
+				time.Sleep(300 * time.Millisecond)
+				c.onRebind()
+			}()
+		}
 	})
 
 	mux.HandleFunc("GET /logs/tail", func(w http.ResponseWriter, r *http.Request) {

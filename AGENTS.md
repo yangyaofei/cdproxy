@@ -18,6 +18,19 @@ control / settings / service）；另根目录 `static/admin/`（Admin 页静态
 定位见 `static/README.md`）+ `plugin/ab-proxy-plugin`（薄壳）+ `scripts/`（serve.sh /
 smoke_test.py）+ `tests/unit/`（纯逻辑单测）。
 
+Go 主实现模块（生产二进制；桌面化改造中）：
+
+| 模块 | 职责 | 红线 |
+|---|---|---|
+| `internal/core` | 引擎编排：settings/interlog/keeper 配置/proxy/control 组装 + 监听生命周期（端口重绑/开关） | CLI 与桌面 App 共用；重绑不得丢会话/令牌状态 |
+| `internal/proxy` | CDP 转发核心 + 双下游链路 + 监听重绑 | 协议语义改动必须过 `scripts/smoke_test.py` 全部六项 |
+| `internal/state` | 归属表 / 会话表 / sid 绑定 / pending 组 | 不做 IO |
+| `internal/control` | HTTP 控制面 + Admin 静态页；端口类设置变更触发异步重绑回调 | 不写业务，只转发调用 |
+| `internal/settings` | 运行时设置（单文件 settings.json，在线生效） | 端口互斥校验；越下限钳制 |
+| `internal/keeper` | Chrome 基座探活/冷启动/精确停止 | 绝不允许无差别 killall/pkill |
+| `internal/interlog` | per-session CDP 交互日志（落盘 + 内存环形） | — |
+| `cmd/agent-browser-proxy` | CLI 入口（serve/status/stop/plugin） | 端口 flags 为启动覆盖，启动后 settings 是事实源 |
+
 ## 2. 架构全景
 
 ### 数据流
@@ -130,7 +143,7 @@ Admin 页：服务起来后开 `http://127.0.0.1:9224/`（状态/会话释放/�
 
 | 层 | 位置 | 依赖 | 何时跑 |
 |----|------|------|--------|
-| 单元 | `tests/unit/`（state / settings 纯逻辑）+ `go test ./...` | 无 | 每次改动 |
+| 单元 | `tests/unit/`（state / settings 纯逻辑）+ `go test ./...`（含 core 重绑/端口设置） | 无 | 每次改动 |
 | 冒烟 | `scripts/smoke_test.py` 六项判定（`ABP_CONTROL` 可换端口） | 服务 + 真实 Chrome | 改 proxy/keeper 后必跑 |
 | 扩展冒烟 | `scripts/ext_smoke_test.py`（T0–T7：含在线切 downstream_mode 与平滑切换语义，服务需 /ext 可达 + 浏览器装 cdp-ext） | 服务 + 浏览器装 cdp-ext | 改扩展/proxy 转发后必跑 |
 | 韧性 E2E | `scripts/ext_restart_test.mjs`（R1–R3：SW target 关闭→持久化+restore 同 sid 续接；模拟点「取消」软休眠→懒重挂；死 sid 诚实报错，16 项） | 同上 + 浏览器带调试端口 | 改 sw.js 会话表/持久化/休眠语义后必跑 |
