@@ -82,6 +82,14 @@ func buildTray() *application.SystemTray {
 			log.Printf("重启引擎失败: %v", err)
 		}
 	})
+	menu.Add("安装内嵌 agent-browser 到 PATH").OnClick(func(*application.Context) {
+		res, err := engine.AgentBrowserInstall()
+		if err != nil {
+			log.Printf("安装 agent-browser 失败: %v", err)
+			return
+		}
+		log.Printf("agent-browser 已安装: %v", res)
+	})
 	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(*application.Context) { app.Quit() })
 	tray.SetMenu(menu)

@@ -87,6 +87,14 @@ cd desktop && wails3 build        # 产出 desktop/bin/abp-desktop（前端同�
   生成 desktop 前端（Web 版走 fetch，App 版注入 `window.__abpWails` 走
   `EngineService.DoRequest` 进程内绑定——与 REST 同一套 control 路由，
   **外部端口关闭时界面照常工作**）
+- **内嵌 agent-browser**（OpenChamber 模式）：`desktop/embedded/agent-browser-version.txt`
+  pin 精确版本；`scripts/prepare_agent_browser.sh` 下载平台二进制（GitHub release）
+  + sha256 校验（release API digest）+ 缓存 + staging + `--version` 复验（幂等）；
+  `wails3 task package:embedded` 出带内嵌件的 .app（Resources/agent-browser/
+  + 深度重签 + 包内复验）。运行时解析链：settings.agent_browser_binary →
+  bundled（.app Resources 或 dev staging，env AB_AGENT_BROWSER_BUNDLED_DIR 可
+  交接）→ PATH；托盘「安装内嵌 agent-browser 到 PATH」写符号链接
+  （/usr/local/bin → ~/bin 按可写探测）
 - 数据目录与 CLI 生产相同（`~/agent-browser/proxy`：同一份 settings/日志）；
   **App 与 daemon 二选一运行**（同端口，双开会绑定失败）
 - App 存活时 plugin 直接使用 9224（不拉起 daemon）；App 退出后端口释放，

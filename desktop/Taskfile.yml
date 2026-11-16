@@ -24,6 +24,34 @@ tasks:
     cmds:
       - task: "{{.GOOS}}:build"
 
+  # 完整打包：准备内嵌 agent-browser（下载+校验+staging）→ .app →
+  # 拷入 Resources/agent-browser/（OpenChamber 模式：二进制随包走，
+  # 升级=换包）→ ad-hoc 重签整包（内嵌二进制须被签名链覆盖）
+  package:embedded:
+    summary: Packages .app with embedded agent-browser binary
+    deps:
+      - task: prepare:agent-browser
+    cmds:
+      - task: darwin:package
+      - task: embed:agent-browser
+
+  prepare:agent-browser:
+    summary: Download/verify/stage embedded agent-browser (pinned)
+    cmds:
+      - python3 --version
+      - ../scripts/prepare_agent_browser.sh
+
+  embed:agent-browser:
+    summary: Copy staged agent-browser into the packaged .app Resources
+    platforms: [darwin]
+    cmds:
+      - rm -rf "bin/{{.APP_NAME}}.app/Contents/Resources/agent-browser"
+      - mkdir -p "bin/{{.APP_NAME}}.app/Contents/Resources/agent-browser"
+      - cp build/agent-browser/agent-browser "bin/{{.APP_NAME}}.app/Contents/Resources/agent-browser/agent-browser"
+      - chmod 755 "bin/{{.APP_NAME}}.app/Contents/Resources/agent-browser/agent-browser"
+      - codesign --force --deep --sign - "bin/{{.APP_NAME}}.app"
+      - bin/{{.APP_NAME}}.app/Contents/Resources/agent-browser/agent-browser --version
+
   package:
     summary: Packages a production build of the application
     cmds:

@@ -18,7 +18,7 @@ import (
 
 // knownKeys 合法设置键（Update 对未知键显式报错而非静默忽略——配置写错
 // 必须当场暴露，否则调用方以为生效，事后才发现被吞）。
-var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "rewrites", "downstream_mode", "ext_token", "control_port", "ws_port", "ports_enabled"}
+var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "rewrites", "downstream_mode", "ext_token", "control_port", "ws_port", "ports_enabled", "agent_browser_binary"}
 
 // 各字段的下限（防误配成 0 导致回收风暴）。
 var minValues = map[string]float64{
@@ -110,6 +110,10 @@ type Settings struct {
 	//（App 内嵌模式：仅 Wails 绑定可用，外部进程一律连不上）。
 	// 关闭时存量上游连接断开，回收宽限后清理；重新打开即恢复监听。
 	PortsEnabled bool `json:"ports_enabled"`
+	// AgentBrowserBinary agent-browser 二进制覆盖路径（空 = 自动解析：
+	// App 内嵌 bundled → PATH）。桌面 App 的内嵌集成用——CLI daemon
+	// 忽略此键（自己就在 PATH 世界里）。
+	AgentBrowserBinary string `json:"agent_browser_binary"`
 }
 
 // Defaults 返回默认设置。
@@ -187,6 +191,9 @@ func load(path string) Settings {
 	if v, ok := raw["ports_enabled"].(bool); ok {
 		out.PortsEnabled = v
 	}
+	if v, ok := raw["agent_browser_binary"].(string); ok {
+		out.AgentBrowserBinary = strings.TrimSpace(v)
+	}
 	// 端口互斥校验：冲突回落默认并警告（load 不失败——损坏文件已有回落语义）
 	if out.ControlPort == out.WsPort {
 		slog.Warn("settings.json 端口冲突，回落默认端口", "port", out.ControlPort)
@@ -259,6 +266,12 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 		if key == "ports_enabled" {
 			if b, isBool := value.(bool); isBool {
 				current.PortsEnabled = b
+			}
+			continue
+		}
+		if key == "agent_browser_binary" {
+			if str, isStr := value.(string); isStr {
+				current.AgentBrowserBinary = strings.TrimSpace(str)
 			}
 			continue
 		}

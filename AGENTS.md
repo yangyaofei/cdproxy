@@ -30,7 +30,7 @@ Go 主实现模块（生产二进制；桌面化改造中）：
 | `internal/keeper` | Chrome 基座探活/冷启动/精确停止 | 绝不允许无差别 killall/pkill |
 | `internal/interlog` | per-session CDP 交互日志（落盘 + 内存环形） | — |
 | `cmd/agent-browser-proxy` | CLI 入口（serve/status/stop/plugin） | 端口 flags 为启动覆盖，启动后 settings 是事实源 |
-| `desktop/` | Wails v3 桌面宿主：菜单栏+托盘+管理窗口；EngineService.DoRequest 进程内执行 control 路由 | App 与 daemon 二选一（同数据目录同端口）；窗口操作勿用 app.Show()（非主线程 SIGTRAP） |
+| `desktop/` | Wails v3 桌面宿主：菜单栏+托盘+管理窗口；EngineService.DoRequest 进程内执行 control 路由；内嵌 agent-browser（pin+校验+staging+解析链） | App 与 daemon 二选一（同数据目录同端口）；窗口操作勿用 app.Show()（非主线程 SIGTRAP） |
 
 ## 2. 架构全景
 
