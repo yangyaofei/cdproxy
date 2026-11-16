@@ -118,7 +118,7 @@ function admin() {
       const saved = localStorage.getItem("abp_theme") || "dark";
       document.documentElement.dataset.theme = saved;
       await this.refresh();
-      setInterval(() => this.refresh(), 5000);
+      this.schedulePoll();
       // 触底加载更早日志：轮询哨兵位置（scroll 事件在本环境不可靠，轮询确定性最高；
       // slogLoading/hasMore 在 loadOlderLogs 内防重入，空闲开销为一次 getBoundingClientRect）
       setInterval(() => {
@@ -126,6 +126,16 @@ function admin() {
         if (!el || el.offsetParent === null) return;
         if (el.getBoundingClientRect().top < innerHeight + 600) this.loadOlderLogs();
       }, 600);
+    },
+
+    /* 状态轮询：动态间隔——在线 5s 常规；离线/冷启动 800ms 快探
+       （冷启动首轮撞上引擎未就绪时不再被固定 5s 罚等，引擎恢复也更快感知） */
+    schedulePoll() {
+      clearTimeout(this._pollT);
+      this._pollT = setTimeout(async () => {
+        await this.refresh();
+        this.schedulePoll();
+      }, this.healthy ? 5000 : 800);
     },
 
     /* tab 切换（带页面副作用：懒加载） */
