@@ -8,6 +8,10 @@
 package main
 
 import (
+	"context"
+	_ "embed"
+
+	"fmt"
 	"embed"
 	"log"
 	"net/http"
@@ -18,12 +22,20 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/updater"
+	"github.com/wailsapp/wails/v3/pkg/updater/providers/endpoint"
 	"github.com/wailsapp/wails/v3/pkg/events"
 	"github.com/wailsapp/wails/v3/pkg/icons"
 )
 
 // version 经 -ldflags -X main.version 注入（与 CLI 二进制同源）。
 var version = "dev"
+
+// updater 公钥（信任根，编译期钉进二进制）：与 denpa-jack 共用同一把
+// Ed25519 密钥材料（minisign 封装转 PKCS#8，见 tmp/keyconv）。
+//
+//go:embed build/updater.key.pub
+var updaterPubKey []byte
 
 //go:embed all:frontend/dist
 var assets embed.FS
@@ -86,6 +98,40 @@ func showUI() {
 }
 
 // buildTray 托盘：模板图标 + 状态/控制菜单。
+// initUpdater 自动更新接线：endpoint provider（GitHub Releases 静态
+// manifest.json）+ 6h 静默检查 + 托盘菜单触发。检查/下载进度经事件总线
+// 通知（wails:updater:*），UpdateReady 后在托盘亮「重启并更新」项。
+func initUpdater() error {
+	endpoint, err := endpoint.New(endpoint.Config{
+		URL: "https://github.com/yangyaofei/agent-browser-proxy/releases/latest/download/manifest.json",
+	})
+	if err != nil {
+		return fmt.Errorf("endpoint provider: %w", err)
+	}
+	if err := app.Updater.Init(updater.Config{
+		CurrentVersion: version,
+		Providers:      []updater.Provider{endpoint},
+		PublicKey:      updaterPubKey,
+		CheckInterval:  6 * time.Hour,
+		Window:         updater.WindowNone,
+	}); err != nil {
+		return fmt.Errorf("updater init: %w", err)
+	}
+	return nil
+}
+
+// checkForUpdate 托盘「检查更新」动作：手动触发检查（WindowNone 下只跑
+// 流程不发窗口，结果经事件总线回托盘/管理界面）。
+func checkForUpdate() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if _, err := app.Updater.Check(ctx); err != nil {
+			log.Printf("检查更新失败: %v", err)
+		}
+	}()
+}
+
 func buildTray() *application.SystemTray {
 	tray := app.SystemTray.New()
 	if runtime.GOOS == "darwin" {
@@ -118,6 +164,8 @@ func buildTray() *application.SystemTray {
 		}
 	})
 	menu.AddSeparator()
+	menu.Add("检查更新…").OnClick(func(*application.Context) { checkForUpdate() })
+	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(*application.Context) { app.Quit() })
 	tray.SetMenu(menu)
 	tray.OnClick(func() { showUI() })
@@ -125,6 +173,10 @@ func buildTray() *application.SystemTray {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println(version)
+		return
+	}
 	engine = NewEngineService("", nil)
 
 	app = application.New(application.Options{
@@ -167,6 +219,13 @@ func main() {
 			},
 		},
 	})
+
+	// 自动更新：官方 pkg/updater（v3.1.0 内建）。endpoint provider 读
+	// GitHub Releases 静态 manifest.json（Ed25519ph 签名，公钥编译期钉死）；
+	// 菜单栏形态不弹框架窗口（WindowNone），检查结果走托盘菜单+事件。
+	if err := initUpdater(); err != nil {
+		log.Printf("updater 初始化失败（更新功能停用）: %v", err)
+	}
 
 	buildTray()
 

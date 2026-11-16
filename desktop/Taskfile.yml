@@ -2,6 +2,9 @@ version: '3'
 
 vars:
   APP_NAME: "cdproxy-desktop"
+  # 版本注入：wails3 task package:embedded VERSION=1.2.3（CI 从 tag 取）；
+  # 默认 dev。updater 的 CurrentVersion 依赖它做 semver 比较。
+  VERSION: '{{.VERSION | default "dev"}}'
   BIN_DIR: "bin"
   PACKAGE_MANAGER: '{{.PACKAGE_MANAGER | default "npm"}}'
   VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
@@ -42,13 +45,18 @@ tasks:
       - ../scripts/prepare_agent_browser.sh
 
   embed:agent-browser:
-    summary: Copy staged agent-browser into the packaged .app Resources
+    summary: Copy staged agent-browser into the packaged .app Resources + inject version
     platforms: [darwin]
     cmds:
       - rm -rf "bin/{{.APP_NAME}}.app/Contents/Resources/agent-browser"
       - mkdir -p "bin/{{.APP_NAME}}.app/Contents/Resources/agent-browser"
       - cp build/agent-browser/agent-browser "bin/{{.APP_NAME}}.app/Contents/Resources/agent-browser/agent-browser"
       - chmod 755 "bin/{{.APP_NAME}}.app/Contents/Resources/agent-browser/agent-browser"
+      # 版本注入 Info.plist（updater 语义：CFBundleShortVersionString 与
+      # manifest.json version 一致；main.version 已在编译期 -X 注入）
+      - /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString {{.VERSION}}" -c "Set :CFBundleVersion {{.VERSION}}" "bin/{{.APP_NAME}}.app/Contents/Info.plist"
+      # embed 后整包 ad-hoc 重签（内嵌二进制纳入签名链；正式 p12 签名由
+      # CI/本地 sign:release 在此之后覆盖）
       - codesign --force --deep --sign - "bin/{{.APP_NAME}}.app"
       - bin/{{.APP_NAME}}.app/Contents/Resources/agent-browser/agent-browser --version
 

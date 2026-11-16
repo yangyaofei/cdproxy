@@ -22,3 +22,6 @@ desktop/build/agent-browser/
 cdproxy
 tmp/
 1/
+# updater 签名私钥（PKCS#8；公钥 .pub 入库）与代码签名证书——绝不入库
+desktop/build/updater.key
+certs/

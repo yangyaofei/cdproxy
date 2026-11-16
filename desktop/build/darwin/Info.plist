@@ -4,15 +4,15 @@
         <key>CFBundlePackageType</key>
             <string>APPL</string>
         <key>CFBundleName</key>
-            <string>My Product</string>
+            <string>cdproxy</string>
         <key>CFBundleExecutable</key>
-            <string></string>
+            <string>cdproxy-desktop</string>
         <key>CFBundleIdentifier</key>
-            <string>com.wails.</string>
+            <string>com.yangyaofei.cdproxy.desktop</string>
         <key>CFBundleVersion</key>
             <string>0.1.0</string>
         <key>CFBundleGetInfoString</key>
-            <string>This is a comment</string>
+            <string>Chrome CDP 隔离代理（多会话 WS 路由）— 桌面宿主</string>
         <key>CFBundleShortVersionString</key>
             <string>0.1.0</string>
         <key>CFBundleIconFile</key>
@@ -23,7 +23,9 @@
             <string>12.0.0</string>
         <key>NSHighResolutionCapable</key>
             <string>true</string>
+        <key>LSUIElement</key>
+            <true/>
         <key>NSHumanReadableCopyright</key>
-            <string>© now, My Company</string>
+            <string>© 2026 yangyaofei</string>
     </dict>
 </plist>
