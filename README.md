@@ -58,18 +58,39 @@ uv run python scripts/smoke_test.py              # 端到端五项（需真实 C
 ├── go.mod / assets.go        # Go 模块 + 静态资产内嵌（package assets 在仓库根）
 ├── cmd/agent-browser-proxy/  # CLI 入口（serve/status/stop/plugin + 隐式 plugin）
 ├── internal/
+│   ├── core/                 # 引擎编排（CLI 与桌面 App 共用；端口重绑/开关）
 │   ├── keeper/               # Chrome 基座生命周期
 │   ├── proxy/                # CDP 转发核心（归属/路由/重映射/焦点/回收）
 │   ├── state/                # 会话与关联表
 │   ├── control/              # 管理面 HTTP + 内嵌 Admin 页
 │   └── settings/             # 运行时设置
-├── static/admin/             # Admin 页（Alpine 无构建 + vendored，go:embed 内嵌）
+├── desktop/                  # 桌面 App（Wails v3，菜单栏常驻 + 管理窗口）
+├── static/admin/             # Admin 页（Alpine 无构建 + vendored，go:embed 内嵌；App 前端同源生成）
 ├── src/agent_browser_proxy/  # Python 参考实现（语义基准，Go 版的行为对齐依据）
 ├── plugin/ab-proxy-plugin    # Python 插件壳（参考；Go 二进制自带 plugin 模式）
-├── scripts/                  # smoke_test.py（五项判定）/ concurrency_test.sh
+├── scripts/                  # smoke_test.py / sync_admin_frontend.py / concurrency_test.sh
 ├── internal/*/​*_test.go      # Go 单元测试
-└── var/                      # 运行数据（gitignore；Go 版数据目录默认 ~/.agent-browser/proxy）
+└── var/                      # 运行数据（gitignore；Go 版数据目录默认 ~/agent-browser/proxy）
 ```
+
+## 桌面 App（desktop/，Wails v3）
+
+CLI daemon 的桌面宿主：同一引擎（internal/core）编译进主进程，菜单栏常驻
+（无 Dock 图标）+ 托盘菜单（状态/打开管理界面/重启引擎/退出）+ 单实例
+（再启动唤起已有窗口）。构建：
+
+```bash
+cd desktop && wails3 build        # 产出 desktop/bin/abp-desktop（前端同步 + bindings + go build 一体）
+```
+
+- **Admin 界面单一源**：`static/admin` 是唯一事实源，`scripts/sync_admin_frontend.py`
+  生成 desktop 前端（Web 版走 fetch，App 版注入 `window.__abpWails` 走
+  `EngineService.DoRequest` 进程内绑定——与 REST 同一套 control 路由，
+  **外部端口关闭时界面照常工作**）
+- 数据目录与 CLI 生产相同（`~/agent-browser/proxy`：同一份 settings/日志）；
+  **App 与 daemon 二选一运行**（同端口，双开会绑定失败）
+- App 存活时 plugin 直接使用 9224（不拉起 daemon）；App 退出后端口释放，
+  下次 agent-browser 调用会经 serve.sh 拉起 daemon 兜底
 
 ## 发布（GoReleaser）
 

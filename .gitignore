@@ -7,3 +7,12 @@ var/
 /agent-browser-proxy
 /dist/
 .DS_Store
+
+# 桌面 App（Wails）构建产物
+desktop/bin/
+desktop/frontend/node_modules/
+desktop/frontend/dist/
+desktop/frontend/bindings/
+# 由 scripts/sync_admin_frontend.py 从 static/admin 生成（单一源）
+desktop/frontend/src/admin/
+desktop/frontend/index.html

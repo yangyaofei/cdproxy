@@ -30,6 +30,7 @@ Go 主实现模块（生产二进制；桌面化改造中）：
 | `internal/keeper` | Chrome 基座探活/冷启动/精确停止 | 绝不允许无差别 killall/pkill |
 | `internal/interlog` | per-session CDP 交互日志（落盘 + 内存环形） | — |
 | `cmd/agent-browser-proxy` | CLI 入口（serve/status/stop/plugin） | 端口 flags 为启动覆盖，启动后 settings 是事实源 |
+| `desktop/` | Wails v3 桌面宿主：菜单栏+托盘+管理窗口；EngineService.DoRequest 进程内执行 control 路由 | App 与 daemon 二选一（同数据目录同端口）；窗口操作勿用 app.Show()（非主线程 SIGTRAP） |
 
 ## 2. 架构全景
 
@@ -110,6 +111,15 @@ go vet ./... && go test ./...     # 门禁
 var/agent-browser-proxy serve     # 运行（status/stop 同入口）
 # 双下游常开：chrome 按需拉起；/ext 等扩展回连。
 # 新会话默认下游 = settings.downstream_mode（Admin 页/PUT /settings 在线可切）。
+```
+
+桌面 App（Wails v3，需 wails3 CLI：`go install github.com/wailsapp/wails/v3/cmd/wails3@latest`）：
+
+```bash
+cd desktop && PATH="$HOME/go/bin:$PATH" wails3 build   # 前端同步+bindings+构建一体
+codesign --force --sign - desktop/bin/abp-desktop      # 本地运行需 ad-hoc 重签
+# Admin 前端单一源检查（改 static/admin 后须重跑 sync）：
+python3 scripts/sync_admin_frontend.py --check
 ```
 
 `codesign` 步骤必需：`-s -w` 剥符号后 Go 写入的 ad-hoc 签名失配，不重签名

@@ -214,6 +214,27 @@
             <span class="hint">/ext 反向入口准入令牌，须与 cdp-ext 扩展 options 页配置一致；改后扩展需重连</span>
           </td>
         </tr>
+        <tr>
+          <td><label for="s-cport">控制面端口</label></td>
+          <td>
+            <input id="s-cport" type="number" min="1" max="65535" step="1" x-model="form.control_port">
+            <span class="hint">管理 REST/Admin 页端口；保存后监听自动重建（约 1s，本页连接可能闪断后自愈）</span>
+          </td>
+        </tr>
+        <tr>
+          <td><label for="s-wport">代理 WS 端口</label></td>
+          <td>
+            <input id="s-wport" type="number" min="1" max="65535" step="1" x-model="form.ws_port">
+            <span class="hint">/cdp/&lt;token&gt; 与 /ext 共用端口；保存后监听重建，daemon/扩展自动重连</span>
+          </td>
+        </tr>
+        <tr>
+          <td><label for="s-ports">外部端口总开关</label></td>
+          <td>
+            <input id="s-ports" type="checkbox" x-model="form.ports_enabled">
+            <span class="hint">关闭 = 控制面与 WS 监听全部停用（桌面 App 内嵌模式：仅 App 界面可用，外部进程连不上）；重新打开即恢复</span>
+          </td>
+        </tr>
       </table>
       <div>
         <button class="primary" @click="saveSettings()" :disabled="busy || !dirty()">保存设置</button>

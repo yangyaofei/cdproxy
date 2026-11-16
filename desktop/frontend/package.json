@@ -1,0 +1,20 @@
+{
+  "name": "abp-desktop-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "sync-admin": "python3 ../../scripts/sync_admin_frontend.py",
+    "dev": "npm run sync-admin && vite",
+    "build:dev": "npm run sync-admin && vite build --minify false --mode development",
+    "build": "npm run sync-admin && vite build --mode production",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@wailsio/runtime": "3.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^4.9.3",
+    "vite": "^8.2.4"
+  }
+}

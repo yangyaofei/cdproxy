@@ -46,6 +46,7 @@ type Core struct {
 	kcfg   keeper.Config
 	proxy  *proxy.Proxy
 	ctl    *control.Control
+	ctlHandler http.Handler
 	ctlSrv *http.Server
 	logPath string
 
@@ -105,6 +106,20 @@ func (c *Core) Store() *settings.Store { return c.store }
 // Proxy 暴露代理（App 绑定层查询状态/操作会话）。
 func (c *Core) Proxy() *proxy.Proxy { return c.proxy }
 
+// ControlHandler 暴露控制面路由（桌面 App 的 DoRequest 在进程内执行
+// 同一套 handler——与 REST 行为逐字节一致，端口关闭也可用）。
+func (c *Core) ControlHandler() http.Handler {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ctl == nil {
+		return nil
+	}
+	if c.ctlHandler == nil {
+		c.ctlHandler = c.ctl.Handler()
+	}
+	return c.ctlHandler
+}
+
 // Start 启动引擎。ports_enabled=false 时只起保活与内部状态，
 // 不绑定任何外部监听（App 内嵌模式）。
 func (c *Core) Start() error {
@@ -117,6 +132,7 @@ func (c *Core) Start() error {
 	c.proxy = proxy.New(c.kcfg, wsPort, c.store, c.ilg, c.logger)
 	c.ctl = control.New(c.proxy, c.ilg, c.store, c.kcfg, c.logPath, c.opts.Version,
 		c.opts.OnShutdown, c.rebind, c.logger)
+	c.ctlHandler = nil // 引擎重建后旧 handler 失效，惰性重建
 
 	if err := c.proxy.Start(); err != nil {
 		return err

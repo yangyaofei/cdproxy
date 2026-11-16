@@ -55,7 +55,7 @@ function admin() {
     logOpen: "",
     sessionLogs: [],
     selLog: -1,
-    form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, downstream_mode: null, ext_token: null },
+    form: { disconnect_reap_seconds: null, alloc_reap_seconds: null, keeper_idle_shutdown_seconds: null, downstream_mode: null, ext_token: null, control_port: null, ws_port: null, ports_enabled: null },
     savedAt: "",
     rules: [],
     rulesError: "",
@@ -88,6 +88,13 @@ function admin() {
     },
 
     async api(method, path, body) {
+      // 桌面 App（Wails）：进程内绑定执行同一套 control 路由（端口关闭也可用）
+      if (window.__abpWails) {
+        const r = await window.__abpWails.doRequest(method, path, body === undefined ? "" : JSON.stringify(body));
+        const data = r.body ? JSON.parse(r.body) : {};
+        if (r.status >= 400) throw new Error(data.error || `${method} ${path} → ${r.status}`);
+        return data;
+      }
       const resp = await fetch(path, {
         method,
         headers: body !== undefined ? { "Content-Type": "application/json" } : {},
@@ -114,8 +121,12 @@ function admin() {
         if (this.form.disconnect_reap_seconds === null) {
           this.form.disconnect_reap_seconds = snap.settings.disconnect_reap_seconds;
           this.form.alloc_reap_seconds = snap.settings.alloc_reap_seconds;
+          this.form.keeper_idle_shutdown_seconds = snap.settings.keeper_idle_shutdown_seconds;
           this.form.downstream_mode = snap.settings.downstream_mode;
           this.form.ext_token = snap.settings.ext_token;
+          this.form.control_port = snap.settings.control_port;
+          this.form.ws_port = snap.settings.ws_port;
+          this.form.ports_enabled = snap.settings.ports_enabled;
           this.rules = JSON.parse(JSON.stringify(snap.settings.rewrites || []));
         }
         if (!this.slogParsed.length) this.loadLogs();
@@ -131,8 +142,12 @@ function admin() {
       return (
         Number(this.form.disconnect_reap_seconds) !== this.status.settings.disconnect_reap_seconds ||
         Number(this.form.alloc_reap_seconds) !== this.status.settings.alloc_reap_seconds ||
+        Number(this.form.keeper_idle_shutdown_seconds ?? this.status.settings.keeper_idle_shutdown_seconds) !== this.status.settings.keeper_idle_shutdown_seconds ||
         this.form.downstream_mode !== this.status.settings.downstream_mode ||
-        this.form.ext_token !== this.status.settings.ext_token
+        this.form.ext_token !== this.status.settings.ext_token ||
+        Number(this.form.control_port) !== this.status.settings.control_port ||
+        Number(this.form.ws_port) !== this.status.settings.ws_port ||
+        this.form.ports_enabled !== this.status.settings.ports_enabled
       );
     },
 
@@ -142,14 +157,24 @@ function admin() {
         const updated = await this.api("PUT", "/settings", {
           disconnect_reap_seconds: Number(this.form.disconnect_reap_seconds),
           alloc_reap_seconds: Number(this.form.alloc_reap_seconds),
+          keeper_idle_shutdown_seconds: Number(this.form.keeper_idle_shutdown_seconds),
           downstream_mode: this.form.downstream_mode,
           ext_token: this.form.ext_token,
+          control_port: Number(this.form.control_port),
+          ws_port: Number(this.form.ws_port),
+          ports_enabled: !!this.form.ports_enabled,
         });
         this.form.disconnect_reap_seconds = updated.disconnect_reap_seconds;
         this.form.alloc_reap_seconds = updated.alloc_reap_seconds;
+        this.form.keeper_idle_shutdown_seconds = updated.keeper_idle_shutdown_seconds;
         this.form.downstream_mode = updated.downstream_mode;
         this.form.ext_token = updated.ext_token;
+        this.form.control_port = updated.control_port;
+        this.form.ws_port = updated.ws_port;
+        this.form.ports_enabled = updated.ports_enabled;
         this.savedAt = new Date().toLocaleTimeString();
+        // 端口类变更会触发监听重绑：Web 版本连接可能随旧监听断开，稍后自愈
+        await new Promise(r => setTimeout(r, 600));
         await this.refresh();
       } catch (err) {
         alert("保存失败: " + err.message);
