@@ -225,13 +225,14 @@ func runServe(args []string) int {
 	logger.Info("服务就绪",
 		"control", fmt.Sprintf("127.0.0.1:%d", controlPort),
 		"proxy_ws", fmt.Sprintf("ws://127.0.0.1:%d/cdp/<token>", wsPort),
-		"default_downstream", s.DownstreamMode,
+		"default_source", s.Routing.DefaultSource,
+		"routing_rules", len(s.Routing.Rules),
 		"cdp", fmt.Sprintf("127.0.0.1:%d", opts.cdpPort),
 		"ports_enabled", s.PortsEnabled,
 	)
 	logger.Info("/ext 反向入口常开（等 cdp-ext 扩展回连）",
 		"ext_ws", fmt.Sprintf("ws://127.0.0.1:%d/ext", wsPort),
-		"token", s.ExtToken)
+		"token", s.Sources.ExtensionToken)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

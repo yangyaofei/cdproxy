@@ -52,7 +52,7 @@ const writeTimeout = 30 * time.Second
 
 // downstreamKind 值域。
 const (
-	dsChrome    = "chrome"
+	dsStandalone = settings.SourceStandalone
 	dsExtension = "extension"
 )
 
@@ -109,12 +109,12 @@ func (p *Proxy) startBaseKeepAlive() {
 			}
 			active := false
 			for _, sess := range p.st.Snapshot() {
-				if sess["downstream"] == dsChrome {
+				if sess["downstream"] == dsStandalone {
 					active = true
 					break
 				}
 			}
-			if !active && p.linkConnected(dsChrome) {
+			if !active && p.linkConnected(dsStandalone) {
 				if n, err := p.unownedPageCount(); err == nil && n > 0 {
 					active = true // 人工页面在场（用户正在看）
 				}
@@ -123,7 +123,7 @@ func (p *Proxy) startBaseKeepAlive() {
 				continue // 无活动：不喂计时，agent-browser 原生空闲关闭
 			}
 			// 只喂活着的基座（探活拨号，绝不拉起——拉起是 provider 的职责）
-			ws := p.linkIdent(dsChrome)
+			ws := p.linkIdent(dsStandalone)
 			if !p.wsAlive(ws) {
 				continue
 			}
@@ -171,6 +171,43 @@ func (p *Proxy) linkIdent(kind string) string {
 		return ""
 	}
 	return l.ident
+}
+
+// SessionTabs 会话名下 tab 实时列表（会话页「展开即查」）：经会话绑定的
+// 源拉 Target.getTargets，按归属过滤出该会话可见的 page 型 target。
+func (p *Proxy) SessionTabs(name string) ([]map[string]any, error) {
+	sess := p.st.FindByName(name)
+	if sess == nil {
+		return nil, fmt.Errorf("会话不存在: %s", name)
+	}
+	kind := sess.Downstream()
+	if !p.linkConnected(kind) {
+		return nil, fmt.Errorf("源 %s 当前未连接（基座未起或扩展未回连）", kind)
+	}
+	resp, err := p.dsCallOn(kind, "Target.getTargets", map[string]any{}, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	result, _ := resp["result"].(map[string]any)
+	infos, _ := result["targetInfos"].([]any)
+	tabs := make([]map[string]any, 0, 4)
+	for _, item := range infos {
+		ti, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if typ, _ := ti["type"].(string); typ != "page" {
+			continue
+		}
+		tid, _ := ti["targetId"].(string)
+		if tid == "" || p.st.OwnerOf(tid) != sess {
+			continue
+		}
+		title, _ := ti["title"].(string)
+		url, _ := ti["url"].(string)
+		tabs = append(tabs, map[string]any{"targetId": tid, "title": title, "url": url})
+	}
+	return tabs, nil
 }
 
 // unownedPageCount 统计基座里不属于任何会话的 page 型 target（人工使用信号）。
@@ -256,7 +293,7 @@ func (p *Proxy) listenWS(port int) error {
 	p.wsPort = port
 	p.mu.Unlock()
 	p.log.Info("代理 WS 服务已启动", "addr", addr,
-		"default_downstream", p.store.Get().DownstreamMode, "/ext", "常开")
+		"default_downstream", p.store.Get().Routing.DefaultSource, "/ext", "常开")
 	return nil
 }
 
@@ -300,18 +337,47 @@ func (p *Proxy) Stop() {
 	}
 }
 
-// AllocSession 分配会话：按当前设置选定下游形态、登记、预开一个后台空白
-// tab（getTargets 非空 + 与基座 UI 隔离）、排程未连兜底回收。返回上游连接
-// 地址。会话的下游形态在此定格（Session.Downstream）；此后切设置不影响
+// ResolveSource 会话 → 源 路由：显式指定（control 传参）> 前缀规则（有序，
+// 先中先用）> 默认源。返回源名（standalone|extension）。
+func (p *Proxy) ResolveSource(name, explicit string) string {
+	cfg := p.store.Get()
+	if valid, _ := validSourceKind(explicit); valid {
+		return explicit
+	}
+	for _, r := range cfg.Routing.Rules {
+		if strings.HasPrefix(name, r.Prefix) {
+			return r.Source
+		}
+	}
+	return cfg.Routing.DefaultSource
+}
+
+func validSourceKind(s string) (bool, string) {
+	if s == "" {
+		return false, ""
+	}
+	return s == settings.SourceStandalone || s == settings.SourceExtension, s
+}
+
+// AllocSession 分配会话：解析源（显式 > 前缀规则 > 默认）、登记、预开一个
+// 后台空白 tab（getTargets 非空 + 与基座 UI 隔离）、排程未连兜底回收。返回
+// 上游连接地址。会话的源在此定格（Session.Downstream）；此后切设置不影响
 // 本会话（平滑切换语义：只管新分配）。
 //
 // 注意 URL 必须用 session 实际注册的 token：同名未连接复用时 Alloc 返回
 // 旧 session（旧 token），若返回新生成的 token，daemon 拿来连接会命中
 // 4401 unknown session（close 后立即重开必现）。
-func (p *Proxy) AllocSession(name string) (string, error) {
+func (p *Proxy) AllocSession(name, explicitSource string) (string, error) {
 	// 先建会话再连基座：活动守卫按会话计数放行，顺序反了会把
 	// provider 分配路径整个拒绝（插件报 exited unsuccessfully）
-	mode := p.store.Get().DownstreamMode
+	mode := p.ResolveSource(name, explicitSource)
+	cfg := p.store.Get()
+	if mode == dsExtension && !cfg.Sources.ExtensionEnabled {
+		return "", fmt.Errorf("extension 源已禁用（settings.sources.extension_enabled=false）")
+	}
+	if mode == dsStandalone && !cfg.Sources.StandaloneEnabled {
+		return "", fmt.Errorf("standalone 源已禁用（settings.sources.standalone_enabled=false）")
+	}
 	token := randomToken()
 	sess, created := p.st.Alloc(name, token, mode)
 	// 未连接复用 + 形态已切：旧 tab 在另一浏览器上不可达，静默改绑并
@@ -351,8 +417,8 @@ func (p *Proxy) AllocSession(name string) (string, error) {
 		// 基座 WS 变化（Chrome 被重启/重拉）= chrome 侧归属全部失效：清归属
 		// 并合成原生等价的销毁事件；URL 未变（瞬断重连）则归属仍有效。
 		// 只清 chrome 形态——extension 会话的归属挂在另一条链路上。
-		if wsURL != p.linkIdent(dsChrome) {
-			owned, bound := p.st.ClearOwnershipFor(dsChrome)
+		if wsURL != p.linkIdent(dsStandalone) {
+			owned, bound := p.st.ClearOwnershipFor(dsStandalone)
 			p.notifyOwnershipCleared(owned, bound)
 		}
 		if err := p.connectDownstream(wsURL); err != nil {
@@ -432,7 +498,7 @@ func (p *Proxy) ReleaseSession(name string) {
 // 扩展连接」：宿主浏览器属于用户绝不重启，扩展自行退避重连，回连即完成
 // extension 侧重建（归属清理由回连路径完成）。
 func (p *Proxy) RestartKeeper() error {
-	chromeLink := p.link(dsChrome)
+	chromeLink := p.link(dsStandalone)
 	extLink := p.link(dsExtension)
 	if chromeLink != nil {
 		old := chromeLink.ident
@@ -442,7 +508,7 @@ func (p *Proxy) RestartKeeper() error {
 			// 基座未真死：如实报错（此刻 chrome 下游已断，行为等同断开——什么都不做）
 			return err
 		}
-		owned, bound := p.st.ClearOwnershipFor(dsChrome)
+		owned, bound := p.st.ClearOwnershipFor(dsStandalone)
 		p.notifyOwnershipCleared(owned, bound)
 		// 重启的后半段"重新打开"走 agent-browser 原生 get cdp-url（线 1）
 		wsURL, err := p.cfg.EnsureRunning(keeper.IdleTimeoutString(p.store.Get().KeeperIdleShutdownSeconds))
@@ -464,21 +530,42 @@ func (p *Proxy) RestartKeeper() error {
 	return fmt.Errorf("无下游在运行（基座未运行、扩展未回连）")
 }
 
-// Status 运行状态快照。
+// ExtGroupPrefix extension 源的会话组名前缀（与 cdp-ext sw.js 的
+// GROUP_PREFIX 一致；会话名 → 组名 = 前缀 + 会话名）。
+const ExtGroupPrefix = "ab: "
+
+// Status 运行状态快照（双源并存视角）。
 func (p *Proxy) Status() map[string]any {
+	cfg := p.store.Get()
+	sessions := p.st.Snapshot()
+	// 会话项补充源视角字段：type（=downstream 值）、group_name（extension）
+	for _, m := range sessions {
+		kind, _ := m["downstream"].(string)
+		m["type"] = kind
+		if kind == dsExtension {
+			if name, _ := m["name"].(string); name != "" {
+				m["group_name"] = ExtGroupPrefix + name
+			}
+		}
+	}
 	return map[string]any{
-		"downstream": map[string]any{
-			"default_mode": p.store.Get().DownstreamMode,
-			"chrome": map[string]any{
-				"connected":    p.linkConnected(dsChrome),
+		"sources": map[string]any{
+			"standalone": map[string]any{
+				"enabled":      cfg.Sources.StandaloneEnabled,
+				"connected":    p.linkConnected(dsStandalone),
 				"base_session": p.cfg.Session,
 			},
 			"extension": map[string]any{
+				"enabled":   cfg.Sources.ExtensionEnabled,
 				"connected": p.linkConnected(dsExtension),
-				"manager":   "cdp-ext 扩展（用户宿主浏览器）",
+				"token":     cfg.Sources.ExtensionToken,
 			},
 		},
-		"sessions": p.st.Snapshot(),
+		"routing": map[string]any{
+			"default_source": cfg.Routing.DefaultSource,
+			"rules":          cfg.Routing.Rules,
+		},
+		"sessions": sessions,
 	}
 }
 
@@ -706,7 +793,7 @@ func (p *Proxy) sendTo(sess *state.Session, msg map[string]any) {
 // 并合成销毁，双方状态一致。chrome 侧归属不受牵连。令牌不匹配回 401，
 // 扩展侧按退避重试。令牌取自 settings.ext_token。
 func (p *Proxy) handleExtension(w http.ResponseWriter, r *http.Request) {
-	token := p.store.Get().ExtToken
+	token := p.store.Get().Sources.ExtensionToken
 	if token != "" && r.URL.Query().Get("token") != token {
 		p.log.Warn("拒绝令牌不匹配的扩展连接", "remote", r.RemoteAddr)
 		http.Error(w, "invalid extension token", http.StatusUnauthorized)
@@ -774,7 +861,7 @@ func (p *Proxy) connectDownstream(wsURL string) error {
 		return fmt.Errorf("chrome 下游连接失败: %w", err)
 	}
 	conn.SetReadLimit(64 << 20)
-	link := &dsLink{kind: dsChrome, ident: wsURL, conn: conn}
+	link := &dsLink{kind: dsStandalone, ident: wsURL, conn: conn}
 	p.mu.Lock()
 	p.chrome = link
 	p.mu.Unlock()
@@ -810,7 +897,7 @@ func (p *Proxy) onDownstreamDead(link *dsLink, reason error) {
 		return // 已被主动替换（如重启/顶替），无需处理
 	}
 	switch link.kind {
-	case dsChrome:
+	case dsStandalone:
 		// CDP 断开 = 什么都不做：不自愈、不重启、不清归属、不拉基座。
 		// 归属清理与合成通知由下一条 provider 分配路径按"基座 WS 是否变化"
 		// 决定；全系统仅有的（重）连接入口是 AllocSession 与 Admin 重启。
@@ -873,7 +960,7 @@ func (p *Proxy) dsSend(kind string, data []byte) error {
 
 // dsCall 同步请求基座（chrome 自管理命令的应答版）：登记 pending + 等响应。
 func (p *Proxy) dsCall(method string, params map[string]any, timeout time.Duration) (map[string]any, error) {
-	return p.dsCallOn(dsChrome, method, params, timeout)
+	return p.dsCallOn(dsStandalone, method, params, timeout)
 }
 
 // dsCallOn 对指定下游形态发同步命令（响应经 onDsResponse 原样投递——无
@@ -900,7 +987,7 @@ func (p *Proxy) dsCallOn(kind string, method string, params map[string]any, time
 // DsRawForControl 管理面直发基座命令（如人工开页面）；不经上游会话与规则。
 // 固定 chrome 形态——人工开页面是基座（keeper）概念。
 func (p *Proxy) DsRawForControl(method string, params map[string]any) error {
-	return p.dsRaw(dsChrome, method, params)
+	return p.dsRaw(dsStandalone, method, params)
 }
 
 // dsRaw 服务自管理命令（无上游关联，如回收关 tab），按形态路由。

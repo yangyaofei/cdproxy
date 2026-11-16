@@ -18,7 +18,7 @@ import (
 
 // knownKeys 合法设置键（Update 对未知键显式报错而非静默忽略——配置写错
 // 必须当场暴露，否则调用方以为生效，事后才发现被吞）。
-var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "rewrites", "downstream_mode", "ext_token", "control_port", "ws_port", "ports_enabled", "agent_browser_binary"}
+var knownKeys = []string{"alloc_reap_seconds", "disconnect_reap_seconds", "keeper_idle_shutdown_seconds", "rewrites", "downstream_mode", "ext_token", "sources", "routing", "control_port", "ws_port", "ports_enabled", "agent_browser_binary"}
 
 // 各字段的下限（防误配成 0 导致回收风暴）。
 var minValues = map[string]float64{
@@ -92,13 +92,10 @@ type Settings struct {
 	KeeperIdleShutdownSeconds float64 `json:"keeper_idle_shutdown_seconds"`
 	// Rewrites 上游命令改写规则（顺序执行；默认=「不抢焦点」+ 基座保护）。
 	Rewrites []RewriteRule `json:"rewrites"`
-	// DownstreamMode 新会话的默认下游形态：chrome=keeper 管理的基座 Chrome；
-	// extension=cdp-ext 扩展反向回连的用户宿主浏览器。运行时可切，仅影响
-	// 之后的新分配——存量会话继续绑定原下游直至自然结束（平滑语义）。
-	DownstreamMode string `json:"downstream_mode"`
-	// ExtToken /ext 反向入口的准入令牌（扩展 options 页配同一值）。
-	// 空串 = 不校验（仅回环监听，与控制面同信任级）。
-	ExtToken string `json:"ext_token"`
+	// Sources 双源配置（并存、独立开关与令牌；取代旧 downstream_mode/ext_token）。
+	Sources Sources `json:"sources"`
+	// Routing 会话 → 源 路由（显式指定 > 前缀规则 > 默认源）。
+	Routing Routing `json:"routing"`
 	// ControlPort 管理面（REST/Admin 页）监听端口。变更经进程内重绑生效
 	//（监听重建，无需换进程）；会话/令牌状态全程保留。
 	ControlPort int `json:"control_port"`
@@ -116,6 +113,52 @@ type Settings struct {
 	AgentBrowserBinary string `json:"agent_browser_binary"`
 }
 
+// 源名常量（对外 JSON/状态面统一用这两个词；内部 dsKind 同值）。
+const (
+	SourceStandalone = "standalone"
+	SourceExtension  = "extension"
+)
+
+// validSource 源名合法性。
+func validSource(s string) bool { return s == SourceStandalone || s == SourceExtension }
+
+// SourceRoute 前缀路由规则：会话名命中 prefix 即路由到 source（有序，先中先用）。
+type SourceRoute struct {
+	Prefix string `json:"prefix"`
+	Source string `json:"source"` // standalone | extension
+}
+
+// Sources 双源配置（并存，按会话路由）。
+type Sources struct {
+	// StandaloneEnabled standalone 源（agent-browser 管理的基座 Chrome）开关。
+	StandaloneEnabled bool `json:"standalone_enabled"`
+	// ExtensionEnabled extension 源（用户宿主 Chrome + cdp-ext 回连）开关。
+	ExtensionEnabled bool `json:"extension_enabled"`
+	// ExtensionToken /ext 反向入口的准入令牌（扩展 options 页配同一值）。
+	// 空串 = 不校验（仅回环监听，与控制面同信任级）。
+	ExtensionToken string `json:"token"`
+}
+
+// Routing 会话 → 源 的路由策略。
+type Routing struct {
+	// DefaultSource 无规则命中时的默认源。
+	DefaultSource string `json:"default_source"` // standalone | extension
+	// Rules 前缀规则（有序，先中先用；都不中用 DefaultSource）。
+	Rules []SourceRoute `json:"rules"`
+}
+
+func validRoutes(rules []SourceRoute) error {
+	for i, r := range rules {
+		if strings.TrimSpace(r.Prefix) == "" {
+			return fmt.Errorf("routing.rules[%d].prefix 不能为空", i)
+		}
+		if !validSource(r.Source) {
+			return fmt.Errorf("routing.rules[%d].source 必须是 standalone|extension", i)
+		}
+	}
+	return nil
+}
+
 // Defaults 返回默认设置。
 func Defaults() Settings {
 	return Settings{
@@ -123,11 +166,18 @@ func Defaults() Settings {
 		AllocReapSeconds:      300.0,
 		KeeperIdleShutdownSeconds: 600.0,
 		Rewrites:              DefaultRewrites(),
-		DownstreamMode:        "chrome",
-		ExtToken:              "dev",
-		ControlPort:           9224,
-		WsPort:                9225,
-		PortsEnabled:          true,
+		Sources: Sources{
+			StandaloneEnabled: true,
+			ExtensionEnabled:  true,
+			ExtensionToken:    "dev",
+		},
+		Routing: Routing{
+			DefaultSource: SourceStandalone,
+			Rules:         []SourceRoute{{Prefix: "ext-", Source: SourceExtension}},
+		},
+		ControlPort:  9224,
+		WsPort:       9225,
+		PortsEnabled: true,
 	}
 }
 
@@ -176,11 +226,51 @@ func load(path string) Settings {
 			slog.Warn("settings.json rewrites 校验失败，回落默认规则", "err", validRewrites(rules))
 		}
 	}
-	if v, ok := raw["downstream_mode"].(string); ok && validEnum("downstream_mode", v) {
-		out.DownstreamMode = v
+	// 新结构：sources / routing（整对象替换式解析，字段级校验）
+	if v, ok := raw["sources"]; ok {
+		if src, ok := v.(map[string]any); ok {
+			if b, ok := src["standalone_enabled"].(bool); ok {
+				out.Sources.StandaloneEnabled = b
+			}
+			if b, ok := src["extension_enabled"].(bool); ok {
+				out.Sources.ExtensionEnabled = b
+			}
+			if t, ok := src["token"].(string); ok && strings.TrimSpace(t) != "" {
+				out.Sources.ExtensionToken = strings.TrimSpace(t)
+			}
+		}
+	}
+	if v, ok := raw["routing"]; ok {
+		if rt, ok := v.(map[string]any); ok {
+			if d, ok := rt["default_source"].(string); ok && validSource(d) {
+				out.Routing.DefaultSource = d
+			}
+			if rs, ok := rt["rules"].([]any); ok {
+				data, _ := json.Marshal(rs)
+				var rules []SourceRoute
+				if err := json.Unmarshal(data, &rules); err == nil && validRoutes(rules) == nil {
+					out.Routing.Rules = rules
+				} else {
+					slog.Warn("settings.json routing.rules 校验失败，回落默认规则", "err", err)
+				}
+			}
+		}
+	}
+	// 旧键迁移（下游模式/扩展令牌 → 双源结构；旧值仅在缺省时兜底）
+	if v, ok := raw["downstream_mode"].(string); ok {
+		if _, exists := raw["routing"]; !exists {
+			switch v {
+			case "chrome":
+				out.Routing.DefaultSource = SourceStandalone
+			case "extension":
+				out.Routing.DefaultSource = SourceExtension
+			}
+		}
 	}
 	if v, ok := raw["ext_token"].(string); ok && strings.TrimSpace(v) != "" {
-		out.ExtToken = strings.TrimSpace(v)
+		if _, exists := raw["sources"]; !exists {
+			out.Sources.ExtensionToken = strings.TrimSpace(v)
+		}
 	}
 	if v, ok := raw["control_port"].(float64); ok && validPort(int(v)) {
 		out.ControlPort = int(v)
@@ -230,11 +320,14 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 	}
 	current := s.settings
 	for key, value := range patch {
-		if allowed, ok := enumValues[key]; ok {
-			if str, isStr := value.(string); isStr && contains(allowed, str) {
-				switch key {
-				case "downstream_mode":
-					current.DownstreamMode = str
+		// 旧键迁移：downstream_mode/ext_token → 双源结构（向后兼容旧脚本/UI）
+		if key == "downstream_mode" {
+			if str, isStr := value.(string); isStr {
+				switch str {
+				case "chrome":
+					current.Routing.DefaultSource = SourceStandalone
+				case "extension":
+					current.Routing.DefaultSource = SourceExtension
 				}
 			}
 			continue
@@ -243,9 +336,47 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 			if str, isStr := value.(string); isStr {
 				str = strings.TrimSpace(str)
 				if str != "" {
-					current.ExtToken = str
+					current.Sources.ExtensionToken = str
 				}
 			}
+			continue
+		}
+		if key == "sources" {
+			data, err := json.Marshal(value)
+			if err != nil {
+				return Settings{}, fmt.Errorf("sources 序列化失败: %v", err)
+			}
+			var src Sources
+			if err := json.Unmarshal(data, &src); err != nil {
+				return Settings{}, fmt.Errorf("sources 解析失败: %v", err)
+			}
+			if strings.TrimSpace(src.ExtensionToken) == "" {
+				src.ExtensionToken = current.Sources.ExtensionToken // 空串=不修改
+			} else {
+				src.ExtensionToken = strings.TrimSpace(src.ExtensionToken)
+			}
+			if !src.StandaloneEnabled && !src.ExtensionEnabled {
+				return Settings{}, errors.New("两个源不能同时禁用（至少保留一个可用源）")
+			}
+			current.Sources = src
+			continue
+		}
+		if key == "routing" {
+			data, err := json.Marshal(value)
+			if err != nil {
+				return Settings{}, fmt.Errorf("routing 序列化失败: %v", err)
+			}
+			var rt Routing
+			if err := json.Unmarshal(data, &rt); err != nil {
+				return Settings{}, fmt.Errorf("routing 解析失败: %v", err)
+			}
+			if !validSource(rt.DefaultSource) {
+				return Settings{}, errors.New("routing.default_source 必须是 standalone|extension")
+			}
+			if err := validRoutes(rt.Rules); err != nil {
+				return Settings{}, err
+			}
+			current.Routing = rt
 			continue
 		}
 		if key == "rewrites" {

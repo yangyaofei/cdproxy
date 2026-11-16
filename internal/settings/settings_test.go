@@ -79,28 +79,52 @@ func TestDownstreamModeAndExtToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := NewStore(path)
-	if s.Get().DownstreamMode != "extension" || s.Get().ExtToken != "tok-1" {
-		t.Fatalf("加载异常: mode=%s token=%s", s.Get().DownstreamMode, s.Get().ExtToken)
+	// 旧键迁移：downstream_mode=extension → routing.default_source=extension
+	if s.Get().Routing.DefaultSource != SourceExtension || s.Get().Sources.ExtensionToken != "tok-1" {
+		t.Fatalf("旧键迁移异常: default=%s token=%s", s.Get().Routing.DefaultSource, s.Get().Sources.ExtensionToken)
 	}
-	// 非法枚举回落默认 chrome；空 token 忽略
+	// 非法枚举忽略（旧键通道）；空 token 忽略
 	updated, err := s.Update(map[string]any{"downstream_mode": "bogus", "ext_token": "   "})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.DownstreamMode != "extension" || updated.ExtToken != "tok-1" {
-		t.Fatalf("非法值应被忽略保持原值: mode=%s token=%s", updated.DownstreamMode, updated.ExtToken)
+	if updated.Routing.DefaultSource != SourceExtension || updated.Sources.ExtensionToken != "tok-1" {
+		t.Fatalf("非法值应被忽略保持原值: default=%s token=%s", updated.Routing.DefaultSource, updated.Sources.ExtensionToken)
 	}
 	updated, err = s.Update(map[string]any{"downstream_mode": "chrome", "ext_token": "tok-2"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.DownstreamMode != "chrome" || updated.ExtToken != "tok-2" {
-		t.Fatalf("合法更新未生效: mode=%s token=%s", updated.DownstreamMode, updated.ExtToken)
+	if updated.Routing.DefaultSource != SourceStandalone || updated.Sources.ExtensionToken != "tok-2" {
+		t.Fatalf("合法更新未生效: default=%s token=%s", updated.Routing.DefaultSource, updated.Sources.ExtensionToken)
+	}
+	// 新结构整对象更新：sources + routing（含前缀规则表）
+	updated, err = s.Update(map[string]any{
+		"sources": map[string]any{"standalone_enabled": true, "extension_enabled": false, "token": "tok-3"},
+		"routing": map[string]any{"default_source": "extension",
+			"rules": []any{map[string]any{"prefix": "sa-", "source": "standalone"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Sources.ExtensionEnabled || updated.Sources.ExtensionToken != "tok-3" {
+		t.Fatalf("sources 更新异常: %+v", updated.Sources)
+	}
+	if updated.Routing.DefaultSource != SourceExtension || len(updated.Routing.Rules) != 1 ||
+		updated.Routing.Rules[0].Prefix != "sa-" {
+		t.Fatalf("routing 更新异常: %+v", updated.Routing)
+	}
+	// 两源同时禁用被拒
+	if _, err := s.Update(map[string]any{"sources": map[string]any{"standalone_enabled": false, "extension_enabled": false}}); err == nil {
+		t.Fatal("两源同时禁用应报错")
 	}
 	// 默认值
 	fresh := NewStore(filepath.Join(t.TempDir(), "none.json"))
-	if fresh.Get().DownstreamMode != "chrome" || fresh.Get().ExtToken != "dev" {
-		t.Fatalf("默认应为 chrome/dev: %+v", fresh.Get())
+	if fresh.Get().Routing.DefaultSource != SourceStandalone || fresh.Get().Sources.ExtensionToken != "dev" {
+		t.Fatalf("默认应为 standalone/dev: %+v", fresh.Get())
+	}
+	if len(fresh.Get().Routing.Rules) != 1 || fresh.Get().Routing.Rules[0].Prefix != "ext-" {
+		t.Fatalf("默认路由规则应含 ext- 前缀: %+v", fresh.Get().Routing)
 	}
 }
 

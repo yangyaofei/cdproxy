@@ -16,14 +16,17 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,15 +39,15 @@ import (
 
 // Control 管理面服务。
 type Control struct {
-	proxy    *proxy.Proxy
-	ilg      *interlog.Log
-	store    *settings.Store
-	keeper   keeper.Config
-	logPath  string
-	version  string
+	proxy      *proxy.Proxy
+	ilg        *interlog.Log
+	store      *settings.Store
+	keeper     keeper.Config
+	logPath    string
+	version    string
 	onShutdown func()
-	onRebind  func()
-	log      *slog.Logger
+	onRebind   func()
+	log        *slog.Logger
 }
 
 // New 构造管理面。onRebind 在端口类设置（control_port/ws_port/ports_enabled）
@@ -84,11 +87,11 @@ func (c *Control) Handler() http.Handler {
 
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		snapshot := c.proxy.Status()
-		// keeper 区块只描述 chrome 基座（extension 信息在 downstream.extension）
+		// keeper 区块只描述 standalone 源的基座 Chrome（extension 信息在 sources.extension）
 		alive := false
-		if down, ok := snapshot["downstream"].(map[string]any); ok {
-			if chrome, ok := down["chrome"].(map[string]any); ok {
-				alive, _ = chrome["connected"].(bool)
+		if src, ok := snapshot["sources"].(map[string]any); ok {
+			if sa, ok := src["standalone"].(map[string]any); ok {
+				alive, _ = sa["connected"].(bool)
 			}
 		}
 		snapshot["keeper"] = map[string]any{
@@ -101,6 +104,41 @@ func (c *Control) Handler() http.Handler {
 		snapshot["version"] = c.version
 		snapshot["recent_sessions"] = c.ilg.Recent(50)
 		writeJSON(w, http.StatusOK, snapshot)
+	})
+
+	// 会话名下 tab 实时列表（会话页展开即查）
+	mux.HandleFunc("GET /sessions/{name}/tabs", func(w http.ResponseWriter, r *http.Request) {
+		tabs, err := c.proxy.SessionTabs(r.PathValue("name"))
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"tabs": tabs})
+	})
+
+	// standalone 源的 agent-browser 安装检测（解析链：设置覆盖 → bundled → PATH）
+	mux.HandleFunc("GET /sources/agent-browser", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, c.agentBrowserInfo())
+	})
+
+	// 配置文件清单与内容（只读白名单：设置页「配置查看」用）
+	mux.HandleFunc("GET /config/files", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"files": c.configFiles()})
+	})
+	mux.HandleFunc("GET /config/files/{key}", func(w http.ResponseWriter, r *http.Request) {
+		key := r.PathValue("key")
+		for _, f := range c.configFiles() {
+			if f["key"] == key {
+				data, err := os.ReadFile(f["path"].(string))
+				if err != nil {
+					writeJSON(w, http.StatusNotFound, map[string]string{"error": "文件不存在或不可读: " + err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"key": key, "path": f["path"], "content": string(data)})
+				return
+			}
+		}
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "未知配置 key: " + key})
 	})
 
 	// per-session CDP 交互日志（内存环形快照）
@@ -162,13 +200,18 @@ func (c *Control) Handler() http.Handler {
 
 	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Name string `json:"name"`
+			Name   string `json:"name"`
+			Source string `json:"source"` // 可选：显式指定源（standalone|extension），缺省走路由
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "name 必填"})
 			return
 		}
-		cdpURL, err := c.proxy.AllocSession(body.Name)
+		if body.Source != "" && body.Source != "standalone" && body.Source != "extension" {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "source 必须是 standalone|extension"})
+			return
+		}
+		cdpURL, err := c.proxy.AllocSession(body.Name, body.Source)
 		if err != nil {
 			c.log.Error("会话分配失败", "session", body.Name, "err", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -224,6 +267,54 @@ func noCache(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// agentBrowserInfo standalone 源的 agent-browser 安装检测（解析链：
+// settings.agent_browser_binary → AB_AGENT_BROWSER_BUNDLED_DIR 内嵌目录 →
+// PATH；App 模式经 env 交接 bundled 目录）。
+func (c *Control) agentBrowserInfo() map[string]any {
+	if p := c.store.Get().AgentBrowserBinary; p != "" {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return map[string]any{"found": true, "path": p, "source": "setting", "version": abVersion(p)}
+		}
+	}
+	if dir := os.Getenv("AB_AGENT_BROWSER_BUNDLED_DIR"); dir != "" {
+		p := filepath.Join(dir, "agent-browser")
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return map[string]any{"found": true, "path": p, "source": "bundled", "version": abVersion(p)}
+		}
+	}
+	if p, err := exec.LookPath("agent-browser"); err == nil {
+		return map[string]any{"found": true, "path": p, "source": "path", "version": abVersion(p)}
+	}
+	return map[string]any{"found": false, "source": "none"}
+}
+
+func abVersion(bin string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// configFiles 配置文件只读白名单（设置页「配置查看」用）：key 稳定，
+// path 现算（跟随数据目录/用户主目录）。
+func (c *Control) configFiles() []map[string]any {
+	home, _ := os.UserHomeDir()
+	settingsPath := filepath.Join(filepath.Dir(c.logPath), "settings.json")
+	entries := []map[string]any{
+		{"key": "settings", "title": "cdproxy 设置", "path": settingsPath},
+		{"key": "keeper-config", "title": "基座启动配置", "path": c.keeper.ConfigPath},
+		{"key": "agent-browser-config", "title": "agent-browser 配置", "path": filepath.Join(home, ".agent-browser", "config.json")},
+	}
+	for _, e := range entries {
+		_, err := os.Stat(e["path"].(string))
+		e["exists"] = err == nil
+	}
+	return entries
 }
 
 // tailLog 读日志尾部 n 行。

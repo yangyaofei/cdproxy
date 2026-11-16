@@ -114,11 +114,11 @@ async def main() -> int:
     """跑八项判定（T0 前置 + 六项语义 + T7 切换语义），全过返回 0。"""
     # T0 前置：扩展已回连 + 在线切到 extension（走 Admin 同款路径）
     status = http_get("/status")
-    down = status.get("downstream", {})
+    down = status.get("sources", {})
     ext = down.get("extension", {})
     assert ext.get("connected") is True, f"T0 失败: 扩展未回连（先启动宿主 Chrome）: {down}"
-    updated = http_put("/settings", {"downstream_mode": "extension"})
-    assert updated.get("downstream_mode") == "extension", f"T0 失败: 在线切换未生效: {updated}"
+    updated = http_put("/settings", {"routing": {"default_source": "extension"}})
+    assert updated.get("routing", {}).get("default_source") == "extension", f"T0 失败: 在线切换未生效: {updated}"
     print("T0 ✓ 扩展已回连 + downstream_mode 已在线切到 extension")
 
     a = http_post("/sessions", {"name": f"ext-a-{RUN_ID}"})
@@ -198,9 +198,9 @@ async def main() -> int:
         # T7 平滑切换：切回 chrome 后，extension 存量会话继续可用
         # （新分配才会走 chrome；此处不真分配 chrome 会话——那会拉起 keeper 基座，
         #  chrome 路径由 smoke_test.py 在独立实例覆盖）
-        http_put("/settings", {"downstream_mode": "chrome"})
+        http_put("/settings", {"routing": {"default_source": "standalone"}})
         status = http_get("/status")
-        assert status["downstream"]["default_mode"] == "chrome", "T7 失败: 默认形态未切回"
+        assert status["routing"]["default_source"] == "standalone", "T7 失败: 默认形态未切回"
         sess_list = status["sessions"]
         ext_sess = [s for s in sess_list if s.get("downstream") == "extension"]
         assert ext_sess, f"T7 失败: 会话列表缺失 extension 绑定: {sess_list}"
