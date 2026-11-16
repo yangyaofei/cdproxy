@@ -65,6 +65,8 @@ def main() -> int:
         (SRC / "app.js", static_dst / "app.js"),
         (SRC / "app.css", static_dst / "app.css"),
         (SRC / "vendor" / "alpine.min.js", static_dst / "vendor" / "alpine.min.js"),
+        (SRC / "vendor" / "tabulator.min.js", static_dst / "vendor" / "tabulator.min.js"),
+        (SRC / "vendor" / "tabulator.min.css", static_dst / "vendor" / "tabulator.min.css"),
     ]
     index = build_index()
 

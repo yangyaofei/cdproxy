@@ -442,3 +442,32 @@ table.logt tr.sel td { background: var(--elev); }
   .topbar { padding-left: 12px; }
   .tabbar button { padding: 0 8px; font-size: 12px; }
 }
+
+/* ══════ Tabulator 主题适配（暗色对接现有 CSS 变量）══════ */
+.tabulator {
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--tx1, #dbe2ea);
+}
+.tabulator .tabulator-header {
+  background: var(--card, #14181F);
+  border-bottom: 1px solid var(--border-strong, #2F3742);
+  color: var(--tx3, #7C8AA0);
+  font-size: 11px;
+  letter-spacing: .06em;
+}
+.tabulator .tabulator-header .tabulator-col {
+  background: transparent;
+  border-right: 1px solid var(--inset, #0F1319);
+}
+.tabulator .tabulator-row {
+  background: transparent;
+  border-bottom: 1px solid var(--inset, #0F1319);
+  min-height: 34px;
+}
+.tabulator .tabulator-row:hover { background: var(--elev, #1B2027); }
+.tabulator .tabulator-row.tabulator-selected { background: var(--elev, #1B2027); box-shadow: inset 2px 0 0 var(--accent, #4f8cff); }
+.tabulator .tabulator-cell { border-right: none; padding: 6px 10px; }
+.tabulator .tabulator-collapse-handle { color: var(--tx3, #7C8AA0); }
+/* 折叠列的展开形态：标题/值 列表沿用 mono 微字号 */
+.tabulator .tabulator-responsive-collapse table { font-size: 11.5px; }

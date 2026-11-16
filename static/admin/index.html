@@ -4,8 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>cdproxy · Admin</title>
-  <link rel="stylesheet" href="/static/app.css?v=0.6.1">
-  <script src="/static/app.js?v=0.6.1" defer></script>
+  <link rel="stylesheet" href="/static/app.css?v=0.6.2">
+  <link rel="stylesheet" href="/static/vendor/tabulator.min.css?v=0.6.2">
+  <script src="/static/vendor/tabulator.min.js?v=0.6.2" defer></script>
+  <script src="/static/app.js?v=0.6.2" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
 </head>
 <body>
@@ -368,102 +370,71 @@
             <span class="grow"></span>
             <span class="hint">行内「N 个」展开实时 tab 列表 · 「日志」展开 CDP 交互流水</span>
           </div>
-          <div class="table-scroll" :class="!filteredSessions().length ? 'no-min' : ''">
-            <table class="list">
-              <thead><tr><th>名称</th><th>类型</th><th>状态</th><th>名下 tab</th><th>组名</th><th>入口</th><th>最近活动</th><th style="width:150px"></th></tr></thead>
-              <template x-for="s in filteredSessions()" :key="s.name">
-                <tbody>
-                  <tr class="main-row">
-                    <td class="mono" style="font-size:12.5px" x-text="s.name"></td>
-                    <td><span class="bdg" :class="s.type === 'extension' ? 'ext' : 'sa'" x-text="s.type || s.downstream"></span></td>
-                    <td><span class="bdg" :class="s.state === 'connected' ? 'ok' : (s.state === 'idle' ? 'idle' : 'warn')"
-                               x-text="s.state === 'connected' ? '已连接' : (s.state === 'idle' ? '空闲' : '已释放')"></span></td>
-                    <td><button class="sm linkish" @click="toggleTabs(s.name)" x-text="(tabsOpen === s.name ? '收起 ' : '') + (s.targets ?? 0) + ' 个'"></button></td>
-                    <td class="mono" style="font-size:11.5px" x-text="s.group_name || '—'"></td>
-                    <td class="mono" style="font-size:11px" x-text="s.via || '—'"></td>
-                    <td class="mono" style="font-size:11.5px" x-text="fmtLast(s.last_ts)"></td>
-                    <td>
-                      <button class="sm" @click="toggleLogs(s.name)" x-text="logOpen === s.name ? '收起' : '日志'"></button>
-                      <button class="danger sm" x-show="s.state !== 'released'" @click="release(s.name)" :disabled="busy">释放</button>
-                    </td>
+          <div id="sessions-grid" style="margin-top:10px"></div>
+          <div class="log-empty" x-show="!filteredSessions().length" style="margin-top:8px">（无匹配会话）</div>
+
+          <!-- 选中会话详情条（master-detail）：tabs / 日志 / 操作 -->
+          <template x-if="selSession()">
+            <div class="card" style="margin-top:12px;padding:12px 14px">
+              <div class="toolbar" style="margin:0 0 8px">
+                <b class="mono" style="font-size:13px" x-text="selSession().name"></b>
+                <span class="bdg" :class="selSession().type === 'extension' ? 'ext' : 'sa'" x-text="selSession().type"></span>
+                <span class="bdg" :class="selSession().state === 'connected' ? 'ok' : (selSession().state === 'idle' ? 'idle' : 'warn')"
+                       x-text="selSession().state === 'connected' ? '已连接' : (selSession().state === 'idle' ? '空闲' : '已释放')"></span>
+                <span class="grow"></span>
+                <button class="sm" @click="loadTabs(selSession().name)" :disabled="busy">刷新 tab</button>
+                <button class="sm" @click="toggleLogs(selSession().name)" x-text="logOpen === selSession().name ? '收起日志' : 'CDP 日志'"></button>
+                <button class="danger sm" x-show="selSession().state !== 'released'" @click="release(selSession().name)" :disabled="busy">释放</button>
+              </div>
+              <table class="logt" x-show="sessionTabs.length">
+                <thead><tr><th style="width:34%">标题</th><th>URL</th><th style="width:270px">targetId</th></tr></thead>
+                <template x-for="t in sessionTabs" :key="t.targetId">
+                  <tr>
+                    <td x-text="t.title || '（无标题）'"></td>
+                    <td class="wrap mono" style="font-size:11.5px" x-text="t.url"></td>
+                    <td class="mono" style="font-size:11px" x-text="t.targetId"></td>
                   </tr>
-                  <tr x-show="tabsOpen === s.name">
-                    <td colspan="8" class="subpane">
-                      <div class="inner">
-                        <div class="toolbar" style="margin:0 0 8px">
-                          <button class="sm" @click="loadTabs(s.name)" :disabled="busy">刷新</button>
-                          <span class="hint">实时查询该会话可见的 tab（展开即查）</span>
-                          <span class="err-text" x-show="tabsError" x-text="tabsError"></span>
-                        </div>
-                        <table class="logt" x-show="sessionTabs.length">
-                          <thead><tr><th style="width:34%">标题</th><th>URL</th><th style="width:270px">targetId</th></tr></thead>
-                          <template x-for="t in sessionTabs" :key="t.targetId">
-                            <tr>
-                              <td x-text="t.title || '（无标题）'"></td>
-                              <td class="wrap mono" style="font-size:11.5px" x-text="t.url"></td>
-                              <td class="mono" style="font-size:11px" x-text="t.targetId"></td>
-                            </tr>
-                          </template>
-                        </table>
-                        <div class="log-empty" x-show="!sessionTabs.length">（无可见 tab）</div>
-                      </div>
-                    </td>
-                  </tr>
-                  <tr x-show="logOpen === s.name">
-                    <td colspan="8" class="subpane">
-                      <div class="inner">
-                        <div class="toolbar" style="margin:0 0 8px">
-                          <button class="sm" @click="loadSessionLogs(s.name)" :disabled="busy">刷新</button>
-                          <span class="hint">CDP 交互流水 · 点击行查看参数与改写明细</span>
-                          <span class="grow"></span>
-                          <span class="badge up">上行</span> <span class="badge down">下行</span>
-                          <span class="badge rewritten">改写</span> <span class="badge focus-guard">焦点拦截</span>
-                          <span class="badge base-guard">基座保护</span>
-                        </div>
-                        <div class="log-scroll">
-                          <table class="logt" x-show="sessionLogs.length">
-                            <thead><tr><th style="width:80px">时间</th><th style="width:34px">向</th><th style="width:23%">Method</th><th style="width:140px">ID</th><th style="width:110px">Action</th><th>摘要</th></tr></thead>
-                            <template x-for="(e, i) in sessionLogs" :key="i">
-                              <tbody>
-                                <tr :class="selLog === i ? 'sel' : ''" @click="selLog = (selLog === i ? -1 : i)">
-                                  <td class="mono" x-text="fmtTime(e.ts)"></td>
-                                  <td><span class="badge" :class="e.dir" x-text="e.dir === 'up' ? '↑' : '↓'"></span></td>
-                                  <td class="mono" x-text="e.method || ''"></td>
-                                  <td class="mono">
-                                    <span class="idchip" x-show="e.up_id !== undefined" x-text="'up#' + e.up_id"></span>
-                                    <span class="arrow" x-show="e.up_id !== undefined && e.ds_id !== undefined">→</span>
-                                    <span class="idchip" x-show="e.ds_id !== undefined" x-text="'ds#' + e.ds_id"></span>
-                                  </td>
-                                  <td><span class="badge" :class="e.action" x-text="e.action || ''"></span>
-                                      <span class="badge err-b" x-show="e.status === 'error'" x-text="e.status"></span>
-                                      <span class="badge ok-b" x-show="e.status === 'ok'" x-text="e.status"></span></td>
-                                  <td class="wrap" x-html="logSummary(e)"></td>
-                                </tr>
-                                <tr x-show="selLog === i">
-                                  <td colspan="6" style="padding:0">
-                                    <div class="detail-pane">
-                                      <div class="kvline" x-show="e.delta"><b>Δ</b> <span x-text="e.delta"></span></div>
-                                      <div class="kvline" x-show="e.target_id"><b>target</b> <span x-text="e.target_id"></span></div>
-                                      <div x-show="e.in !== undefined"><h3>in · daemon 原始参数</h3><div class="jt" x-html="pretty(e.in) ? jsonTree(e.in, null, 0) : ''"></div></div>
-                                      <div x-show="e.out !== undefined"><h3>out · 代理改写后转发</h3><div class="jt" x-html="pretty(e.out) ? jsonTree(e.out, null, 0) : ''"></div></div>
-                                      <div x-show="e.result !== undefined"><h3 x-text="e.status === 'error' ? 'error' : 'result'"></h3><div class="jt" x-html="pretty(e.result) ? jsonTree(e.result, null, 0) : ''"></div></div>
-                                      <div x-show="e.detail"><h3>说明</h3><div class="kvline" x-text="e.detail"></div></div>
-                                    </div>
-                                  </td>
-                                </tr>
-                              </tbody>
-                            </template>
-                          </table>
-                          <div class="log-empty" x-show="!sessionLogs.length">（暂无记录）</div>
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </template>
-            </table>
-          </div>
-          <p class="hint" x-show="!filteredSessions().length" style="text-align:center;padding:20px">暂无会话</p>
+                </template>
+              </table>
+              <div class="log-empty" x-show="!sessionTabs.length">（无可见 tab · 点「刷新 tab」实时查询）</div>
+              <div x-show="logOpen === (selSession() || {}).name" style="margin-top:10px">
+                <table class="logt" x-show="sessionLogs.length">
+                  <thead><tr><th style="width:80px">时间</th><th style="width:34px">向</th><th style="width:23%">Method</th><th style="width:140px">ID</th><th style="width:110px">Action</th><th>摘要</th></tr></thead>
+                  <template x-for="(e, i) in sessionLogs" :key="i">
+                    <tbody>
+                      <tr :class="selLog === i ? 'sel' : ''" @click="selLog = (selLog === i ? -1 : i)">
+                        <td class="mono" x-text="fmtTime(e.ts)"></td>
+                        <td><span class="badge" :class="e.dir" x-text="e.dir === 'up' ? '↑' : '↓'"></span></td>
+                        <td class="mono" x-text="e.method || ''"></td>
+                        <td class="mono">
+                          <span class="idchip" x-show="e.up_id !== undefined" x-text="'up#' + e.up_id"></span>
+                          <span class="arrow" x-show="e.up_id !== undefined && e.ds_id !== undefined">→</span>
+                          <span class="idchip" x-show="e.ds_id !== undefined" x-text="'ds#' + e.ds_id"></span>
+                        </td>
+                        <td><span class="badge" :class="e.action" x-text="e.action || ''"></span>
+                            <span class="badge err-b" x-show="e.status === 'error'" x-text="e.status"></span>
+                            <span class="badge ok-b" x-show="e.status === 'ok'" x-text="e.status"></span></td>
+                        <td class="wrap" x-html="logSummary(e)"></td>
+                      </tr>
+                      <tr x-show="selLog === i">
+                        <td colspan="6" style="padding:0">
+                          <div class="detail-pane">
+                            <div class="kvline" x-show="e.delta"><b>Δ</b> <span x-text="e.delta"></span></div>
+                            <div class="kvline" x-show="e.target_id"><b>target</b> <span x-text="e.target_id"></span></div>
+                            <div x-show="e.in !== undefined"><h3>in · daemon 原始参数</h3><div class="jt" x-html="pretty(e.in) ? jsonTree(e.in, null, 0) : ''"></div></div>
+                            <div x-show="e.out !== undefined"><h3>out · 代理改写后转发</h3><div class="jt" x-html="pretty(e.out) ? jsonTree(e.out, null, 0) : ''"></div></div>
+                            <div x-show="e.result !== undefined"><h3 x-text="e.status === 'error' ? 'error' : 'result'"></h3><div class="jt" x-html="pretty(e.result) ? jsonTree(e.result, null, 0) : ''"></div></div>
+                            <div x-show="e.detail"><h3>说明</h3><div class="kvline" x-text="e.detail"></div></div>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </template>
+                </table>
+                <div class="log-empty" x-show="!sessionLogs.length">（暂无记录）</div>
+              </div>
+            </div>
+          </template>
         </section>
 
         <!-- ══════ 规则页 ══════ -->

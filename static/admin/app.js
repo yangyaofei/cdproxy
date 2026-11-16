@@ -95,6 +95,8 @@ function admin() {
     configContent: null,
     // 会话搜索
     sessionQuery: "",
+    selSessionName: "",   // master-detail 选中会话
+    sessGrid: null,       // Tabulator 实例（会话表）
     // 规则预设高亮
     presetActive: "",
     // agent-browser 二进制选择
@@ -180,6 +182,7 @@ function admin() {
     go(tab) {
       this.tab = tab;
       if (tab === "sources") this.loadSources();
+      if (tab === "sessions") this.ensureGrid();
       if (tab === "settings") { this.loadConfigs(); this.loadLayout(); this.loadAbChoice(); }
     },
 
@@ -319,6 +322,78 @@ function admin() {
         (s.group_name || "").toLowerCase().includes(q) ||
         (s.via || "").toLowerCase().includes(q) ||
         (s.type || "").toLowerCase().includes(q));
+    },
+
+    /* ── 会话表（Tabulator）：列宽弹性 + 窄窗自动折叠次要列 ── */
+    selSession() {
+      return this.viewSessions.find(s => s.name === this.selSessionName) || null;
+    },
+
+    ensureGrid() {
+      if (this.sessGrid) return;
+      if (typeof Tabulator === "undefined") return; // Tabulator 未加载（admin 网页降级）
+      this.sessGrid = new Tabulator("#sessions-grid", {
+        data: this.filteredSessions(),
+        layout: "fitColumns",
+        resizableColumns: true,
+        responsiveLayout: "collapse",
+        height: "auto",
+        selectable: false,
+        rowFormatter: () => {},
+        columns: [
+          { title: "名称", field: "name", headerSort: false, formatter: "plaintext",
+            formatterParams: {}, cssClass: "mono",
+            widthGrow: 2, minWidth: 120 },
+          { title: "类型", field: "type", headerSort: false, width: 90, minWidth: 70,
+            formatter: (cell) => {
+              const t = cell.getValue() || "";
+              return `<span class="bdg ${t === "extension" ? "ext" : "sa"}">${t}</span>`;
+            } },
+          { title: "状态", field: "state", headerSort: false, width: 84, minWidth: 70,
+            formatter: (cell) => {
+              const v = cell.getValue() || "";
+              const cls = v === "connected" ? "ok" : (v === "idle" ? "idle" : "warn");
+              const zh = v === "connected" ? "已连接" : (v === "idle" ? "空闲" : "已释放");
+              return `<span class="bdg ${cls}">${zh}</span>`;
+            } },
+          { title: "tab", field: "targets", headerSort: false, width: 64, minWidth: 48,
+            formatter: (cell) => `<span class="bdg plain">${cell.getValue() ?? 0}</span>` },
+          { title: "组名", field: "group_name", headerSort: false, cssClass: "mono sg-col",
+            widthGrow: 1, minWidth: 110, formatter: (cell) => cell.getValue() || "—" },
+          { title: "入口", field: "via", headerSort: false, cssClass: "mono sg-col",
+            widthGrow: 1, minWidth: 100, formatter: (cell) => cell.getValue() || "—" },
+          { title: "最近活动", field: "last_ts", headerSort: false, width: 92, minWidth: 80,
+            cssClass: "mono sg-col", formatter: (cell) => this.fmtLast(cell.getValue()) },
+        ],
+      });
+      this.sessGrid.on("rowClick", (e, row) => {
+        const name = row.getData().name;
+        this.selSessionName = (this.selSessionName === name ? "" : name);
+        if (this.selSessionName) {
+          this.loadTabs(name);
+        } else {
+          this.sessionTabs = [];
+          if (this.logOpen) { this.logOpen = ""; this.sessionLogs = []; this.selLog = -1; }
+        }
+      });
+      // 数据变化（事件直达/轮询刷新后）同步进表格
+      this.$watch("viewSessions", () => this.gridSync());
+      this.$watch("sessionQuery", () => this.gridSync());
+    },
+
+    gridSync() {
+      if (!this.sessGrid) return this.ensureGrid();
+      const cur = this.selSessionName;
+      this.sessGrid.replaceData(this.filteredSessions());
+      // 选中行高亮 + 选中会话消失时清详情
+      if (cur && !this.viewSessions.some(s => s.name === cur)) {
+        this.selSessionName = ""; this.sessionTabs = [];
+        if (this.logOpen) { this.logOpen = ""; this.sessionLogs = []; this.selLog = -1; }
+      } else if (cur && this.sessGrid.getRows) {
+        this.sessGrid.getRows().forEach(r => r.deselect && r.deselect());
+        const row = this.sessGrid.getRow(cur);
+        if (row && row.select) row.select();
+      }
     },
 
     /* ── 会话 tabs：展开即查（数据面实时，不缓存）── */

@@ -58,7 +58,7 @@ func showUI() {
 	uiShown = true
 	w := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "admin",
-		Title:            "Agent Browser Proxy",
+		Title:            "cdproxy",
 		Width:            1080,
 		Height:           760,
 		MinWidth:         720,
@@ -148,7 +148,7 @@ func buildTray() *application.SystemTray {
 			label = "引擎：已停止"
 		}
 		statusItem.SetLabel(label)
-		tray.SetTooltip("Agent Browser Proxy — " + label)
+		tray.SetTooltip("cdproxy — " + label)
 		// 引擎启停对 UI 是最重的状态变化。运行→随行完整状态；停止→专用
 		// 离线信号（复用 engine.emitState/emitOffline，保持单一出口）
 		if running {
@@ -180,7 +180,7 @@ func main() {
 	engine = NewEngineService("", nil)
 
 	app = application.New(application.Options{
-		Name:        "Agent Browser Proxy",
+		Name:        "cdproxy",
 		Description: "Chrome CDP 隔离代理（多会话 WS 路由）— 桌面宿主",
 		Services: []application.Service{
 			application.NewService(engine),
@@ -205,8 +205,10 @@ func main() {
 			},
 		},
 		Mac: application.MacOptions{
-			ActivationPolicy: application.ActivationPolicyAccessory,
-			// 菜单栏 App：关全部窗口不退出（托盘常驻）
+			// 常规桌面应用形态：Dock 图标 + 系统菜单栏（cdproxy/文件/编辑/
+			// 显示/窗口/帮助——Wails DefaultApplicationMenu）+ 启动即主窗口；
+			// 托盘图标保留作状态快捷入口。关全部窗口不退出（服务常驻）。
+			ActivationPolicy: application.ActivationPolicyRegular,
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
 		Windows: application.WindowsOptions{
@@ -229,15 +231,9 @@ func main() {
 
 	buildTray()
 
-	// UI 自检模式（测试通道）：ABP_UI_DUMP 设置时启动即开窗并自 dump——
-	// 不依赖二次实例时序（SingleInstance 注册与第二实例启动有竞态，
-	// 实测会各自成完整 App 抢端口，dump 反而不触发）。
-	if os.Getenv("ABP_UI_DUMP") != "" {
-		go func() {
-			time.Sleep(3 * time.Second)
-			showUI()
-		}()
-	}
+	// 常规应用形态：启动即显示主窗口（ABP_UI_DUMP 测试通道的自 dump 在
+	// showUI 新建窗口路径里触发，不依赖二次实例时序）。
+	showUI()
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)

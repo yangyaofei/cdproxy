@@ -230,7 +230,7 @@ def t6_window_dom():
         check("DOM 非空且含关键结构", len(dom) > 5000 and "abp" in dom.lower(),
               f"{len(dom)} bytes")
         # 动态渲染产物：空态文案由 Alpine 渲染（app.js 执行证据），非静态壳
-        for marker in ["暂无会话", "CDP 交互流水"]:
+        for marker in ["无匹配会话", "CDP 交互流水"]:
             check(f"DOM 含动态内容「{marker}」（Alpine 已渲染）", marker in dom)
         for marker in ["会话", "设置"]:
             check(f"DOM 含界面文案「{marker}」", marker in dom)
