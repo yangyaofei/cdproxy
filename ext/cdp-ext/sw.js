@@ -388,6 +388,12 @@ function scheduleReconcile(delayMs = 300) {
         const groupId = await groupFor(sessionName);
         if (groupId === undefined) continue;
         const tabs = await chrome.tabs.query({ groupId });
+        // 组员身份回填：tab 静止（无 onUpdated）时这是 entry.groupId 的唯一
+        // 更新来源（adopt 拖入/SW 重启恢复后尤其如此）
+        for (const t of tabs) {
+          const e = targetByTab.get(t.id);
+          if (e) e.groupId = groupId;
+        }
         const entries = tabs
           .map((t) => targetByTab.get(t.id))
           .filter(Boolean);
@@ -452,6 +458,11 @@ async function sendGstate() {
       const name = parseSessionName(g.title);
       if (name === null) continue;
       const tabs = await chrome.tabs.query({ groupId: g.id });
+      // 组员身份回填（同 scheduleReconcile：gstate 是重启/回连后的权威全量）
+      for (const t of tabs) {
+        const e = targetByTab.get(t.id);
+        if (e) e.groupId = g.id;
+      }
       const entries = tabs.map((t) => targetByTab.get(t.id)).filter(Boolean);
       if (!bySession.has(name)) bySession.set(name, { targetIds: [], infos: [] });
       const agg = bySession.get(name);
@@ -599,11 +610,47 @@ async function onRootCommand(id, method, params) {
         targetId = (targetByTab.get(tab.id) || {}).targetId;
       }
       if (!targetId) return respondErr(id, "cdp-ext: 新 tab 的 targetId 解析超时");
+      // targetCreated 单出口：归组完成后在应答之后发出。应答先到 → proxy 记
+      // 归属 → 事件到达时 OwnerOf 命中，路由给会话（顺序反了会以无主身份
+      // 被丢弃——创建与登记在组模型下由这一个出口原子完成）。
       if (sessionName) {
         await addToGroup(sessionName, tab.id);
+        const entry = targetByTab.get(tab.id);
+        if (entry && tab.groupId !== undefined) entry.groupId = tab.groupId;
         respond(id, { targetId, abGroup: GROUP_PREFIX + sessionName });
+        send({
+          method: "Target.targetCreated",
+          params: {
+            targetInfo: {
+              targetId,
+              type: "page",
+              title: tab.title || "",
+              url: tab.url || params.url || "about:blank",
+              attached: false,
+              browserContextId: "cdp-ext-default",
+              tabId: tab.id,
+            },
+          },
+        });
       } else {
         respond(id, { targetId });
+        send({
+          method: "Target.targetCreated",
+          params: {
+            targetInfo: {
+              targetId,
+              type: "page",
+              title: tab.title || "",
+              url: tab.url || params.url || "about:blank",
+              attached: false,
+              browserContextId: "cdp-ext-default",
+              tabId: tab.id,
+              ...(tab.openerTabId !== undefined && targetByTab.has(tab.openerTabId)
+                ? { openerId: targetByTab.get(tab.openerTabId).targetId }
+                : {}),
+            },
+          },
+        });
       }
       if (rootAutoAttach) await attachTarget(targetId);
       return;
@@ -954,29 +1001,26 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 });
 
 // ── chrome.tabs 事件 → Target 生命周期事件 ──────────────────────────
+// 事件准入（组=唯一真相）：只有会话组成员（含墓碑组）的生命周期进入事件流。
+// 物理宇宙里其余 tab（用户手动开/页面弹窗）与系统无关——不是"被过滤掉"，
+// 而是本就不在系统定义的宇宙里。创建单出口：我们自己 createTarget 的 tab
+// 在归组完成后由命令处理直接发 targetCreated（天然原子，无双报竞态）。
+
+// sessionGroupIds 当前全部会话组（含墓碑）的 groupId 集合。
+function sessionGroupIds() {
+  return new Set(sessionGroups.values());
+}
 
 chrome.tabs.onCreated.addListener((tab) => {
+  // 新 tab 不发 targetCreated：createTarget 路径自己发（归组后），
+  // 其余来源（用户手动/页面 window.open）= 组外 = 无主不可见（设计语义）。
+  // 只建立映射供后续 onUpdated/命令使用。
+  if (tab.groupId !== undefined && tab.groupId !== -1) {
+    // 极罕见：创建即带组（组内新标签按钮）。记下，事件由 onUpdated 通道覆盖。
+  }
   refreshTargets().then(() => {
     const entry = targetByTab.get(tab.id);
-    if (!entry) return; // 映射未就绪：下次 onUpdated 补 targetInfoChanged
-    const opener = tab.openerTabId;
-    send({
-      method: "Target.targetCreated",
-      params: {
-        targetInfo: {
-          targetId: entry.targetId,
-          type: "page",
-          title: tab.title || "",
-          url: tab.url || "about:blank",
-          attached: false,
-          tabId: tab.id,
-          ...(opener && targetByTab.has(opener)
-            ? { openerId: targetByTab.get(opener).targetId }
-            : {}),
-        },
-      },
-    });
-    if (rootAutoAttach) attachTarget(entry.targetId).catch(() => {});
+    if (entry && tab.groupId !== undefined) entry.groupId = tab.groupId;
   });
 });
 
@@ -986,6 +1030,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!entry) return;
   if (changeInfo.url) entry.url = changeInfo.url;
   if (changeInfo.title) entry.title = changeInfo.title;
+  // 组员身份缓存：tab.groupId 是最新事实（-1=无组）
+  if (tab && tab.groupId !== undefined) entry.groupId = tab.groupId;
+  // 准入：非会话组成员的 tab 不进入事件流
+  if (!entry.groupId || !sessionGroupIds().has(entry.groupId)) return;
   send({
     method: "Target.targetInfoChanged",
     params: {
@@ -1007,6 +1055,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (!entry) return;
   targetByTab.delete(tabId);
   tabByTarget.delete(entry.targetId);
+  // 准入：组员的关闭才进入事件流（entry.groupId 是最后已知身份，不查实时——
+  // 关闭瞬间 Chrome 可能已把 tab 移出组，实时查询会误判成组外）。组外的
+  // 用户 tab 关闭与系统无关。
+  const wasMember = entry.groupId && sessionGroupIds().has(entry.groupId);
+  if (!wasMember) return;
   dropTarget(entry.targetId).then(() => {
     send({ method: "Target.targetDestroyed", params: { targetId: entry.targetId } });
   });

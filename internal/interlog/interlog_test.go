@@ -26,11 +26,11 @@ func TestRingCapAndOrder(t *testing.T) {
 	}
 }
 
-func TestUnownedKeyKept(t *testing.T) {
+func TestEmptySessionDropped(t *testing.T) {
 	l := New("")
-	l.Append(Entry{Session: UnownedKey, Dir: "down", Kind: "event", Action: "unowned"})
-	if got := l.Sessions(); len(got) != 1 || got[0] != UnownedKey {
-		t.Fatalf("unowned 应保留: %v", got)
+	l.Append(Entry{Session: "x", Dir: "down", Kind: "event"})
+	if got := l.Sessions(); len(got) != 1 || got[0] != "x" {
+		t.Fatalf("常规会话应保留: %v", got)
 	}
 	l.Append(Entry{Session: "", Dir: "down", Kind: "event"})
 	if got := l.Sessions(); len(got) != 1 {

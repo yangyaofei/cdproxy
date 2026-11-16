@@ -1581,14 +1581,12 @@ func (p *Proxy) onDsEvent(msg map[string]any, kind string) {
 			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: owner.Name,
 				Method: method, Action: "routed", TargetID: tid, In: interlog.Safe(ti)})
 			p.sendTo(owner, msg)
-		} else if method == "Target.targetCreated" {
-			// 非自有 target 创建（用户手动开 tab / 页面 window.open / 浏览器内部
-			// 行为）只记录，不采取任何动作——proxy 是单向阀门：命令向可守卫改写，
-			// 事件向只过滤转发，**永不因浏览器侧事件对浏览器回写**。
-			// （历史上的 popup-close 策略违反此原则：extension 模式下用户手动开
-			// tab 也会带 openerTabId，被误判为"会话弹窗"秒关——生产事故实证。）
-			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: interlog.UnownedKey,
-				Method: method, Action: "unowned", TargetID: tid, In: interlog.Safe(ti)})
+		} else {
+			// 会话宇宙之外（用户日常 tab / keeper 自身 tab / autoAttach 子树
+			// 广播）。事件准入在源头完成：extension 源=扩展按组准入，本分支只
+			// 会收到 standalone 基座浏览器的组外 target 广播——与系统无关，
+			// 静默丢弃。这里不该存在"归档待查"类别：无主即不在宇宙内。
+			p.log.Debug("组外 target 事件丢弃", "method", method, "targetId", tid)
 		}
 	case "Target.targetDestroyed":
 		tid, _ := params["targetId"].(string)

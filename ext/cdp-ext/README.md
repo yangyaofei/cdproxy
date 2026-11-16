@@ -118,3 +118,9 @@ addToGroup 摘碑复活；SW 存活窗口外事件由 alarm 兜底对账自愈�
 
 **代码更新后**：已安装的未打包扩展不会自动重读磁盘——chrome://extensions
 里点该扩展的刷新按钮（测试环境用全新 profile + load_ext_via_cdp）。
+
+## 事件准入（组=唯一真相在推流上的延伸）
+
+- **只有会话组成员（含墓碑组）的生命周期进入事件流**：`tabs.onUpdated`/`onRemoved` 按 `entry.groupId ∈ 会话组集合` 准入；组员身份缓存在对账（sync/gstate）时回填。
+- **创建单出口**：`tabs.onCreated` 不再直发 `targetCreated`；`Target.createTarget` 在归组完成后、应答之后发（应答先到 → proxy 记归属 → 事件路由命中；顺序反了事件会被当组外丢弃）。用户手动开 tab / 页面 `window.open` = 组外 = 无主不可见（设计语义）。
+- **无主类别已删除**：proxy 收到无归属 target 事件即静默丢弃（standalone 基座的组外广播是常态：初始 tab/NTP 等），不再归档 `__unowned__`——"无主"意味着不在系统宇宙内，不是待查类别。

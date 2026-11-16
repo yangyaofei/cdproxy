@@ -8,8 +8,9 @@
 // 记录三类事件：
 //   - up/cmd：上游命令（含守卫决策：forwarded/rewritten/focus-guard/…）
 //   - down/resp：下游响应（ok/error + 结构化 result）
-//   - down/event：下游事件（路由结果；无主 target 创建归档到 "__unowned__"，
-//     即页面发起弹窗等浏览器内部行为的证据点）
+//   - down/event：下游事件（路由结果。事件准入在源头完成——extension 源
+//     由扩展按组准入，standalone 源组外 target 广播在 proxy 静默丢弃——
+//     "无主"不再是记录类别：不在会话宇宙内的事件不进入日志）
 //
 // 存储策略：
 //   - 内存：每 session 环形 500 条（Admin 展示）
@@ -37,9 +38,6 @@ const (
 	maxDepth    = 5   // 递归深度
 	maxJSON     = 2048
 
-	// UnownedKey 无主 target 事件的归档键（页面发起弹窗等浏览器内部行为，
-	// 不经过上游 WS，任何 session 都不拥有它们）。
-	UnownedKey = "__unowned__"
 )
 
 // Entry 单条交互记录（jsonl 一行一个，内存同构）。
@@ -53,7 +51,7 @@ type Entry struct {
 	DSID     any    `json:"ds_id,omitempty"`    // 下游重映射 id（Chrome 视角）
 	TargetID string `json:"target_id,omitempty"`
 	Status   string `json:"status,omitempty"`   // ok | error（resp）
-	Action   string `json:"action,omitempty"`   // forwarded | rewritten | focus-guard | base-guard | scope-guard | alloc | routed | unowned
+	Action   string `json:"action,omitempty"`   // forwarded | rewritten | focus-guard | base-guard | scope-guard | alloc | routed
 	In       any    `json:"in,omitempty"`       // 原始 params（改写前快照，深裁剪）
 	Out      any    `json:"out,omitempty"`      // 转发 params（仅改写时记录）
 	Delta    string `json:"delta,omitempty"`    // 变更/决策说明（一句话）
