@@ -315,8 +315,7 @@ table.list tr.main-row:hover td { background: var(--elev); }
 
 /* 规则/接入点编辑器 */
 .rules-editor { border: 1px solid var(--border); border-radius: 10px; overflow: auto; background: var(--card); max-height: 58vh; }
-.rules-editor > table, .rules-editor table { min-width: 900px; }
-.rules-editor table { width: 100%; border-collapse: collapse; min-width: 860px; }
+.rules-editor table { width: 100%; border-collapse: collapse; min-width: 760px; }
 .rules-editor th {
   text-align: left; padding: 9px 10px; background: var(--elev); color: var(--tx3);
   font-size: 11px; font-weight: 500; letter-spacing: .06em; border-bottom: 1px solid var(--border); white-space: nowrap;
@@ -485,77 +484,6 @@ table.logt tr.sel td { background: var(--elev); }
 .update-banner.err { border-color: var(--bad, #e0564f); }
 .update-banner .sm.ghost { border: none; background: transparent; color: var(--tx3); }
 
-/* ══════ 响应式治理批（容器查询：卡片为容器，窗口缩放/窄容器自适应）══════ */
-/* 根因治理：长路径/令牌撑破布局=flex/grid 子项 min-width:auto 拒绝收缩 +
-   table-layout:auto 由内容反推列宽。此处统一钉死收缩语义。 */
-.card { container-type: inline-size; }
-
-/* 键值表（源页检测行/设置表单）：fixed 布局 + 值列可收缩 */
-table.kv { table-layout: fixed; }
-table.kv td:last-child { overflow: hidden; }
-table.kv td:last-child .copyable { max-width: 100%; }
-
-/* 数据表：最小宽交给容器分档（不再恒定撑出滚动条） */
-.table-scroll table.list { min-width: 620px; }
-
-/* 输入框在 flex/grid 内允许收缩（默认 min-width:auto 是横向溢出元凶） */
-input, select, textarea { min-width: 0; }
-
-@container (max-width: 720px) {
-  /* 规则编辑器：取消硬最小宽，隐藏次要列（group/note），行高紧凑 */
-  .rules-editor table { min-width: 0; }
-  .rules-editor th:nth-child(5), .rules-editor td:nth-child(5),
-  .rules-editor th:nth-child(6), .rules-editor td:nth-child(6) { display: none; }
-  /* 键值表首列（标签）收窄，给值列让位 */
-  table.kv td:first-child { width: 104px; font-size: 11.5px; }
-  /* 工具栏换行友好 */
-  .toolbar { flex-wrap: wrap; row-gap: 6px; }
-}
-
-@container (min-width: 721px) {
-  .rules-editor table { min-width: 860px; }
-}
-
-
-/* ══════ 响应式修订（deepseek 窄窗评审 P0/P1）══════ */
-/* 规则表窄档：恢复横向滚动兜底（禁止 overflow 硬裁切），输入省略号 */
-@container (max-width: 720px) {
-  .rules-editor { overflow-x: auto; }
-  .rules-editor table { min-width: 640px; table-layout: fixed; }
-  .rules-editor input, .rules-editor select {
-    width: 100%; min-width: 0;
-    text-overflow: ellipsis; overflow: hidden; white-space: nowrap;
-  }
-  .rules-editor td.mono, .rules-editor td { overflow: hidden; }
-  /* table-layout:fixed 下列宽只认 thead th——窄档重排列宽（match/action 完整可见） */
-  .rules-editor thead th:nth-child(1) { width: 27%; }
-  .rules-editor thead th:nth-child(2) { width: 15%; }
-  .rules-editor thead th:nth-child(3) { width: 30%; }
-  .rules-editor thead th:nth-child(4) { width: 28%; }
-  .rules-editor thead th:nth-child(5), .rules-editor thead th:nth-child(6) { display: none; }
-  .rules-editor td:nth-child(5), .rules-editor td:nth-child(6) { display: none; }
-}
-/* Tabulator 暗色主题强化（表头/占位行曾露默认浅色） */
-.tabulator .tabulator-header .tabulator-col-content,
-.tabulator .tabulator-header .tabulator-col-title {
-  background: transparent; color: var(--tx3, #7C8AA0);
-}
-.tabulator .tabulator-header, .tabulator .tabulator-header .tabulator-col {
-  background: var(--card, #14181F) !important;
-  color: var(--tx3, #7C8AA0);
-}
-.tabulator .tabulator-placeholder,
-.tabulator .tabulator-placeholder .tabulator-placeholder-contents {
-  background: transparent !important;
-  color: var(--tx3, #7C8AA0); font-size: 12px;
-}
-.tabulator .tabulator-placeholder span { color: inherit; }
-/* 日志属性列：标识符不被劈开（anywhere 改 break-word 语义 + 列宽下限） */
-.logt td.wrap, .slogt td.wrap { overflow-wrap: break-word; word-break: normal; }
-/* 顶栏/工具栏右侧留白 */
-.toolbar > :last-child { margin-right: 2px; }
-
-
 /* ══════ 规则表列宽（th 内联已删，宽度集中于此；table-layout:fixed 认 thead）══════ */
 .rules-editor thead th:nth-child(1) { width: 22%; }  /* match */
 .rules-editor thead th:nth-child(2) { width: 11%; }  /* action */
@@ -591,3 +519,43 @@ table.slogt th:nth-child(4), table.slogt td:nth-child(4) { width: 36%; }
 /* ══════ 宽屏列宽收敛：规则/接入点/路由编辑表 max-width（百分比列在 1800px 内容区过度拉伸）══════ */
 .rules-editor table { max-width: 1100px; }
 @container (max-width: 720px) { .rules-editor table { max-width: none; } }
+
+/* ══════ 表格伸缩统一模型（最小值向上传播）══════
+   编辑表：width:100% + min-width 760（内容最小可读需求）。
+   容器（.rules-editor）overflow-x:auto——空间够满宽，不够滚动。
+   窄容器（≤720）折叠次要列（group/note，编辑值保留在 x-model 不丢失）。 */
+@container (max-width: 720px) {
+  .rules-editor thead th:nth-child(5), .rules-editor tbody td:nth-child(5),
+  .rules-editor thead th:nth-child(6), .rules-editor tbody td:nth-child(6) { display: none; }
+  .rules-editor table { min-width: 560px; }
+}
+.rules-editor input[type=text], .rules-editor select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+.rules-editor td { overflow: hidden; }
+
+/* 数据表同模型 */
+.table-scroll { overflow-x: auto; }
+.table-scroll table.list { width: 100%; min-width: 620px; }
+
+/* ══════ Tabulator 会话表样式精调 ══════ */
+.tabulator { font-size: 12px; }
+.tabulator .tabulator-row { min-height: 36px; border-bottom: 1px solid var(--border); background: transparent; }
+.tabulator .tabulator-row:hover { background: color-mix(in srgb, var(--inset) 55%, transparent); }
+.tabulator .tabulator-row .tabulator-cell { padding: 0 10px; line-height: 35px; }
+.tabulator .tabulator-cell.mono, .tabulator .tabulator-cell.sg-col { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tabulator .tabulator-header .tabulator-col { border-right: 1px solid var(--border); }
+.tabulator .tabulator-header .tabulator-col:last-child { border-right: 0; }
+/* 折叠展开区（窄容器 collapse 的列收进行内） */
+.tabulator-responsive-collapse { border-top: 1px dashed var(--border); padding: 6px 10px; }
+.tabulator-responsive-collapse table td { padding: 2px 8px 2px 0; font-size: 11.5px; color: var(--tx3); }
+
+
+/* ══════ 折叠列+展开行（编辑表两态：宽=完整列 / 窄=次要列折叠进行下细节行）══════ */
+.fold-detail { display: none; }
+.fold-detail td { padding: 4px 8px 8px !important; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--inset) 40%, transparent); }
+.fold-grid { display: flex; gap: 16px; flex-wrap: wrap; }
+.fold-grid label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--tx3); flex: 1; min-width: 160px; }
+.fold-grid input { flex: 1; }
+@container (max-width: 720px) {
+  .rules-editor .fold-col { display: none !important; }
+  .rules-editor .fold-detail { display: table-row; }
+}

@@ -392,26 +392,38 @@ function admin() {
         return;
       }
       if (this._gridRO) this._gridRO.disconnect();
-      // Tabulator 建表后不随容器伸缩（fitColumns 只在内部数据变化时重算）：
-      // 用 ResizeObserver 在容器（窗口缩放/侧栏收起）变化时 redraw 重排
-      this._gridRO = new ResizeObserver(() => {
+      // 容器驱动重排 + 窄容器折叠次要列（隐藏列的字段在行点击详情条里完整可见）
+      // 阈值：列最小宽之和决定——入口(84) + 最近活动(80) 依次让位
+      this._applyGridCols = (w) => {
+        const g = this.sessGrid; if (!g) return;
+        const want = [
+          { col: "last_ts", need: 940 },   // 最近活动：容器 <940 隐藏
+          { col: "via", need: 820 },       // 入口：<820 隐藏
+          { col: "group_name", need: 640 },// 组名：<640 隐藏（extension 会话看详情条）
+        ];
+        for (const { col, need } of want) {
+          const visible = w >= need;
+          try { visible ? g.showColumn(col) : g.hideColumn(col); } catch (e) {}
+        }
+        g.redraw(true);
+      };
+      this._gridRO = new ResizeObserver((ents) => {
         if (this.sessGrid && this._gridRO._pause) return;
-        this.sessGrid && this.sessGrid.redraw && this.sessGrid.redraw(true);
+        if (this.sessGrid && this._applyGridCols) this._applyGridCols(ents[0].contentRect.width);
+        else this.sessGrid && this.sessGrid.redraw && this.sessGrid.redraw(true);
       });
       this._gridRO.observe(holder);
       this.sessGrid = new Tabulator("#sessions-grid", {
         data: this.filteredSessions(),
-        renderVertical: "basic",
         layout: "fitColumns",
         resizableColumns: true,
-        responsiveLayout: "collapse",
         height: "auto",
         selectable: false,
         rowFormatter: () => {},
         columns: [
           { title: "名称", field: "name", headerSort: false, formatter: "plaintext",
             formatterParams: {}, cssClass: "mono",
-            widthGrow: 2, minWidth: 120 },
+            widthGrow: 3, minWidth: 160, maxWidth: 420 },
           { title: "类型", field: "type", headerSort: false, width: 90, minWidth: 70,
             formatter: (cell) => {
               const t = cell.getValue() || "";
@@ -427,13 +439,14 @@ function admin() {
           { title: "tab", field: "targets", headerSort: false, width: 64, minWidth: 48,
             formatter: (cell) => `<span class="bdg plain">${cell.getValue() ?? 0}</span>` },
           { title: "组名", field: "group_name", headerSort: false, cssClass: "mono sg-col",
-            widthGrow: 1, minWidth: 110, formatter: (cell) => cell.getValue() || "—" },
+            widthGrow: 1, minWidth: 110, maxWidth: 300, formatter: (cell) => cell.getValue() || "—" },
           { title: "入口", field: "via", headerSort: false, cssClass: "mono sg-col",
-            widthGrow: 1, minWidth: 100, formatter: (cell) => cell.getValue() || "—" },
+            width: 96, minWidth: 84, formatter: (cell) => cell.getValue() || "—" },
           { title: "最近活动", field: "last_ts", headerSort: false, width: 92, minWidth: 80,
             cssClass: "mono sg-col", formatter: (cell) => this.fmtLast(cell.getValue()) },
         ],
       });
+      this._applyGridCols && setTimeout(() => this._applyGridCols(holder.clientWidth), 50);
       this.sessGrid.on("rowClick", (e, row) => {
         const name = row.getData().name;
         this.selSessionName = (this.selSessionName === name ? "" : name);

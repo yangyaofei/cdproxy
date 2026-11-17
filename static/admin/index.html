@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>cdproxy · Admin</title>
-  <link rel="stylesheet" href="/static/vendor/tabulator.min.css?v=0.7.4">
-  <link rel="stylesheet" href="/static/app.css?v=0.7.4">
-  <script src="/static/vendor/tabulator.min.js?v=0.7.4" defer></script>
-  <script src="/static/app.js?v=0.7.4" defer></script>
+  <link rel="stylesheet" href="/static/vendor/tabulator.min.css?v=0.8.0">
+  <link rel="stylesheet" href="/static/app.css?v=0.8.0">
+  <script src="/static/vendor/tabulator.min.js?v=0.8.0" defer></script>
+  <script src="/static/app.js?v=0.8.0" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
 </head>
 <body>
@@ -277,7 +277,7 @@
                             <option value="extension">extension</option>
                           </select>
                         </td>
-                        <td class="mono"><input x-model="ep.session" :placeholder="ep.path || '默认=path'"></td>
+                        <td class="mono fold-col"><input x-model="ep.session" :placeholder="ep.path || '默认=path'"></td>
                         <td class="mono">
                           <div class="secret" style="flex-wrap:nowrap">
                             <span class="val" style="min-width:0;flex:1" :class="ep._show ? '' : 'masked'"
@@ -288,6 +288,9 @@
                           </div>
                         </td>
                         <td><button class="danger sm" @click="epForm.splice(i, 1)">✕</button></td>
+                      <tr class="fold-detail"><td colspan="5">
+                        <div class="fold-grid"><label>会话名（空=path） <input x-model="ep.session" :placeholder="ep.path || '默认=path'" class="mono"></label></div>
+                      </td></tr>
                       </tr>
                     </template>
                   </table>
@@ -479,9 +482,17 @@
                     </td>
                     <td class="mono"><input :value="setJsonOf(i)" @change="onSetInput(i, $event.target.value)" placeholder="{}" class="mono"></td>
                     <td class="mono"><input :value="(r.remove || []).join(',')" @change="r.remove = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)" placeholder="点路径，如 bounds.focused" class="mono"></td>
-                    <td><input x-model="r.group" placeholder="focus/base"></td>
-                    <td><input x-model="r.note"></td>
+                    <td class="fold-col"><input x-model="r.group" placeholder="focus/base"></td>
+                    <td class="fold-col"><input x-model="r.note"></td>
                     <td><button class="danger sm" @click="delRule(i)" :disabled="busy">✕</button></td>
+                  </tr>
+                  <tr class="fold-detail">
+                    <td colspan="7">
+                      <div class="fold-grid">
+                        <label>group <input x-model="r.group" placeholder="focus/base"></label>
+                        <label>备注 <input x-model="r.note"></label>
+                      </div>
+                    </td>
                   </tr>
                 </template>
               </table>
