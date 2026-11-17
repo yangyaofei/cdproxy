@@ -124,7 +124,7 @@ function admin() {
       // 初始 tab 即会话页时也要建表（go() 之外的路径）。
       // 须等 Alpine 渲染完 + 容器可测量（display:none 下建表会使 Tabulator
       // renderer 拿不到尺寸 → verticalFillMode 空指针），故推迟到下一帧。
-      requestAnimationFrame(() => setTimeout(() => this.ensureGrid(), 60));
+      setTimeout(() => this.ensureGrid(), 80);
       const saved = localStorage.getItem("abp_theme") || "dark";
       document.documentElement.dataset.theme = saved;
       await this.refresh();
@@ -391,6 +391,14 @@ function admin() {
         if (this._gridTries < 30) setTimeout(() => this.ensureGrid(), 100);
         return;
       }
+      if (this._gridRO) this._gridRO.disconnect();
+      // Tabulator 建表后不随容器伸缩（fitColumns 只在内部数据变化时重算）：
+      // 用 ResizeObserver 在容器（窗口缩放/侧栏收起）变化时 redraw 重排
+      this._gridRO = new ResizeObserver(() => {
+        if (this.sessGrid && this._gridRO._pause) return;
+        this.sessGrid && this.sessGrid.redraw && this.sessGrid.redraw(true);
+      });
+      this._gridRO.observe(holder);
       this.sessGrid = new Tabulator("#sessions-grid", {
         data: this.filteredSessions(),
         renderVertical: "basic",
@@ -451,6 +459,7 @@ function admin() {
         return;
       }
       this.sessGrid.replaceData(this.filteredSessions());
+      if (this.sessGrid.redraw) this.sessGrid.redraw(true);
       // 选中行高亮 + 选中会话消失时清详情
       if (cur && !this.viewSessions.some(s => s.name === cur)) {
         this.selSessionName = ""; this.sessionTabs = [];

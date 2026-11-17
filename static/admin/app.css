@@ -586,3 +586,8 @@ table.slogt th:nth-child(4), table.slogt td:nth-child(4) { width: 36%; }
   table.slogt th:nth-child(3), table.slogt td:nth-child(3) { width: 40%; }
   table.slogt th:nth-child(4), table.slogt td:nth-child(4) { width: 32%; }
 }
+
+
+/* ══════ 宽屏列宽收敛：规则/接入点/路由编辑表 max-width（百分比列在 1800px 内容区过度拉伸）══════ */
+.rules-editor table { max-width: 1100px; }
+@container (max-width: 720px) { .rules-editor table { max-width: none; } }
