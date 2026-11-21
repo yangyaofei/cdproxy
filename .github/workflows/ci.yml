@@ -18,13 +18,13 @@ jobs:
   core:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
 
@@ -49,8 +49,9 @@ jobs:
           [ "$fail" -eq 0 ] && echo "通过：没有被误跟踪的凭据/临时文件"
           exit $fail
 
+      # Linux runner 无 gtk4/webkitgtk 头文件；-tags purego + CGO_ENABLED=0 纯 Go 编译 CLI（仅需 generate bindings）
       - name: Install wails3 CLI (pinned)
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
+        run: CGO_ENABLED=0 go install -tags purego github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
 
       - name: JS syntax, Wails bindings, admin sync & frontend build
         run: |
@@ -77,13 +78,13 @@ jobs:
   desktop-macos:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
 
