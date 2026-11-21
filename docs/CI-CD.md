@@ -46,7 +46,7 @@ wails3 tool sign --input bin/cdproxy-desktop.app --certificate ../certs/cdproxy-
 codesign --verify --deep --strict bin/cdproxy-desktop.app
 mkdir -p ../dist
 ditto -c -k --keepParent bin/cdproxy-desktop.app ../dist/cdproxy-desktop_0.9.0_darwin_arm64.zip
-wails3 updater manifest -version 0.9.0 -key ../certs/updater.key -url-prefix "https://github.com/yangyaofei/cdproxy/releases/download/v0.9.0" ../dist/
+wails3 updater manifest -version 0.9.0 -key ../certs/updater.key -output ../dist/manifest.json -url-prefix "https://github.com/yangyaofei/cdproxy/releases/download/v0.9.0" ../dist/
 wails3 updater verify -manifest ../dist/manifest.json -publickey build/updater.key.pub
 ```
 

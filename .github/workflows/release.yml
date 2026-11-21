@@ -41,10 +41,10 @@ jobs:
           go test -count=1 ./cmd/... ./internal/...
 
       - name: 发布（GoReleaser 全平台 CLI）
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
-          version: latest
+          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -127,6 +127,7 @@ jobs:
           fi
           echo "${{ secrets.UPDATER_SIGNING_KEY }}" | base64 -d > ../certs/updater.key
           wails3 updater manifest -version "${VERSION#v}" -key ../certs/updater.key \
+            -output ../dist/manifest.json \
             -url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}" ../dist/
 
       - name: Guard — verify manifest as the client would
@@ -147,6 +148,7 @@ jobs:
     if: always() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch')
     env:
       VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      PYTHONUTF8: "1"
     defaults:
       run:
         shell: pwsh

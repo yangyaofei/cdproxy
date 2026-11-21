@@ -92,6 +92,11 @@ def build_index() -> str:
 
 
 def main() -> int:
+    # Windows 默认控制台编码常为 cp1252，输出中文/箭头前统一切换 UTF-8 防 UnicodeEncodeError
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     check = "--check" in sys.argv
     static_dst = DST / "public" / "static"
     (static_dst / "vendor").mkdir(parents=True, exist_ok=True)
