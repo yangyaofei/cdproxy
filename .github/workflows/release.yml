@@ -1,19 +1,31 @@
-# 发布管线：push tag v* → 质量门禁 → GoReleaser 多平台产物
-#
-# 产物落 GitHub Release 页（本仓库为 PRIVATE，凭登录下载）。
+# 发布管线：push tag v*（或手动 workflow_dispatch 指定 tag）
+#   1. release（ubuntu-latest）：CLI 质量门禁 + GoReleaser 全平台 CLI（darwin/linux/windows × amd64/arm64）
+#   2. desktop（macos-15）：Wails macOS .app（内嵌 agent-browser）+ p12 签名 + Ed25519 manifest.json
+#   3. desktop-windows（windows-latest）：Wails Windows cdproxy-desktop.exe + zip + SHA256SUMS
 name: Release
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (例如 v0.9.0；手动运行需该 tag 已存在或仅用于补传桌面资产)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,12 +35,12 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: 质量门禁
+      - name: 质量门禁（CLI 与核心包）
         run: |
-          go vet ./...
-          go test ./...
+          go vet ./cmd/... ./internal/...
+          go test -count=1 ./cmd/... ./internal/...
 
-      - name: 发布
+      - name: 发布（GoReleaser 全平台 CLI）
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -37,13 +49,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # 桌面 App（Wails v3）：同一 tag 附加 .app 产物 + 更新清单。
-  # 依赖 release job（goreleaser 建 Release），本 job 附加资产。
+  # macOS 桌面 App（Wails v3）：同一 tag 附加 .app 签名产物 + Ed25519 更新清单
   desktop:
-    runs-on: macos-14
-    needs: release
+    runs-on: macos-15
+    needs: [release]
+    if: always() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch')
     env:
-      VERSION: ${{ github.ref_name }}
+      VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     defaults:
       run:
         working-directory: desktop
@@ -67,13 +79,27 @@ jobs:
 
       - name: Restore updater public key (from Secret; never in repo)
         run: |
+          if [ -z "${{ secrets.UPDATER_PUBLIC_KEY }}" ]; then
+            echo "::error::缺少 UPDATER_PUBLIC_KEY Secret"
+            exit 1
+          fi
+          mkdir -p ../certs
           echo "${{ secrets.UPDATER_PUBLIC_KEY }}" | base64 -d > ../certs/updater.key.pub
 
       - name: Build + embed agent-browser (version injected)
-        run: wails3 task package:embedded VERSION="${VERSION#v}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p frontend/dist
+          wails3 task package:embedded VERSION="${VERSION#v}"
 
       - name: Restore signing cert (AES p12, shared with denpa-jack)
         run: |
+          if [ -z "${{ secrets.CDPROXY_CERT_P12_BASE64 }}" ] || [ -z "${{ secrets.CDPROXY_CERT_PASSWORD }}" ]; then
+            echo "::error::缺少 CDPROXY_CERT_P12_BASE64 / CDPROXY_CERT_PASSWORD Secret"
+            exit 1
+          fi
+          mkdir -p ../certs
           echo "${{ secrets.CDPROXY_CERT_P12_BASE64 }}" | base64 -d > ../certs/ci.p12
 
       - name: Codesign with p12 (after embed — covers bundled binary)
@@ -82,8 +108,11 @@ jobs:
       - name: Guard — signature authority must be stable
         run: |
           codesign --verify --deep --strict "bin/cdproxy-desktop.app"
-          codesign -dvv "bin/cdproxy-desktop.app" 2>&1 | grep -q "Authority=Denpa Jack Dev" || {
-            echo "::error::签名身份不是 Denpa Jack Dev（TCC/更新连续性破坏），拒绝发布"; exit 1; }
+          DV="$(codesign -dvv "bin/cdproxy-desktop.app" 2>&1 || true)"
+          case "$DV" in
+            *"Authority=Denpa Jack Dev"*) echo "签名身份 ✓ Denpa Jack Dev" ;;
+            *) echo "::error::签名身份不是 Denpa Jack Dev（TCC/更新连续性破坏），拒绝发布"; printf '%s\n' "$DV" | head -6; exit 1 ;;
+          esac
 
       - name: Package update artifact (zip of signed .app)
         run: |
@@ -92,17 +121,82 @@ jobs:
 
       - name: Generate signed update manifest (key shared with denpa-jack)
         run: |
+          if [ -z "${{ secrets.UPDATER_SIGNING_KEY }}" ]; then
+            echo "::error::缺少 UPDATER_SIGNING_KEY Secret"
+            exit 1
+          fi
           echo "${{ secrets.UPDATER_SIGNING_KEY }}" | base64 -d > ../certs/updater.key
           wails3 updater manifest -version "${VERSION#v}" -key ../certs/updater.key \
-            -url-prefix "https://github.com/yangyaofei/agent-browser-proxy/releases/download/${VERSION}" ../dist/
+            -url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}" ../dist/
 
       - name: Guard — verify manifest as the client would
         run: wails3 updater verify -manifest ../dist/manifest.json -publickey build/updater.key.pub
 
       - name: Checksums
-        run: cd ../dist && shasum -a 256 *.zip > SHA256SUMS
+        run: cd ../dist && shasum -a 256 *.zip > SHA256SUMS_darwin.txt
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$VERSION" ../dist/cdproxy-desktop_*_darwin_arm64.zip ../dist/manifest.json ../dist/SHA256SUMS --clobber
+        run: gh release upload "$VERSION" ../dist/cdproxy-desktop_*_darwin_arm64.zip ../dist/manifest.json ../dist/SHA256SUMS_darwin.txt --clobber
+
+  # Windows 桌面 App（Wails v3）：构建 cdproxy-desktop.exe 并打包 zip 上传同一 Release
+  desktop-windows:
+    runs-on: windows-latest
+    needs: [release]
+    if: always() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch')
+    env:
+      VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install wails3 CLI (pinned)
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
+
+      - name: Install frontend deps
+        working-directory: desktop/frontend
+        run: npm ci
+
+      - name: Restore updater public key (from Secret; never in repo)
+        run: |
+          New-Item -ItemType Directory -Force -Path ../certs, frontend/dist | Out-Null
+          if ("${{ secrets.UPDATER_PUBLIC_KEY }}" -ne "") {
+            [IO.File]::WriteAllBytes("build/updater.key.pub", [Convert]::FromBase64String("${{ secrets.UPDATER_PUBLIC_KEY }}"))
+          } else {
+            Set-Content -Path "build/updater.key.pub" -Value "-----BEGIN PLACEHOLDER PUBLIC KEY-----`nwindows build placeholder`n-----END PLACEHOLDER PUBLIC KEY-----"
+          }
+
+      - name: Build Windows desktop binary (version injected)
+        run: |
+          $v = "${{ env.VERSION }}".TrimStart('v')
+          wails3 task windows:build VERSION="$v" ARCH=amd64
+
+      - name: Package & checksum
+        run: |
+          $v = "${{ env.VERSION }}".TrimStart('v')
+          New-Item -ItemType Directory -Force -Path ../dist | Out-Null
+          $zip = "../dist/cdproxy-desktop_${v}_windows_amd64.zip"
+          Compress-Archive -Path "bin/cdproxy-desktop.exe" -DestinationPath $zip -Force
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  cdproxy-desktop_${v}_windows_amd64.zip" | Out-File -FilePath "../dist/SHA256SUMS_windows.txt" -Encoding ascii
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$env:VERSION" ../dist/cdproxy-desktop_*_windows_amd64.zip ../dist/SHA256SUMS_windows.txt --clobber

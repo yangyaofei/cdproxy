@@ -1,31 +1,54 @@
-// cdp-ext service worker — 反向 CDP 桥核心。
+// cdp-ext service worker — 反向 CDP 桥核心（Chrome MV3）。
 //
-// 职责：把本扩展伪装成一个「浏览器级 CDP 端点」，通过反向 WebSocket 提供给
-// agent-browser-proxy（--downstream extension 模式）作为下游：
+// 职责：装在用户日常 Chrome 中，通过反向 WebSocket 连向 cdproxy（/ext?token=…），
+// 用 chrome.debugger + chrome.tabs + chrome.tabGroups 把宿主浏览器仿真为浏览器级
+// CDP 端点（flatten-only，无需 --remote-debugging-port）：
 //
-//   proxy(9235 /ext) ◄── 反向拨出（本 SW 发起）──  本 SW ── chrome.debugger ──► 各 tab
+//   cdproxy(9225 /ext) ◄── 反向拨出（本 SW 发起）── 本 SW ── chrome.debugger ──► 各 tab
 //
-// 协议形态（与真 Chrome 浏览器级 WS 端点一致，flatten-only）：
-//   收：{id, method, params[, sessionId]}  命令（sessionId=页面会话命令）
+// 协议帧：
+//   收：{id, method, params[, sessionId]}  命令（含 sessionId=页面会话命令）
+//       {"abCtl":"reload"}                 控制面下发的热重载指令（chrome.runtime.reload）
 //   发：{id, result|error}                 响应
 //       {method, params[, sessionId]}      事件（Target 生命周期 / 页面会话事件）
+//       {"abCtl":"hello","version":...}    握手版本上报
+//       {"abCtl":"restore"}                SW 重启后原位恢复，通知 proxy 跳过清归属
+//       {"abCtl":"gstate"|"sync",...}      标签组真相快照/增量投影
 //       {"hb":1}                           心跳（20s，兼作 MV3 SW 保活）
 //
-// 浏览器级命令的仿真来源：
-//   Target.getTargets / targetCreated…  ← chrome.debugger.getTargets + chrome.tabs 事件
-//   Target.createTarget / closeTarget   ← chrome.tabs.create / remove
-//   Target.attachToTarget (flatten)     ← chrome.debugger.attach（每 tab 一条）
-//   页面会话命令                         ← chrome.debugger.sendCommand 透传
-//   子会话（OOPIF/worker）               ← Chrome 125+ flat session 原生透传
+// 仿真的浏览器级命令：
+//   Target.getTargets / getTargetInfo  ← chrome.debugger.getTargets（无参返回浏览器自身）
+//   Target.createTarget / closeTarget / activateTarget ← chrome.tabs.*
+//   Target.attachToTarget(flatten) / detachFromTarget / setAutoAttach / attachToBrowserTarget
+//                                      ← 虚拟会话多路复用（1 物理 attach 叠 N 虚拟会话）
+//   Target.getBrowserContexts          ← 恒空（单默认 context：cdp-ext-default）
+//   Browser.getVersion / setDownloadBehavior ← 合成 Chrome/cdp-ext-bridge / 假成功
+//   Browser.close                      ← 拒绝（宿主是用户浏览器，proxy 侧另有基座保护）
+//   页面会话命令 & OOPIF/worker 子会话   ← chrome.debugger.sendCommand 全透传
 //
-// 已知边界（与调研结论一致）：
-//   - 一个 tab 同时只能挂一个 debugger（用户开着 DevTools 的 tab 会 attach 失败）
-//   - Browser.* 域只仿真 getVersion；其余按错误应答（proxy 侧另有基座保护规则）
-//   - attach 后 tab 顶部出现「扩展程序已开始调试此浏览器」横幅，detach 即消失
+// Playwright connectOverCDP 关键契约（改动须过 ext_smoke_test + ext_playwright_e2e）：
+//   1) 响应必回带 sessionId；targetInfo 必带 browserContextId；detachedFromTarget 必带 targetId
+//   2) attachedToTarget 先于 setAutoAttach / createTarget 响应送达
+//   3) 会话内 attach 事件须嵌套在父 sessionId 下，禁止广播（防 Duplicate target）
+//   4) createTarget 毫秒级应答（防 alloc 预开归属输给紧随其后的 getTargets）
 //
-// 生命周期：WS 断开→退避重连（alarms 兜底唤醒）；SW 重启→状态重建，
-// 曾 attach 的 tab 先全部 detach（proxy 在重连时已清归属并合成销毁事件，
-// 会话经 provider 重新分配，遗留 attach 只会白白挂横幅）。
+// 会话韧性与软休眠（改动须过 ext_restart_test）：
+//   - 虚拟会话表变更即写透 chrome.storage.session（禁止防抖写——SW 挂起会冻住计时器丢写入）；
+//     SW 重启由 loadPersistedState 原位恢复并回发 {"abCtl":"restore"}；0.5min alarm + 工具栏
+//     点按（chrome.action.onClicked）兜底唤醒
+//   - 用户点调试横幅「取消」或 DevTools 接管 → 软休眠（摘物理 attach，保留会话表且静默不发事件）；
+//     下一条会话命令懒重挂；若休眠期 tab 已关则诚实报错未知 sessionId
+//
+// 标签组投影与事件准入（组 = 唯一真相，改动须过 ext_group_test + ext_cold_test + ext_event_gate_test）：
+//   - 会话 tab 自动入组 `ab: <会话名>`（入组按会话名经 groupChain 串行防并发双组）；
+//     拖入=归属、拖出=收回、跨组拖动=领地转移；组内 tab 允许真关
+//   - release 策略由 options 页 releasePolicy 控制：close（全关删组）/ mark（墓碑 `· released`
+//     灰组，同名会话回来摘碑认领）/ keep（原样保留）；冷启动凭 gstate 全量重建无孤儿
+//   - 事件准入：仅会话组成员进入事件流；创建单出口在 createTarget 归组且应答之后，
+//     tabs.onCreated 不直发 targetCreated（用户手动开 tab = 组外不可见）
+//
+// 已知边界：一 tab 一 debugger（开 DevTools 时 attach 报错）；软休眠/SW 重启不保留 OOPIF/worker
+// 子会话；heap/CPU profiler 等浏览器级域不可用；下载落盘按宿主默认行为。
 
 const DEFAULT_RELAY = "ws://127.0.0.1:9235/ext";
 const DEFAULT_TOKEN = "dev";
@@ -262,6 +285,7 @@ function connect() {
     sock.onopen = async () => {
       backoffMs = 500;
       console.info("[cdp-ext] 已连上 proxy:", url);
+      send({ abCtl: "hello", version: chrome.runtime.getManifest().version });
       const restored = await loadPersistedState();
       await refreshTargets();
       if (restored) {
@@ -440,6 +464,11 @@ async function onControl(msg) {
         }
         // keep：组与 tab 原样保留
       }
+      break;
+    }
+    case "reload": {
+      console.info("[cdp-ext] 收到 proxy 重载指令");
+      setTimeout(() => chrome.runtime.reload(), 60);
       break;
     }
   }

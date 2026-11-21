@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 )
 
@@ -14,19 +16,36 @@ import (
 //
 // 链序（先中先用）：
 //  1. explicit——settings.agent_browser_binary 显式外部覆盖
-//  2. bundled——.app Contents/Resources/agent-browser/（env 覆盖供开发
-//     模式直指 desktop/build staging）
+//  2. bundled——.app Contents/Resources/agent-browser/ 或同级目录（env 覆盖
+//     供开发模式直指 desktop/build staging）
 //  3. PATH——exec.LookPath 兜底（无 bundle 的 CLI 部署形态）
 //
 // 架构约束：bundled 版永不离开 bundle——不存在也不允许「安装到 PATH」。
 
+func agentBrowserExeName() string {
+	if runtime.GOOS == "windows" {
+		return "agent-browser.exe"
+	}
+	return "agent-browser"
+}
+
+func isExecutable(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil || fi.IsDir() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		ext := strings.ToLower(filepath.Ext(path))
+		return ext == ".exe" || ext == ".cmd" || ext == ".bat" || ext == ".com"
+	}
+	return fi.Mode()&0o111 != 0
+}
+
 // ResolveAgentBrowser 按唯一解析链定位 agent-browser，返回可执行文件
 // 绝对路径与来源标签（setting|bundled|path|none）。
 func ResolveAgentBrowser(explicit string) (string, string) {
-	if p := explicit; p != "" {
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
-			return p, "setting"
-		}
+	if p := explicit; p != "" && isExecutable(p) {
+		return p, "setting"
 	}
 	if p := BundledAgentBrowser(); p != "" {
 		return p, "bundled"
@@ -38,12 +57,13 @@ func ResolveAgentBrowser(explicit string) (string, string) {
 }
 
 // BundledAgentBrowser 探测内嵌 agent-browser：env 覆盖优先（开发模式
-// 直指 staging），否则按当前可执行文件位置找 .app Resources。
-// CLI 部署（无 Resources）返回空。
+// 直指 staging），否则按当前可执行文件位置找 bundle 目录。
+// CLI 部署（无内嵌目录）返回空。
 func BundledAgentBrowser() string {
+	bin := agentBrowserExeName()
 	if v := os.Getenv("AB_AGENT_BROWSER_BUNDLED_DIR"); v != "" {
-		p := filepath.Join(v, "agent-browser")
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+		p := filepath.Join(v, bin)
+		if isExecutable(p) {
 			return p
 		}
 	}
@@ -51,11 +71,17 @@ func BundledAgentBrowser() string {
 	if err != nil {
 		return ""
 	}
+	exeDir := filepath.Dir(exe)
 	// 开发二进制 desktop/bin/ → staging ../build/agent-browser/；
-	// 打包 .app/Contents/MacOS/ → ../Resources/agent-browser/
-	for _, rel := range []string{"../build/agent-browser/agent-browser", "../Resources/agent-browser/agent-browser"} {
-		p := filepath.Join(filepath.Dir(exe), rel)
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+	// 打包 macOS .app/Contents/MacOS/ → ../Resources/agent-browser/；
+	// Windows/Linux 便携包同级目录 → agent-browser/
+	for _, rel := range []string{
+		filepath.Join("..", "build", "agent-browser", bin),
+		filepath.Join("..", "Resources", "agent-browser", bin),
+		filepath.Join("agent-browser", bin),
+	} {
+		p := filepath.Join(exeDir, rel)
+		if isExecutable(p) {
 			return p
 		}
 	}
@@ -70,16 +96,5 @@ func AgentBrowserVersion(bin string) string {
 	if err != nil {
 		return ""
 	}
-	return stringTrimSpace(string(out))
-}
-
-func stringTrimSpace(s string) string {
-	start, end := 0, len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
-		end--
-	}
-	return s[start:end]
+	return strings.TrimSpace(string(out))
 }

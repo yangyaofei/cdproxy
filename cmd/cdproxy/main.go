@@ -25,7 +25,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/yangyaofei/cdproxy/internal/core"
@@ -227,7 +226,7 @@ func runServe(args []string) int {
 		"ext_ws", fmt.Sprintf("ws://127.0.0.1:%d/ext", wsPort),
 		"token", s.Sources.ExtensionToken)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 	select {
 	case <-ctx.Done():
@@ -297,11 +296,11 @@ func runStop(args []string) int {
 		fmt.Fprintf(os.Stderr, "PID 文件损坏\n")
 		return 1
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		fmt.Fprintf(os.Stderr, "SIGTERM 失败: %v\n", err)
+	if err := terminatePID(pid); err != nil {
+		fmt.Fprintf(os.Stderr, "停止进程失败: %v\n", err)
 		return 1
 	}
-	fmt.Println("已发送 SIGTERM")
+	fmt.Println("已发送停止信号")
 	return 0
 }
 
@@ -459,7 +458,7 @@ func ensureServiceUp() error {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Stdin = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return err
 	}

@@ -21,16 +21,41 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "static" / "admin"
 DST = ROOT / "desktop" / "frontend"
 
-BOOTSTRAP = """  <!-- Wails 绑定引导：注入 window.__cdpWails，app.js 的 api() 优先走它 -->
+BOOTSTRAP = """  <!-- Wails 绑定引导：标记桌面端形态与 OS + 注入 window.__cdpWails，app.js 的 api() 优先走它 -->
   <script>
+    (function () {
+      const root = document.documentElement;
+      root.classList.add('is-desktop');
+      const ua = (navigator.platform || '') + ' ' + (navigator.userAgent || '');
+      if (/Win/i.test(ua)) root.classList.add('is-windows');
+      else if (/Mac/i.test(ua)) root.classList.add('is-darwin');
+      else root.classList.add('is-linux');
+    })();
     // 同步错误收集器（先于 defer 脚本装上，app.js/Alpine 的早期异常不丢）
     window.__abpErrors = [];
     window.addEventListener('error', e => window.__abpErrors.push(String(e.message || e.error)));
     window.addEventListener('unhandledrejection', e => window.__abpErrors.push('promise: ' + String(e.reason)));
   </script>
   <script type="module">
-    import { DoRequest, DumpDOM, CheckForUpdate, RestartForUpdate, Version } from "/bindings/github.com/yangyaofei/cdproxy/desktop/engineservice.js";
-    window.__cdpWails = { doRequest: DoRequest, dumpDOM: DumpDOM, checkForUpdate: CheckForUpdate, restartForUpdate: RestartForUpdate, appVersion: Version };
+    import { DoRequest, DumpDOM, CheckForUpdate, RestartForUpdate, UpdaterInfo, OpenPath, OpenURL, StartEngine, RestartEngine, SetAppearance, WindowMinimize, WindowToggleMaximize, WindowIsMaximized, WindowClose, Platform, Version } from "/bindings/github.com/yangyaofei/cdproxy/desktop/engineservice.js";
+    window.__cdpWails = {
+      doRequest: DoRequest,
+      dumpDOM: DumpDOM,
+      checkForUpdate: CheckForUpdate,
+      restartForUpdate: RestartForUpdate,
+      updaterInfo: UpdaterInfo,
+      openPath: OpenPath,
+      openURL: OpenURL,
+      startEngine: StartEngine,
+      restartEngine: RestartEngine,
+      setAppearance: SetAppearance,
+      windowMinimize: WindowMinimize,
+      windowToggleMaximize: WindowToggleMaximize,
+      windowIsMaximized: WindowIsMaximized,
+      windowClose: WindowClose,
+      platform: Platform,
+      appVersion: Version,
+    };
   </script>
   <!-- 事件系统：框架内置 runtime（/wails/runtime.js，运行时由 Wails 资产服务
        器提供）。放普通 script：vite 只处理 module script，此处动态 import 在

@@ -17,15 +17,30 @@ export AGENT_BROWSER_SOCKET_DIR="$DIR/var/ab-sock"
 mkdir -p "$AGENT_BROWSER_SOCKET_DIR"
 CFG="$DIR/var/full-config.json"
 BIN="$DIR/var/cdproxy"
-# 自含：Go 二进制缺失则构建；config 缺失则按 examples 样例生成（指向本仓库二进制）
+# 自含：Go 二进制缺失则构建；config 缺失则生成最小 plugin 配置（指向本仓库二进制）
 if [ ! -x "$BIN" ]; then
   echo "构建 Go 二进制…"
   (cd "$DIR" && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN" ./cmd/cdproxy) || exit 1
+  if [ "$(uname -s)" = "Darwin" ]; then
+    codesign --force --sign - "$BIN"
+  fi
 fi
 if [ ! -f "$CFG" ]; then
   mkdir -p "$DIR/var"
-  sed "s|/Users/yangyaofei/workspace/cdproxy/var/cdproxy|$BIN|" \
-    "$DIR/examples/agent-browser-config.json" > "$CFG"
+  cat > "$CFG" <<EOF
+{
+  "headed": true,
+  "idleTimeout": "15m",
+  "provider": "ab-proxy",
+  "plugins": [
+    {
+      "name": "ab-proxy",
+      "command": "$BIN",
+      "capabilities": ["browser.provider"]
+    }
+  ]
+}
+EOF
 fi
 OUT="$DIR/var/conc-results"
 ITER="${1:-20}"

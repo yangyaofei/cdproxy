@@ -15,13 +15,14 @@ desktop/frontend/node_modules/
 desktop/frontend/dist/
 desktop/frontend/bindings/
 # 由 scripts/sync_admin_frontend.py 从 static/admin 生成（单一源）
+desktop/frontend/public/static/
 desktop/frontend/src/admin/
 desktop/frontend/index.html
 # 内嵌 agent-browser staging（scripts/prepare_agent_browser.sh 生成）
 desktop/build/agent-browser/
-cdproxy
+/cdproxy
 tmp/
 1/
-# updater 签名私钥（PKCS#8；公钥 .pub 入库）与代码签名证书——绝不入库
+# updater 密钥（含公钥，本地放 certs/，CI 由 Secret 注入）与代码签名证书——绝不入库
 desktop/build/updater.key*
 certs/

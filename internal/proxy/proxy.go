@@ -1,29 +1,21 @@
-// Package proxy 是代理核心：上游 per-session WS 服务 + 下游浏览器级
-// WS 复用 + 消息路由。
+// Package proxy 是代理核心：上游 per-session WS 服务 + 双源下游复用 + 消息路由。
 //
-// 与 Python 参考实现 proxy.py 语义逐条对齐：
-//   - 隔离：getTargets 按归属过滤；attach/closeTarget 越权拒绝
-//   - 路由：响应回原 session；事件按下游 sessionId / tab 归属定向
-//   - 重映射：下游自增 id ↔ (session, 上游原始 id, tag)
-//   - 焦点：background 模式下 createTarget 强制后台、activate/bringToFront 假成功
-//   - 回收：断连宽限（容忍 daemon 重启）+ 分配未连兜底
-//   - 生命线：chrome 下游断开时什么都不做（不自愈）——基座生命周期归
-//     ab-keeper（agent-browser 原生 idle-timeout/close/restart），
-//     （重）连基座的唯一入口是 provider 分配路径与 Admin 重启
+// 协议语义与单向阀门原则：
+//   - 命令向（agent → 浏览器）：可守卫改写（getTargets 按归属过滤、attach/closeTarget 越权拒绝、
+//     rules.go 改写规则处理焦点与基座保护）；Browser.close 一律拦截为假成功
+//   - 事件向（浏览器 → agent）：只过滤定向转发、永不回写；无归属 target 事件静默丢弃
+//   - id 重映射：下游自增 id ↔ (session, 上游原始 id, tag)
+//   - 回收：上游断连宽限（默认 60s，容忍 daemon 重启）+ 分配后未连接兜底（默认 300s）
 //
-// 双下游并存（运行时可切，settings.downstream_mode 决定新会话默认绑定）：
-//   - chrome：dial keeper 管理的基座 Chrome 浏览器级 WS（保活/冷启动/重启）
-//   - extension：ext/cdp-ext 扩展反向拨入 GET /ext（常开注册，token 校验）
-//     ——扩展用 chrome.debugger + chrome.tabs 把用户自己的 Chrome 仿真成
-//     浏览器级 CDP 端点（flatten-only）。扩展下游无 keeper：不保活、不冷
-//     启动、不重启浏览器——宿主浏览器属于用户，生命周期一概不碰；断开
-//     就是等扩展自行重连（每次回连视为该下游更换：其上归属全清 + 合成
-//     销毁事件，另一形态的会话不受牵连）。
+// 双源常开并存（新会话按「显式 source > routing.rules 前缀 > routing.default_source」定格绑定，
+// 存量会话不受后续路由变更影响）：
+//   - standalone：按需 dial keeper 管理的基座 Chrome 浏览器级 WS；基座断开时不自愈，
+//     生命周期归 agent-browser 原生管理，重连唯一入口是会话分配与 /keeper/restart
+//   - extension：ext/cdp-ext 扩展反向拨入 GET /ext（常开注册，强随机 token 校验）；
+//     宿主浏览器生命周期一概不碰。归属表是 Chrome 标签组（ab: <会话名>）事实的投影——
+//     扩展回连上报全量 gstate 重建归属（冷启动无孤儿），增量组变更经 sync 投影
 //
-// 会话在分配时定格绑定一种形态（Session.Downstream），此后所有命令/事件
-// 按绑定路由；切换设置只影响之后的新分配，存量会话继续用原下游直到自然
-// 结束（平滑语义）。两链路的 targetId/sessionId 理论可撞车，路由处一律
-// 校验事件来源形态 == 归属会话的绑定形态。
+// 两链路的 targetId / sessionId 可能碰撞，事件路由一律校验「来源源 == 归属会话绑定源」。
 package proxy
 
 import (
@@ -63,6 +55,7 @@ const (
 type dsLink struct {
 	kind    string
 	ident   string
+	version string
 	conn    *websocket.Conn
 	writeMu sync.Mutex
 }
@@ -613,6 +606,7 @@ func (p *Proxy) Status() map[string]any {
 				"enabled":   cfg.Sources.ExtensionEnabled,
 				"connected": p.linkConnected(dsExtension),
 				"token":     cfg.Sources.ExtensionToken,
+				"version":   p.extVersion(),
 			},
 			// alloc_token 管理面可见（用户要在「源」页复制去配置 plugin）。
 			"alloc_token": cfg.Sources.AllocToken,
@@ -634,6 +628,24 @@ func (p *Proxy) actualWSPort() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.wsPort
+}
+
+func (p *Proxy) extVersion() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ext == nil {
+		return ""
+	}
+	return p.ext.version
+}
+
+// ReloadExtension 通知已连接的浏览器扩展重载自身（更新本地扩展文件后生效）。
+func (p *Proxy) ReloadExtension() error {
+	data, err := json.Marshal(map[string]any{"abCtl": "reload"})
+	if err != nil {
+		return err
+	}
+	return p.dsSend(dsExtension, data)
 }
 
 // ── 上游（session 连接）───────────────────────────────────────────
@@ -1253,6 +1265,14 @@ func (p *Proxy) sendExtControl(v map[string]any) {
 func (p *Proxy) onExtControl(msg map[string]any) {
 	ctl, _ := msg["abCtl"].(string)
 	switch ctl {
+	case "hello":
+		ver, _ := msg["version"].(string)
+		p.mu.Lock()
+		if p.ext != nil {
+			p.ext.version = strings.TrimSpace(ver)
+		}
+		p.mu.Unlock()
+		p.notifyState()
 	case "sync":
 		p.onExtSync(msg)
 	case "gstate":

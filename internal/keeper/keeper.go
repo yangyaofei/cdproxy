@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -43,11 +44,15 @@ func Defaults() Config {
 	if p, err := exec.LookPath("agent-browser"); err == nil {
 		agentBrowser = p
 	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = os.Getenv("HOME")
+	}
 	return Config{
 		AgentBrowser: agentBrowser,
 		Session:      "ab-keeper",
 		Headed:       true,
-		ProfileDir:   filepath.Join(os.Getenv("HOME"), "agent-browser", "profile"),
+		ProfileDir:   filepath.Join(home, "agent-browser", "profile"),
 	}
 }
 
@@ -100,11 +105,25 @@ func isolatedEnv(dataDir string) []string {
 	_ = os.MkdirAll(home, 0o755)
 	sockDir := filepath.Join(dataDir, "ab-sockets")
 	_ = os.MkdirAll(sockDir, 0o755)
-	return []string{
+	env := []string{
 		"HOME=" + home,
 		"PATH=" + os.Getenv("PATH"),
 		"AGENT_BROWSER_SOCKET_DIR=" + sockDir,
 	}
+	if runtime.GOOS == "windows" {
+		// Windows 上 os.UserHomeDir 与 Node/Chrome 依赖 USERPROFILE 与系统目录环境变量
+		env = append(env, "USERPROFILE="+home)
+		for _, k := range []string{
+			"SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT",
+			"APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
+			"ProgramData", "ProgramFiles", "ProgramFiles(x86)", "CommonProgramFiles",
+		} {
+			if v := os.Getenv(k); v != "" {
+				env = append(env, k+"="+v)
+			}
+		}
+	}
+	return env
 }
 
 // runKeeper 执行一条 agent-browser 会话命令（最小环境 + 超时），返回 stdout。

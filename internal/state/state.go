@@ -1,17 +1,18 @@
-// Package state 提供代理侧状态：会话、tab 归属、命令关联表。
+// Package state 提供代理侧纯内存状态：会话表、tab 归属投影、命令关联表与接入点映射。
 //
-// 所有权模型（与 Python 参考实现 state.py 语义逐条对齐）：
-//   - 每个消费 session 分配一个 token（上游 WS 连接凭证）
-//   - tab（CDP target）按创建者归属 session；getTargets 只见自己的
-//   - 下游 CDP sessionId（attach 产物）按归属 session 路由事件
-//   - 命令 id 重映射：下游自增 id ↔ (归属 session, 上游原始 id, 处理标签)
+// 红线：本包不做任何 IO，全部状态变更在 State.mu 下串行（对 WS 连接的写操作
+// 由调用方 proxy 用 Session.WriteMu 串行）。
 //
-// 全部方法在 State.mu 下串行（等价 Python 单事件循环的串行语义）；
-// 对连接的写操作由调用方（proxy）用 Session.WriteMu 串行。
+// 所有权模型：
+//   - 每个消费 session 分配独立 token（上游 WS 凭证）并定格绑定源（standalone / extension）
+//   - tab（targetId）按归属会话隔离，getTargets 只见本会话名下目标
+//   - 下游 CDP sessionId（attach 产物）按归属会话定向路由事件
+//   - 命令 id 双向重映射：下游自增 id ↔ (归属 session, 上游原始 id, 处理标签)
 package state
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -458,7 +459,7 @@ func (st *State) TakePending(dsID int64) (PendingEntry, bool) {
 	return entry, ok
 }
 
-// Snapshot 会话状态快照（status 端点用）。
+// Snapshot 会话状态快照（status 端点用，已连接优先、按名称排序，保证列表稳定不跳行）。
 func (st *State) Snapshot() []map[string]any {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -472,5 +473,15 @@ func (st *State) Snapshot() []map[string]any {
 			"via":        sess.Origin(),
 		})
 	}
+	sort.Slice(out, func(i, j int) bool {
+		ci, _ := out[i]["connected"].(bool)
+		cj, _ := out[j]["connected"].(bool)
+		if ci != cj {
+			return ci
+		}
+		ni, _ := out[i]["name"].(string)
+		nj, _ := out[j]["name"].(string)
+		return ni < nj
+	})
 	return out
 }

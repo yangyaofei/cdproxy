@@ -1,23 +1,32 @@
 name: CI
 
 # 持续集成：push master / PR / 手动。
-# denpa-jack 同款 tracked-file guard——密钥文件一旦被误跟踪立即红灯，
-# 不等发布才发现。
+# 两条并行作业：
+#   - core（ubuntu-latest）：密钥守卫 + 前端/扩展语法 + Wails 绑定生成 + 前端同步构建 + Go 核单测 + Windows 交叉构建校验
+#   - desktop-macos（macos-15）：Wails macOS CGO 桌面宿主绑定生成 + 编译验签前检查
 on:
   push:
     branches: [master]
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  ci:
-    runs-on: macos-14
+  core:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: Tracked-file guard
         run: |
@@ -40,7 +49,59 @@ jobs:
           [ "$fail" -eq 0 ] && echo "通过：没有被误跟踪的凭据/临时文件"
           exit $fail
 
-      - name: Vet + Test
+      - name: Install wails3 CLI (pinned)
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
+
+      - name: JS syntax, Wails bindings, admin sync & frontend build
         run: |
-          go vet ./cmd/... ./internal/... ./desktop
-          go test ./...
+          node --check static/admin/app.js
+          node --check ext/cdp-ext/sw.js
+          node --check ext/cdp-ext/options.js
+          mkdir -p desktop/frontend/dist
+          if [ ! -f desktop/build/updater.key.pub ]; then
+            printf -- "-----BEGIN PLACEHOLDER PUBLIC KEY-----\nci build placeholder\n-----END PLACEHOLDER PUBLIC KEY-----\n" > desktop/build/updater.key.pub
+          fi
+          (cd desktop && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 wails3 generate bindings -clean=true -time-type=Date)
+          python3 scripts/sync_admin_frontend.py
+          python3 scripts/sync_admin_frontend.py --check
+          (cd desktop/frontend && npm ci && npm run build)
+
+      - name: Go vet + unit tests + Windows desktop cross-check
+        run: |
+          go vet ./cmd/... ./internal/...
+          go test -count=1 ./cmd/... ./internal/...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/... ./internal/... ./desktop
+          mkdir -p desktop/bin
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags production -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui -X main.version=ci" -o desktop/bin/cdproxy-desktop.exe ./desktop
+
+  desktop-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install wails3 CLI (pinned)
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
+
+      - name: Generate bindings & build desktop frontend
+        run: |
+          mkdir -p desktop/frontend/dist
+          if [ ! -f desktop/build/updater.key.pub ]; then
+            printf -- "-----BEGIN PLACEHOLDER PUBLIC KEY-----\nci build placeholder\n-----END PLACEHOLDER PUBLIC KEY-----\n" > desktop/build/updater.key.pub
+          fi
+          (cd desktop && wails3 generate bindings -clean=true -time-type=Date)
+          python3 scripts/sync_admin_frontend.py
+          (cd desktop/frontend && npm ci && npm run build)
+
+      - name: Vet & compile macOS desktop host
+        run: |
+          go vet ./desktop
+          mkdir -p desktop/bin
+          CGO_ENABLED=1 go build -tags production -trimpath -buildvcs=false -ldflags="-w -s -X main.version=ci" -o desktop/bin/cdproxy-desktop ./desktop

@@ -1,8 +1,8 @@
 // cdproxy 桌面 App（Wails v3）。
 //
-// 形态：菜单栏常驻（ActivationPolicyAccessory，无 Dock 图标）+ 托盘菜单
-// （状态/打开管理界面/重启引擎/退出）+ 懒创建的管理窗口。引擎
-// （internal/core）编译进主进程随 App 启停；管理界面经 EngineService
+// 形态：常规桌面应用（ActivationPolicyRegular，Dock 图标 + 系统菜单栏 +
+// 常驻托盘菜单）+ 懒创建的管理窗口（macOS HiddenInset 透明标题栏）。
+// 引擎（internal/core）编译进主进程随 App 启停；管理界面经 EngineService
 // .DoRequest 进程内执行 control 路由——外部端口关闭（App 内嵌模式）时
 // 界面照常工作。
 package main
@@ -22,10 +22,9 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 	"github.com/wailsapp/wails/v3/pkg/updater"
 	"github.com/wailsapp/wails/v3/pkg/updater/providers/endpoint"
-	"github.com/wailsapp/wails/v3/pkg/events"
-	"github.com/wailsapp/wails/v3/pkg/icons"
 )
 
 // version 经 -ldflags -X main.version 注入（与 CLI 二进制同源）。
@@ -42,10 +41,17 @@ var updaterPubKey []byte
 //go:embed all:frontend/dist
 var assets embed.FS
 
+//go:embed tray_mac.png
+var trayMacPNG []byte
+
+//go:embed tray_win.png
+var trayWinPNG []byte
+
 var (
-	app     *application.App
-	engine  *EngineService
-	uiShown bool
+	app            *application.App
+	engine         *EngineService
+	uiShown        bool
+	updaterInitErr string
 )
 
 // showUI 懒创建/唤起管理窗口（关窗即隐，App 常驻）。
@@ -61,12 +67,20 @@ func showUI() {
 	w := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "admin",
 		Title:            "cdproxy",
-		Width:            1080,
-		Height:           760,
-		MinWidth:         720,
-		MinHeight:        480,
-		BackgroundColour: application.NewRGB(18, 18, 24),
+		Width:            1260,
+		Height:           820,
+		MinWidth:         780,
+		MinHeight:        560,
+		InitialPosition:  application.WindowCentered,
+		Frameless:        runtime.GOOS == "windows",
+		BackgroundColour: application.NewRGB(17, 17, 19),
 		URL:              "/",
+		Mac: application.MacWindow{
+			TitleBar: application.MacTitleBarHiddenInset,
+		},
+		Windows: application.WindowsWindow{
+			Theme: application.Dark,
+		},
 	})
 	w.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
 		// 关窗不退出 App（菜单栏常驻）；仅记隐藏态
@@ -137,9 +151,11 @@ func checkForUpdate() {
 func buildTray() *application.SystemTray {
 	tray := app.SystemTray.New()
 	if runtime.GOOS == "darwin" {
-		tray.SetTemplateIcon(icons.SystrayMacTemplate)
+		tray.SetTemplateIcon(trayMacPNG)
+	} else {
+		tray.SetIcon(trayWinPNG)
 	}
-	tray.SetTooltip("Agent Browser Proxy")
+	tray.SetTooltip("cdproxy")
 	menu := app.NewMenu()
 	menu.Add("打开管理界面").OnClick(func(*application.Context) { showUI() })
 	statusItem := menu.Add("引擎：启动中…")
@@ -167,6 +183,12 @@ func buildTray() *application.SystemTray {
 	})
 	menu.AddSeparator()
 	menu.Add("检查更新…").OnClick(func(*application.Context) { checkForUpdate() })
+	restartUpdateItem := menu.Add("重启并更新")
+	restartUpdateItem.SetHidden(true)
+	restartUpdateItem.OnClick(func(*application.Context) { engine.RestartForUpdate() })
+	app.Event.On(updater.EventUpdateReady, func(_ *application.CustomEvent) {
+		restartUpdateItem.SetHidden(false)
+	})
 	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(*application.Context) { app.Quit() })
 	tray.SetMenu(menu)
@@ -228,10 +250,20 @@ func main() {
 	// GitHub Releases 静态 manifest.json（Ed25519ph 签名，公钥编译期钉死）；
 	// 菜单栏形态不弹框架窗口（WindowNone），检查结果走托盘菜单+事件。
 	if err := initUpdater(); err != nil {
+		updaterInitErr = err.Error()
 		log.Printf("updater 初始化失败（更新功能停用）: %v", err)
 	}
 
 	buildTray()
+
+	if runtime.GOOS == "darwin" {
+		// 关窗后点击 Dock 图标重新唤起管理窗口（WindowClosing 销毁实例后兜底）。
+		app.Event.OnApplicationEvent(events.Mac.ApplicationShouldHandleReopen, func(e *application.ApplicationEvent) {
+			if !e.Context().HasVisibleWindows() {
+				showUI()
+			}
+		})
+	}
 
 	// 常规应用形态：启动即显示主窗口（ABP_UI_DUMP 测试通道的自 dump 在
 	// showUI 新建窗口路径里触发，不依赖二次实例时序）。

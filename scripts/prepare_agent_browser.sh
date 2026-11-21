@@ -53,8 +53,12 @@ if [[ ! -f "$ARCHIVE" ]]; then
 fi
 
 # 校验：release API 的 asset digest（sha256:…）。API 不可达但缓存存在时
-# 警告放行（缓存文件此前已验过）；首次下载必须验。
-EXPECT="$(curl -fsSL --retry 3 "$GITHUB_API/v$VERSION" | python3 -c "
+# 警告放行（缓存文件此前已验过）；首次下载必须验。CI 中传 GITHUB_TOKEN 防限流。
+API_HEADERS=(-H "Accept: application/vnd.github+json")
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  API_HEADERS+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+fi
+EXPECT="$(curl -fsSL --retry 3 "${API_HEADERS[@]}" "$GITHUB_API/v$VERSION" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 for a in d.get('assets',[]):

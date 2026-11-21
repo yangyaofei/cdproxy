@@ -1,18 +1,17 @@
 {
-  "name": "abp-desktop-frontend",
+  "name": "cdproxy-desktop-frontend",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "sync-admin": "python3 ../../scripts/sync_admin_frontend.py",
+    "sync-admin": "node -e \"const {execFileSync}=require('child_process');execFileSync(process.platform==='win32'?'python':'python3',['../../scripts/sync_admin_frontend.py'],{stdio:'inherit'})\"",
     "dev": "npm run sync-admin && vite",
     "build:dev": "npm run sync-admin && vite build --minify false --mode development",
     "build": "npm run sync-admin && vite build --mode production",
     "preview": "vite preview"
   },
   "dependencies": {
-    "@wailsio/runtime": "3.1.0",
-    "tabulator-tables": "^6.7.1"
+    "@wailsio/runtime": "3.1.0"
   },
   "devDependencies": {
     "typescript": "^4.9.3",

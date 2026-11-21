@@ -1,18 +1,32 @@
-// Package control 提供管理面 HTTP 服务与 Admin 静态页。
+// Package control 提供管理面 HTTP 服务、组件版本与升级接口及内嵌 Admin 静态页。
 //
-// 端点与 Python 参考实现 control.py 一致：
+// 约束：只做参数解析、鉴权校验与调用转发，不承载代理状态或浏览器进程逻辑；
+// 桌面端（desktop/EngineService.DoRequest）直接进程内复用同一 http.Handler，
+// 保证外部端口关闭时管理界面与 REST 行为逐字节一致。
 //
-//	GET  /health                   存活探针
-//	GET  /status                   运行状态（下游/会话/基座/设置）
-//	GET  /settings                 当前设置
-//	PUT  /settings                 合并式更新（422 校验失败）
-//	GET  /logs/tail                服务日志分页（n 默认 200 上限 1000，skip 向更早翻页）
-//	POST /sessions                 {"name": ...} 分配会话
-//	POST /sessions/{name}/release  释放会话
-//	POST /keeper/restart           重启基座 Chrome
-//	POST /shutdown                 优雅停机
-//	GET  /                         Admin 页（内嵌资产）
-//	GET  /static/...               静态资源（内嵌资产）
+// 端点清单：
+//
+//	GET  /health                          存活探针
+//	GET  /status                          运行状态（双源/会话/基座/接入点/设置/数据目录）
+//	GET  /settings                        当前运行时设置
+//	PUT  /settings                        合并式更新（端口互斥/下限钳制，422 校验失败；端口变更异步重绑）
+//	GET  /versions                        三组件版本自检（cdproxy / agent-browser / cdp-ext）
+//	GET  /sources/agent-browser/latest    查询上游 agent-browser 最新版
+//	POST /sources/agent-browser/upgrade   下载、SHA-256 校验、探活并切换 <dataDir>/bin 下新版执行器
+//	POST /sources/agent-browser/use-bundled 清空外部路径覆写，恢复包内/PATH 解析链
+//	POST /sources/extension/export        导出内嵌 cdp-ext 到 <dataDir>/ext/cdp-ext
+//	POST /sources/extension/reload        经现有 /ext WS 通道通知 Chrome 热重载扩展
+//	GET  /sources/extension/bundle.zip    打包下载当前内嵌 cdp-ext ZIP
+//	POST /sources/token/reset             重置 /ext 或 alloc 令牌（立即吊销旧令牌）
+//	POST /endpoints/{path}/reset-token    重置常驻接入点令牌
+//	GET  /logs/tail                       服务日志分页（n 默认 200 上限 1000，skip 向更早翻页）
+//	GET  /interlog/{session}              单会话 CDP 交互变换链日志
+//	POST /sessions                        {"name": ...} 分配会话（alloc_token 鉴权）
+//	POST /sessions/{name}/release         释放会话并回收名下 tab
+//	POST /keeper/restart                  重启基座 Chrome（无基座时复位扩展连接）
+//	POST /data-dir                        更新 ~/.cdproxy/pointer.json（重启生效）
+//	POST /shutdown                        优雅停机
+//	GET  / & /static/...                  内嵌 Admin 页面与静态资源（受 admin_web_enabled 控制）
 package control
 
 import (
@@ -143,6 +157,75 @@ func (c *Control) Handler() http.Handler {
 	// standalone 源的 agent-browser 安装检测（解析链：设置覆盖 → bundled → PATH）
 	mux.HandleFunc("GET /sources/agent-browser", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, c.agentBrowserInfo())
+	})
+
+	// 统一组件版本清单（cdproxy + agent-browser + cdp-ext）
+	mux.HandleFunc("GET /versions", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, c.versionsPayload())
+	})
+
+	// agent-browser 在线检查最新与升级（装入 <dataDir>/bin/ 并写入 settings.agent_browser_binary）
+	mux.HandleFunc("GET /sources/agent-browser/latest", func(w http.ResponseWriter, r *http.Request) {
+		res, err := c.fetchAgentBrowserLatest(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+	})
+	mux.HandleFunc("POST /sources/agent-browser/upgrade", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Version string `json:"version"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		res, err := c.upgradeAgentBrowser(r.Context(), body.Version)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+	})
+	mux.HandleFunc("POST /sources/agent-browser/use-bundled", func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := c.store.Update(map[string]any{"agent_browser_binary": ""}); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if c.onState != nil {
+			c.onState()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "reset", "agent_browser": c.agentBrowserInfo()})
+	})
+
+	// cdp-ext 扩展：导出更新到本地 <dataDir>/ext/cdp-ext、触发浏览器重载、或打包 zip 下载
+	mux.HandleFunc("POST /sources/extension/export", func(w http.ResponseWriter, _ *http.Request) {
+		res, err := c.exportBundledExtension()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+	})
+	mux.HandleFunc("POST /sources/extension/reload", func(w http.ResponseWriter, _ *http.Request) {
+		if err := c.proxy.ReloadExtension(); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "extension 当前未回连，请先在浏览器加载并启用 cdp-ext"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "reloading"})
+	})
+	mux.HandleFunc("GET /sources/extension/bundle.zip", func(w http.ResponseWriter, _ *http.Request) {
+		data, ver, err := buildExtensionZip()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		name := "cdproxy-cdp-ext.zip"
+		if ver != "" {
+			name = fmt.Sprintf("cdproxy-cdp-ext-v%s.zip", ver)
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
 	})
 
 	// 配置文件清单与内容（只读白名单：设置页「配置查看」用）

@@ -8,11 +8,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -75,15 +77,46 @@ func (s *EngineService) RestartForUpdate() {
 	}()
 }
 
-// CheckForUpdate 前端触发的手动检查（结果经 wails:updater:* 事件回 UI）。
-func (s *EngineService) CheckForUpdate() {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if _, err := application.Get().Updater.Check(ctx); err != nil {
-			s.log.Error("检查更新失败", "err", err)
-		}
-	}()
+// CheckForUpdate 前端触发的手动检查（未配置公钥时返回明确原因；成功结果经 wails:updater:* 事件回 UI）。
+func (s *EngineService) CheckForUpdate() error {
+	if updaterInitErr != "" {
+		return fmt.Errorf("当前构建未注入签名公钥（%s）", updaterInitErr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if _, err := application.Get().Updater.Check(ctx); err != nil {
+		s.log.Error("检查更新失败", "err", err)
+		return err
+	}
+	return nil
+}
+
+// UpdaterInfo 返回主程序版本与更新器初始化状态（供「版本与关于」展示）。
+func (s *EngineService) UpdaterInfo() map[string]any {
+	return map[string]any{
+		"version":     version,
+		"os":          runtime.GOOS,
+		"arch":        runtime.GOARCH,
+		"configured":  updaterInitErr == "",
+		"reason":      updaterInitErr,
+		"release_url": "https://github.com/yangyaofei/agent-browser-proxy/releases",
+	}
+}
+
+// OpenPath 在宿主系统文件管理器（Finder / 资源管理器）打开指定目录或文件。
+func (s *EngineService) OpenPath(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("路径不存在: %w", err)
+	}
+	return application.Get().Browser.OpenFile(path)
+}
+
+// OpenURL 在宿主系统默认浏览器打开指定外链。
+func (s *EngineService) OpenURL(rawURL string) error {
+	if rawURL == "" {
+		return nil
+	}
+	return application.Get().Browser.OpenURL(rawURL)
 }
 
 // newFileLogger 文件日志（打开失败回落 stderr）。
@@ -240,11 +273,69 @@ func (s *EngineService) DumpDOM(payload string) {
 	s.log.Info("UI 自检落盘", "dir", dir, "dom_bytes", len(v.DOM), "health", v.Health)
 }
 
-// StartEngine / StopEngine / RestartEngine 托盘与前端控制入口。func (s *EngineService) StartEngine() error { return s.startEngine() }
-func (s *EngineService) StopEngine() error  { s.stopEngine(); return nil }
+// StartEngine / StopEngine / RestartEngine 托盘与前端控制入口。
+func (s *EngineService) StartEngine() error   { return s.startEngine() }
+func (s *EngineService) StopEngine() error    { s.stopEngine(); return nil }
 func (s *EngineService) RestartEngine() error {
 	s.stopEngine()
 	return s.startEngine()
+}
+
+// SetAppearance 同步管理窗口底色以匹配前端主题（避免缩放或恢复窗口时底色闪烁）。
+func (s *EngineService) SetAppearance(theme string) {
+	a := application.Get()
+	if a == nil {
+		return
+	}
+	w, ok := a.Window.GetByName("admin")
+	if !ok || w == nil {
+		return
+	}
+	if theme == "light" {
+		w.SetBackgroundColour(application.NewRGB(245, 245, 247))
+	} else {
+		w.SetBackgroundColour(application.NewRGB(17, 17, 19))
+	}
+}
+
+// Platform 返回宿主机操作系统标识（darwin / windows / linux）。
+func (s *EngineService) Platform() string { return runtime.GOOS }
+
+// WindowMinimize / WindowToggleMaximize / WindowIsMaximized / WindowClose
+// 供 Windows 无边框标题栏窗口控制按钮调用（与 macOS 交通灯形成跨平台统一体验）。
+func (s *EngineService) WindowMinimize() {
+	if a := application.Get(); a != nil {
+		if w, ok := a.Window.GetByName("admin"); ok && w != nil {
+			w.Minimise()
+		}
+	}
+}
+
+func (s *EngineService) WindowToggleMaximize() bool {
+	if a := application.Get(); a != nil {
+		if w, ok := a.Window.GetByName("admin"); ok && w != nil {
+			w.ToggleMaximise()
+			return w.IsMaximised()
+		}
+	}
+	return false
+}
+
+func (s *EngineService) WindowIsMaximized() bool {
+	if a := application.Get(); a != nil {
+		if w, ok := a.Window.GetByName("admin"); ok && w != nil {
+			return w.IsMaximised()
+		}
+	}
+	return false
+}
+
+func (s *EngineService) WindowClose() {
+	if a := application.Get(); a != nil {
+		if w, ok := a.Window.GetByName("admin"); ok && w != nil {
+			w.Close()
+		}
+	}
 }
 
 // AgentBrowserInfo 内嵌 agent-browser 的解析结果（前端/托盘展示）。

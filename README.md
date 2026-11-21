@@ -1,7 +1,8 @@
-# agent-browser-proxy
+# cdproxy（agent-browser-proxy）
 
 agent-browser 共享 Chrome 的 CDP 转发代理：**一个进程**管全部——基座 Chrome 生命周期、
-CDP 协议转发（会话级 tab 归属隔离）、控制面；外面只留一个薄 plugin。
+CDP 协议转发（会话级 tab 归属隔离）、HTTP 控制面与管理界面；CLI 二进制原生内建
+stdio `plugin` 模式（无子命令 + stdin 为管道时自动进入），无需额外薄壳脚本。
 
 ## 架构
 
@@ -9,14 +10,14 @@ CDP 协议转发（会话级 tab 归属隔离）、控制面；外面只留一�
 agent-browser daemon（多个 session，每人独立 daemon）
       │  stdio JSON（agent-browser.plugin.v1）
       ▼
-plugin/ab-proxy-plugin（薄壳：launch/close → HTTP 控制面）
+cdproxy（隐式 plugin 模式：launch/close → HTTP 控制面；服务不在时自动拉起）
       │  POST /sessions {"name": <session>} → {"cdpUrl": ws://…}
       ▼
-agent-browser-proxy 服务
-  ├─ control（HTTP 127.0.0.1:9224）分配/释放/状态
+cdproxy 服务 / cdproxy-desktop 桌面 App
+  ├─ control（HTTP 127.0.0.1:9224）分配/释放/状态/组件版本与升级
   ├─ CdpProxy（WS 127.0.0.1:9225/cdp/<token>）
   │    ├─ 每个消费 session 一条上游连接
-  │    ├─ 下游单条浏览器级 WS 长连复用（断线自愈）
+  │    ├─ 双源并存：standalone（keeper 基座 Chrome）与 extension（cdp-ext 反向回连）
   │    └─ 改写规则：getTargets 按归属过滤 / createTarget 登记归属 /
   │        attach·closeTarget 越权拒绝 / 事件定向路由 / id 双向重映射
   └─ keeper（Chrome @127.0.0.1:9222，profile 带共享登录态）
@@ -28,95 +29,90 @@ agent-browser-proxy 服务
 ## 快速开始（Go 主实现）
 
 ```bash
-# 构建（单二进制，含内嵌 Admin 页）
-CGO_ENABLED=0 go build -ldflags="-s -w" -o var/agent-browser-proxy ./cmd/agent-browser-proxy
+# 构建（单二进制，含内嵌 Admin 页与 cdp-ext 扩展）
+CGO_ENABLED=0 go build -ldflags="-s -w" -o var/cdproxy ./cmd/cdproxy
+codesign --force --sign - var/cdproxy             # macOS 剥符号后须重签
 
-var/agent-browser-proxy serve                    # 前台运行（keeper/代理/管理面）
-var/agent-browser-proxy status                   # 状态 / 停止（stop）
-open http://127.0.0.1:9224/                      # Admin 页（状态/释放/设置/日志/停机）
+var/cdproxy serve                                 # 前台运行（keeper/代理/管理面）
+var/cdproxy status                                # 状态 / 停止（stop）
+open http://127.0.0.1:9224/                       # Admin 页（开启 admin_web_enabled 后可访问）
 
-# 交叉编译（示例：Linux amd64）
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o var/agent-browser-proxy-linux ./cmd/agent-browser-proxy
+# 交叉编译（示例：Linux amd64 / Windows amd64）
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o var/cdproxy-linux ./cmd/cdproxy
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o var/cdproxy.exe ./cmd/cdproxy
 
 # 质量门禁 + 测试
 go vet ./...
-go test ./...                                    # 单元测试
+go test -count=1 ./...                            # 单元测试
 uv run --project scripts python scripts/smoke_test.py  # 端到端（需真实 Chrome，语言无关）
-./scripts/concurrency_test.sh 20                  # 并发压测（自动构建二进制，四路并行零串扰）
+./scripts/concurrency_test.sh 20                  # 并发压测（四路并行零串扰）
 ```
 
 插件配置无需 `args` 字段——二进制在「无子命令 + stdin 为管道」时自动进入 plugin 模式
-（`{"command": "<二进制绝对路径>"}` 即可）。
+（`{"command": "<cdproxy 二进制绝对路径>"}` 即可）。
 
-数据目录默认 `~/.agent-browser/proxy/`（settings.json / service.log / pid），
+数据目录默认 `~/agent-browser/proxy/`（settings.json / service.log / pid / ext），
 `--data-dir` 可覆盖。
 
 ## 工程结构
 
 ```
 ├── AGENTS.md                 # AI 协作入口（架构/规范/工作流）
-├── go.mod / assets.go        # Go 模块 + 静态资产内嵌（package assets 在仓库根）
-├── cmd/agent-browser-proxy/  # CLI 入口（serve/status/stop/plugin + 隐式 plugin）
+├── go.mod / assets.go        # Go 模块 + 静态资产内嵌（static/ + ext/cdp-ext/）
+├── cmd/cdproxy/              # CLI 入口（serve/status/stop/plugin + 隐式 plugin）
 ├── internal/
 │   ├── core/                 # 引擎编排（CLI 与桌面 App 共用；端口重绑/开关）
-│   ├── keeper/               # Chrome 基座生命周期
+│   ├── keeper/               # Chrome 基座生命周期 + agent-browser 解析链
 │   ├── proxy/                # CDP 转发核心（归属/路由/重映射/焦点/回收）
 │   ├── state/                # 会话与关联表
-│   ├── control/              # 管理面 HTTP + 内嵌 Admin 页
+│   ├── control/              # 管理面 HTTP + 内嵌 Admin 页 + /versions 升级接口
+│   ├── interlog/             # per-session CDP 交互日志
+│   ├── datadir/              # 默认数据目录解析
 │   └── settings/             # 运行时设置
-├── desktop/                  # 桌面 App（Wails v3，菜单栏常驻 + 管理窗口）
-├── static/admin/             # Admin 页（Alpine 无构建 + vendored，go:embed 内嵌；App 前端同源生成）
-├── plugin/ab-proxy-plugin    # agent-browser 插件壳（兜底拉起服务；Go 二进制自带 plugin 模式）
-├── scripts/                  # smoke_test.py / sync_admin_frontend.py / concurrency_test.sh
-├── internal/*/​*_test.go      # Go 单元测试
-└── var/                      # 运行数据（gitignore；Go 版数据目录默认 ~/agent-browser/proxy）
+├── desktop/                  # 桌面 App（Wails v3，macOS / Windows 跨平台）
+├── static/admin/             # Admin 页唯一源（零构建 Alpine + vendored Tabulator）
+├── ext/cdp-ext/              # Chrome MV3 扩展（反向回连 /ext + 标签组投影）
+├── scripts/                  # 冒烟/E2E 测试、sync_admin_frontend.py、prepare_agent_browser.sh
+├── docs/CI-CD.md             # CI/CD、签名与发布链说明
+└── var/                      # 本地运行与测试临时目录（gitignore）
 ```
 
 ## 内嵌 agent-browser（架构约束）
 
 - **唯一解析链**：`settings.agent_browser_binary`（显式外部覆盖）> `.app/Contents/Resources/agent-browser/`（内嵌）> PATH（CLI 部署兜底）。UI 检测显示、keeper 实际拉起、版本探活三处共用 `keeper.ResolveAgentBrowser`——界面显示的就是实际运行的那个二进制。
-- **内嵌版永不离开 bundle**：不存在「安装到 PATH」功能；只从 Resources 内部路径运行。
+- **内嵌版永不离开 bundle**：不存在「安装到 PATH」功能；只从 Resources 内部路径运行；在线升级的新版装入 `<数据目录>/bin/`，不破坏 `.app` 签名。
 - **HOME 沙箱归仓**：keeper 拉起的 agent-browser 进程链 HOME 指向 `<数据目录>/ab-home`——agent-browser 状态根硬拼 `HOME/.agent-browser`（源码无 env 可重定向），会话文件/auth/加密钥/tmp 与基座 Chrome 副产物经此全部归数据目录，不污染用户主目录。socket 目录用 `AGENT_BROWSER_SOCKET_DIR` 解耦到 `<数据目录>/ab-sockets`（Unix socket 104 字节上限，不随 HOME 深度超限）。
 - 用户手动执行的外部 agent-browser（brew/PATH 版）数据在用户 HOME，不属 proxy 管辖。
 
-## 桌面 App
+## 桌面 App（macOS / Windows）
 
-App 内 UI 为事件驱动（Wails 官方形态）：引擎状态变化点 → `Event.Emit("cdp:state", 完整状态JSON)` → 前端回调直达写入响应式变量——无请求、无防抖；在线时零轮询（仅引擎停机后 800ms 快探恢复感知 + 窗口 focus 对账兜底）。浏览器版 Admin 网页无事件通道，维持 5s 轮询（`admin_web_enabled` 控制，默认关）。（desktop/，Wails v3）
+App 内 UI 为事件驱动（Wails v3 官方形态）：引擎状态变化点 → `Event.Emit("cdp:state", 完整状态JSON)` → 前端回调直达写入响应式变量——在线时零轮询（仅引擎停机后 800ms 快探恢复感知 + 窗口 focus 对账兜底）。浏览器版 Admin 网页无事件通道，维持 5s 轮询（`admin_web_enabled` 控制，默认关）。
 
-CLI daemon 的桌面宿主：同一引擎（internal/core）编译进主进程，菜单栏常驻
-（无 Dock 图标）+ 托盘菜单（状态/打开管理界面/重启引擎/退出）+ 单实例
-（再启动唤起已有窗口）。构建：
+桌面宿主将同一引擎（`internal/core`）编译进主进程：常规桌面形态（macOS Dock 图标 + 系统菜单栏 + 托盘快捷菜单；Windows 无边框融合标题栏 + 系统托盘），启动即开主窗，关窗隐藏常驻后台，单实例防双开。构建：
 
 ```bash
-cd desktop && wails3 build        # 产出 desktop/bin/abp-desktop（前端同步 + bindings + go build 一体）
+# macOS：同步前端 + 内嵌 agent-browser + 打包 .app（含 ad-hoc 重签）
+cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task package:embedded VERSION=0.8.0
+
+# Windows（原生或交叉编译）
+cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task windows:build VERSION=0.8.0 ARCH=amd64
 ```
 
 - **Admin 界面单一源**：`static/admin` 是唯一事实源，`scripts/sync_admin_frontend.py`
-  生成 desktop 前端（Web 版走 fetch，App 版注入 `window.__abpWails` 走
+  生成 desktop 前端（Web 版走 fetch，App 版注入 `window.__cdpWails` 走
   `EngineService.DoRequest` 进程内绑定——与 REST 同一套 control 路由，
   **外部端口关闭时界面照常工作**）
-- **内嵌 agent-browser**（OpenChamber 模式）：`desktop/embedded/agent-browser-version.txt`
-  pin 精确版本；`scripts/prepare_agent_browser.sh` 下载平台二进制（GitHub release）
-  + sha256 校验（release API digest）+ 缓存 + staging + `--version` 复验（幂等）；
-  `wails3 task package:embedded` 出带内嵌件的 .app（Resources/agent-browser/
-  + 深度重签 + 包内复验）。运行时解析链：settings.agent_browser_binary →
-  bundled（.app Resources 或 dev staging，env AB_AGENT_BROWSER_BUNDLED_DIR 可
-  交接）→ PATH；托盘「安装内嵌 agent-browser 到 PATH」写符号链接
-  （/usr/local/bin → ~/bin 按可写探测）
+- **组件版本与在线升级**：在「版本与关于」页可统一查看与升级 `cdproxy` 主程序（Wails Ed25519 验签更新）、`agent-browser` 执行器（GitHub Release + SHA-256 校验）与 `cdp-ext` 扩展（一键导出本地目录 + 通知 Chrome 热重载 + ZIP 下载）
 - 数据目录与 CLI 生产相同（`~/agent-browser/proxy`：同一份 settings/日志）；
-  **App 与 daemon 二选一运行**（同端口，双开会绑定失败）
-- App 存活时 plugin 直接使用 9224（不拉起 daemon）；App 退出后端口释放，
-  下次 agent-browser 调用会经 serve.sh 拉起 daemon 兜底
+  **App 与 CLI daemon 二选一运行**（同端口，双开会绑定失败）
 
-## 发布（GoReleaser）
+## 发布（GoReleaser + Wails）
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0   # 打 tag 即触发
+git tag v0.9.0 && git push origin v0.9.0   # 打 tag 即触发
 ```
 
-CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleaser 四平台构建
-（darwin/linux × amd64/arm64）→ tar.gz + SHA256SUMS 落 GitHub Release 页。
-本地不发布验证：`goreleaser release --snapshot --clean`。
+CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleaser 六目标 CLI 产物（darwin/linux/windows × amd64/arm64）→ macOS `cdproxy-desktop` 签名包与 Ed25519 `manifest.json` → Windows `cdproxy-desktop` zip 包，统一落 GitHub Release。详见 [docs/CI-CD.md](docs/CI-CD.md)。
 
 ## 运行时设置
 
@@ -157,7 +153,7 @@ CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleas
   "plugins": [
     {
       "name": "ab-proxy",
-      "command": "<本仓库绝对路径>/plugin/ab-proxy-plugin",
+      "command": "<cdproxy 二进制绝对路径>",
       "capabilities": ["browser.provider"]
     }
   ]
@@ -167,8 +163,7 @@ CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleas
 - `profile` 不放全局——登录态由 keeper 侧管理（默认 `~/agent-browser/profile`）
 - 自管 skill（twitter-daily 等）不受影响：它们经 `AGENT_BROWSER_CONFIG` 指向自己的干净配置
 
-不碰全局配置的试用方式：`agent-browser --config examples/agent-browser-config.json --session <名> open <url>`
-（该文件即上述四键的样例）。
+不碰全局配置的试用方式：将上述 JSON 写入本地文件，再执行 `agent-browser --config <配置文件> --session <名> open <url>`。
 
 ## 生命周期语义
 

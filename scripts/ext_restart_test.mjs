@@ -1,6 +1,6 @@
 // ext_restart_test.mjs — SW 重启/软休眠（会话韧性）端到端测试。
 //
-// 验证两套机制（详见 ext/cdp-ext/README.md）：
+// 验证两套机制（详见 ext/cdp-ext/sw.js 顶部注释）：
 //   R1 SW 重启续接：SW 死亡（runtime.reload 模拟）→ 会话表经
 //      chrome.storage.session 持久化恢复 → restore 续接 → 同 sid 命令照常
 //   R2 软休眠+懒重挂：模拟用户点调试横幅「取消」（chrome.debugger.detach +
