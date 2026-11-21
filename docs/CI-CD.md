@@ -46,19 +46,19 @@ wails3 tool sign --input bin/cdproxy-desktop.app --certificate ../certs/cdproxy-
 codesign --verify --deep --strict bin/cdproxy-desktop.app
 mkdir -p ../dist
 ditto -c -k --keepParent bin/cdproxy-desktop.app ../dist/cdproxy-desktop_0.9.0_darwin_arm64.zip
-wails3 updater manifest -version 0.9.0 -key ../certs/updater.key -url-prefix "https://github.com/yangyaofei/agent-browser-proxy/releases/download/v0.9.0" ../dist/
+wails3 updater manifest -version 0.9.0 -key ../certs/updater.key -url-prefix "https://github.com/yangyaofei/cdproxy/releases/download/v0.9.0" ../dist/
 wails3 updater verify -manifest ../dist/manifest.json -publickey build/updater.key.pub
 ```
 
-## 4. 客户端热更新与跨机分发
+## 4. 客户端热更新、Homebrew 与跨机分发
 
-- **热更新**：客户端轮询 `releases/latest/download/manifest.json`（Ed25519 强制验签 + 原子替换 + `codesign --verify` 失败回滚）。App 自主下载不带 `com.apple.quarantine`，不经 Gatekeeper 拦截。
+- **热更新**：客户端轮询 `https://github.com/yangyaofei/cdproxy/releases/latest/download/manifest.json`（Ed25519 强制验签 + 原子替换 + `codesign --verify` 失败回滚）。App 自主下载不带 `com.apple.quarantine`，不经 Gatekeeper 拦截。
+- **Homebrew 分发**：统一维护在公开仓库 [`yangyaofei/homebrew-tap`](https://github.com/yangyaofei/homebrew-tap)（CLI 公式 `Formula/cdproxy.rb` + macOS 桌面 Cask `Casks/cdproxy-desktop.rb`）。每次发版产出 `checksums.txt` 与 `SHA256SUMS_darwin.txt` 后同步版本号与 SHA-256。
 - **跨机首装**：自签证书未公证，浏览器/AirDrop 下载首次打开需在「系统设置 → 隐私与安全性 → 仍要打开」放行（或 `xattr -dr com.apple.quarantine /Applications/cdproxy-desktop.app`）。
 
-## 5. Private → Public 开源前检查清单
+## 5. 发布前安全与卫生核对
 
-1. **历史零密钥**：`git log --all --name-only` 确认无 `.p12`/`.pw`/`.pem`/`.key`/`secrets.env`/`certs/`。
+1. **历史零密钥**：`git log --all --name-only` 确认无 `.p12`/`.pw`/`.pem`/`.key`/`secrets.env`/`certs/`（CI `Tracked-file guard` 自动守卫）。
 2. **源码零私密路径/凭据**：确认无本机 `/Users/...` 硬编码与真实 token。
-3. **CI/CD 全绿**：`ci.yml` 与一次完整 `release.yml` 在 GitHub Actions 跑通（含 `CDPROXY_*`/`UPDATER_*` 四个 Secrets）。
-4. **开源协议**：根目录补充 `LICENSE` 文件（如 MIT）。
-5. **切换可见性**：GitHub Settings → Danger Zone → Change visibility → Public（公开后 `releases/latest/download/manifest.json` 才无需登录态，客户端应用内更新即刻全网可用）。
+3. **CI/CD 全绿**：`ci.yml` 与 `release.yml` 在 GitHub Actions 跑通（含 `CDPROXY_*`/`UPDATER_*` 四个 Secrets）。
+4. **开源协议**：根目录维护 MIT [LICENSE](../LICENSE)。

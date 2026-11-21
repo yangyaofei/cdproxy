@@ -1,289 +1,250 @@
-# cdproxy（agent-browser-proxy）
+# cdproxy
 
-agent-browser 共享 Chrome 的 CDP 转发代理：**一个进程**管全部——基座 Chrome 生命周期、
-CDP 协议转发（会话级 tab 归属隔离）、HTTP 控制面与管理界面；CLI 二进制原生内建
-stdio `plugin` 模式（无子命令 + stdin 为管道时自动进入），无需额外薄壳脚本。
+[English](README.md) | [中文](README.zh.md)
 
-## 架构
+**Shared Chrome keeper & session-isolated Chrome DevTools Protocol (CDP) proxy for AI agents.**
+
+Run multiple AI agents, browser skills, or Playwright/Puppeteer scripts concurrently against **one logged-in Chrome browser** — without agents seeing, hijacking, or closing each other's tabs, stealing window focus, or killing the shared browser.
+
+Ships as a **single cross-platform Go binary** (`cdproxy`, CLI + built-in `agent-browser` stdio plugin), a **Wails v3 desktop app** (`cdproxy-desktop` for macOS & Windows), and a **Chrome MV3 extension** (`cdp-ext`) for bridging your everyday Chrome via native Tab Groups.
+
+<p align="center">
+  <img src="docs/assets/overview-dark.png" alt="cdproxy Admin Overview (Dark)" width="960" />
+</p>
+
+## Live Demos
+
+### Admin UI & Dual-Source Walkthrough
+
+Browse dual sources (`standalone` + `extension`), isolated sessions, per-session owned tabs & CDP interaction traces, command rewrite rules, direct endpoints, and dark/light themes:
+
+<p align="center">
+  <img src="docs/assets/walkthrough.gif" alt="cdproxy UI Walkthrough" width="900" />
+</p>
+
+### Multi-Agent Session Isolation Lifecycle
+
+Concurrent agents allocate isolated sessions across `extension` and `standalone`, run CDP commands independently with background focus-guard and base-browser protection, and release cleanly without affecting other sessions:
+
+<p align="center">
+  <img src="docs/assets/session-lifecycle.gif" alt="Multi-Agent Session Isolation Lifecycle" width="900" />
+</p>
+
+<details>
+<summary>More screenshots (Sessions + CDP Trace · Light Theme Sources &amp; Endpoints)</summary>
+
+<p align="center">
+  <img src="docs/assets/sessions-dark.png" alt="Sessions and CDP Interaction Trace" width="900" />
+</p>
+
+<p align="center">
+  <img src="docs/assets/sources-light.png" alt="Sources, Routing Rules, and Direct Endpoints (Light)" width="900" />
+</p>
+
+</details>
+
+## Why cdproxy?
+
+| Problem without a proxy | How `cdproxy` solves it |
+|---|---|
+| Multiple agents share one Chrome → agents list, mutate, or close each other's tabs | **Session-scoped target ownership**: `Target.getTargets` returns only owned tabs; cross-session `attachToTarget` / `closeTarget` is rejected |
+| Background automation pops Chrome to the foreground while you work | **Background focus guard** (default): rewrites `Target.createTarget` with `background: true`, fakes `Target.activateTarget` & `Page.bringToFront` |
+| One agent calling `Browser.close` terminates Chrome for everyone | **Base browser protection**: `Browser.close` is intercepted with a fake success; shared Chrome stays alive |
+| Chrome 136+ blocks `--remote-debugging-port` on default user profiles | **Dual downstream sources**: run `standalone` (managed keeper Chrome) and `extension` (`cdp-ext` via `chrome.debugger` + Chrome Tab Groups) side by side |
+| Orphaned tabs accumulate when an agent crashes | **Automatic reaping**: disconnected sessions are reaped after 60s (configurable); allocated-but-unused sessions after 300s |
+
+## Architecture
 
 ```
-agent-browser daemon（多个 session，每人独立 daemon）
-      │  stdio JSON（agent-browser.plugin.v1）
+agent-browser / Playwright / Puppeteer / any CDP client
+      │  stdio JSON (implicit plugin mode)  OR  HTTP POST /sessions  OR  direct WS /cdp/<path>/<token>
       ▼
-cdproxy（隐式 plugin 模式：launch/close → HTTP 控制面；服务不在时自动拉起）
-      │  POST /sessions {"name": <session>} → {"cdpUrl": ws://…}
-      ▼
-cdproxy 服务 / cdproxy-desktop 桌面 App
-  ├─ control（HTTP 127.0.0.1:9224）分配/释放/状态/组件版本与升级
-  ├─ CdpProxy（WS 127.0.0.1:9225/cdp/<token>）
-  │    ├─ 每个消费 session 一条上游连接
-  │    ├─ 双源并存：standalone（keeper 基座 Chrome）与 extension（cdp-ext 反向回连）
-  │    └─ 改写规则：getTargets 按归属过滤 / createTarget 登记归属 /
-  │        attach·closeTarget 越权拒绝 / 事件定向路由 / id 双向重映射
-  └─ keeper（Chrome @127.0.0.1:9222，profile 带共享登录态）
+cdproxy (CLI daemon or cdproxy-desktop Wails v3 App)
+  ├─ control  (HTTP 127.0.0.1:9224)  session alloc/release, runtime settings, /versions, Admin UI
+  ├─ proxy    (WS   127.0.0.1:9225)  per-session WS routing, target ownership, rewrite rules, ID remapping
+  │    ├─ standalone source ──► keeper Chrome @127.0.0.1:9222 (shared profile, on-demand launch + idle shutdown)
+  │    └─ extension  source ◄── reverse WS /ext?token= ── cdp-ext (MV3) ──► your Chrome Tab Groups (ab: <session>)
+  └─ interlog                        per-session CDP interaction trace (memory ring + disk JSONL)
 ```
 
-隔离语义：每个 session 只能看到、操作自己名下的 tab；基座 Chrome 与登录态全体共享，
-一个 session 的 close 不影响他人。
+Both downstream sources stay ready simultaneously. Every new session binds to one source on allocation using:
+`explicit source param` → `routing.rules` prefix match → `routing.default_source`. Changing routing online never disrupts existing sessions.
 
-## 快速开始（Go 主实现）
+## Installation
+
+### Homebrew (macOS & Linux)
 
 ```bash
-# 构建（单二进制，含内嵌 Admin 页与 cdp-ext 扩展）
+brew tap yangyaofei/tap
+
+# CLI daemon & agent-browser plugin (macOS / Linux)
+brew install cdproxy
+
+# Desktop App with menu-bar tray & bundled agent-browser (macOS Apple Silicon)
+brew install --cask cdproxy-desktop
+```
+
+> **macOS first launch note (Desktop App)**: `cdproxy-desktop.app` is signed with a stable self-signed certificate (not Apple-notarized). If Gatekeeper blocks a browser-downloaded copy, allow it under *System Settings → Privacy & Security → Open Anyway* or run:
+> ```bash
+> xattr -dr com.apple.quarantine "/Applications/cdproxy-desktop.app"
+> ```
+> Future upgrades via built-in in-app updates (Ed25519-verified `manifest.json`) carry no quarantine flag and preserve permissions.
+
+### GitHub Releases
+
+Download prebuilt archives directly from [GitHub Releases](https://github.com/yangyaofei/cdproxy/releases):
+- **CLI**: `cdproxy_<version>_<os>_<arch>.tar.gz` (`.zip` on Windows) for darwin / linux / windows × amd64 / arm64
+- **Desktop App**: `cdproxy-desktop_<version>_darwin_arm64.zip` (macOS) · `cdproxy-desktop_<version>_windows_amd64.zip` (Windows)
+
+### Build from Source
+
+```bash
+# CLI binary (embeds Admin UI + cdp-ext Chrome extension)
 CGO_ENABLED=0 go build -ldflags="-s -w" -o var/cdproxy ./cmd/cdproxy
-codesign --force --sign - var/cdproxy             # macOS 剥符号后须重签
+codesign --force --sign - var/cdproxy          # required on macOS after stripping symbols
 
-var/cdproxy serve                                 # 前台运行（keeper/代理/管理面）
-var/cdproxy status                                # 状态 / 停止（stop）
-open http://127.0.0.1:9224/                       # Admin 页（开启 admin_web_enabled 后可访问）
-
-# 交叉编译（示例：Linux amd64 / Windows amd64）
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o var/cdproxy-linux ./cmd/cdproxy
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o var/cdproxy.exe ./cmd/cdproxy
-
-# 质量门禁 + 测试
-go vet ./...
-go test -count=1 ./...                            # 单元测试
-uv run --project scripts python scripts/smoke_test.py  # 端到端（需真实 Chrome，语言无关）
-./scripts/concurrency_test.sh 20                  # 并发压测（四路并行零串扰）
+# Desktop App (macOS, requires Wails v3 CLI)
+cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task package:embedded VERSION=0.9.0
 ```
 
-插件配置无需 `args` 字段——二进制在「无子命令 + stdin 为管道」时自动进入 plugin 模式
-（`{"command": "<cdproxy 二进制绝对路径>"}` 即可）。
+## Quickstart
 
-数据目录默认 `~/agent-browser/proxy/`（settings.json / service.log / pid / ext），
-`--data-dir` 可覆盖。
+### 1. Run `cdproxy`
 
-## 工程结构
-
-```
-├── AGENTS.md                 # AI 协作入口（架构/规范/工作流）
-├── go.mod / assets.go        # Go 模块 + 静态资产内嵌（static/ + ext/cdp-ext/）
-├── cmd/cdproxy/              # CLI 入口（serve/status/stop/plugin + 隐式 plugin）
-├── internal/
-│   ├── core/                 # 引擎编排（CLI 与桌面 App 共用；端口重绑/开关）
-│   ├── keeper/               # Chrome 基座生命周期 + agent-browser 解析链
-│   ├── proxy/                # CDP 转发核心（归属/路由/重映射/焦点/回收）
-│   ├── state/                # 会话与关联表
-│   ├── control/              # 管理面 HTTP + 内嵌 Admin 页 + /versions 升级接口
-│   ├── interlog/             # per-session CDP 交互日志
-│   ├── datadir/              # 默认数据目录解析
-│   └── settings/             # 运行时设置
-├── desktop/                  # 桌面 App（Wails v3，macOS / Windows 跨平台）
-├── static/admin/             # Admin 页唯一源（零构建 Alpine + vendored Tabulator）
-├── ext/cdp-ext/              # Chrome MV3 扩展（反向回连 /ext + 标签组投影）
-├── scripts/                  # 冒烟/E2E 测试、sync_admin_frontend.py、prepare_agent_browser.sh
-├── docs/CI-CD.md             # CI/CD、签名与发布链说明
-└── var/                      # 本地运行与测试临时目录（gitignore）
-```
-
-## 内嵌 agent-browser（架构约束）
-
-- **唯一解析链**：`settings.agent_browser_binary`（显式外部覆盖）> `.app/Contents/Resources/agent-browser/`（内嵌）> PATH（CLI 部署兜底）。UI 检测显示、keeper 实际拉起、版本探活三处共用 `keeper.ResolveAgentBrowser`——界面显示的就是实际运行的那个二进制。
-- **内嵌版永不离开 bundle**：不存在「安装到 PATH」功能；只从 Resources 内部路径运行；在线升级的新版装入 `<数据目录>/bin/`，不破坏 `.app` 签名。
-- **HOME 沙箱归仓**：keeper 拉起的 agent-browser 进程链 HOME 指向 `<数据目录>/ab-home`——agent-browser 状态根硬拼 `HOME/.agent-browser`（源码无 env 可重定向），会话文件/auth/加密钥/tmp 与基座 Chrome 副产物经此全部归数据目录，不污染用户主目录。socket 目录用 `AGENT_BROWSER_SOCKET_DIR` 解耦到 `<数据目录>/ab-sockets`（Unix socket 104 字节上限，不随 HOME 深度超限）。
-- 用户手动执行的外部 agent-browser（brew/PATH 版）数据在用户 HOME，不属 proxy 管辖。
-
-## 桌面 App（macOS / Windows）
-
-App 内 UI 为事件驱动（Wails v3 官方形态）：引擎状态变化点 → `Event.Emit("cdp:state", 完整状态JSON)` → 前端回调直达写入响应式变量——在线时零轮询（仅引擎停机后 800ms 快探恢复感知 + 窗口 focus 对账兜底）。浏览器版 Admin 网页无事件通道，维持 5s 轮询（`admin_web_enabled` 控制，默认关）。
-
-桌面宿主将同一引擎（`internal/core`）编译进主进程：常规桌面形态（macOS Dock 图标 + 系统菜单栏 + 托盘快捷菜单；Windows 无边框融合标题栏 + 系统托盘），启动即开主窗，关窗隐藏常驻后台，单实例防双开。构建：
+Choose **either** the Desktop App **or** the CLI daemon (they share the same default data directory `~/agent-browser/proxy` and ports `9224` / `9225`):
 
 ```bash
-# macOS：同步前端 + 内嵌 agent-browser + 打包 .app（含 ad-hoc 重签）
-cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task package:embedded VERSION=0.8.0
-
-# Windows（原生或交叉编译）
-cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task windows:build VERSION=0.8.0 ARCH=amd64
+cdproxy serve          # start keeper + CDP proxy + HTTP control plane
+cdproxy status         # inspect live sessions & sources
+cdproxy stop           # stop cleanly
 ```
 
-- **Admin 界面单一源**：`static/admin` 是唯一事实源，`scripts/sync_admin_frontend.py`
-  生成 desktop 前端（Web 版走 fetch，App 版注入 `window.__cdpWails` 走
-  `EngineService.DoRequest` 进程内绑定——与 REST 同一套 control 路由，
-  **外部端口关闭时界面照常工作**）
-- **组件版本与在线升级**：在「版本与关于」页可统一查看与升级 `cdproxy` 主程序（Wails Ed25519 验签更新）、`agent-browser` 执行器（GitHub Release + SHA-256 校验）与 `cdp-ext` 扩展（一键导出本地目录 + 通知 Chrome 热重载 + ZIP 下载）
-- 数据目录与 CLI 生产相同（`~/agent-browser/proxy`：同一份 settings/日志）；
-  **App 与 CLI daemon 二选一运行**（同端口，双开会绑定失败）
-
-## 发布（GoReleaser + Wails）
+Enable the web Admin UI on demand (`admin_web_enabled` defaults to `false` because the Desktop App embeds the UI in-process):
 
 ```bash
-git tag v0.9.0 && git push origin v0.9.0   # 打 tag 即触发
+curl -X PUT http://127.0.0.1:9224/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"admin_web_enabled": true}'
+open http://127.0.0.1:9224/
 ```
 
-CI（`.github/workflows/release.yml`）：质量门禁（vet+test）→ GoReleaser 六目标 CLI 产物（darwin/linux/windows × amd64/arm64）→ macOS `cdproxy-desktop` 签名包与 Ed25519 `manifest.json` → Windows `cdproxy-desktop` zip 包，统一落 GitHub Release。详见 [docs/CI-CD.md](docs/CI-CD.md)。
+### 2. Connect `agent-browser` (Zero-Wrapper Plugin Mode)
 
-## 运行时设置
-
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `disconnect_reap_seconds` | 60 | 上游断连后的回收宽限（容忍 daemon 重启） |
-| `alloc_reap_seconds` | 300 | 分配后从未连接的回收时限（防泄漏） |
-| `keeper_idle_shutdown_seconds` | 600 | 基座空闲自动关闭阈值（0 = 不启用） |
-| `rewrites` | 不抢焦点+基座保护 | 上游命令改写规则（命令向守卫） |
-| `sources` | 双源启用 + 自动令牌 | `standalone_enabled` / `extension_enabled`（两源至少留一）/ `token`（`/ext` 准入令牌）/ `alloc_token`（`POST /sessions` 准入）。令牌首启自动生成强随机（旧默认 dev 已废除）；子对象为合并语义（只传 token 不动开关）；重置走专用动作（吊销语义） |
-| `routing` | standalone + `ext-`→extension | 会话名→源路由：`default_source` + `rules[]{prefix,source}`（先中先用）。解析链=显式 source 参数 > 前缀规则 > 默认源；只影响新分配 |
-| `endpoints` | 内置 standalone/extension 两条 | 常驻 CDP 接入点 `{path, source, token, session}`：连接 `ws://…/<path>/<token>` 即以 session 名（默认=path）分配/复用会话。PUT 整表替换（token 按path 保留，新条目自动生成）；重置走 `POST /endpoints/{path}/reset-token`（吊销） |
-| `control_port` | 9224 | 管理面（REST/Admin 页）端口。变更经进程内重绑生效（会话/令牌状态保留） |
-| `ws_port` | 9225 | 上游 WS（`/cdp/<token>` 与 `/ext`）端口。重绑语义同上；存量连接由客户端自动重连 |
-| `ports_enabled` | true | 外部端口总开关。false = 控制面与 WS 监听全部关闭（桌面 App 内嵌模式，仅 App 绑定可用） |
-
-> 端口类设置变更后监听在进程内重建（旧监听先关、约 300ms 后绑新值）——
-> 无需换进程；`--control-port`/`--ws-port` flags 降级为**启动覆盖**（兼容
-> 旧脚本），启动后 settings 是运行时唯一事实源。
-
-> 原则：proxy 是单向阀门——命令向（agent→浏览器）可守卫改写，事件向
-> （浏览器→agent）只过滤转发、**永不回写**。曾有的 `popup_policy`（监听
-> 浏览器侧 targetCreated 关"弹窗"）因违反此原则已移除：extension 模式下
-> 用户手动开 tab 同样带 openerTabId，会被误杀（生产事故实证）。
-
-修改渠道：Admin 页（即改即生效）或 `PUT /settings`；持久化到 `var/settings.json`。
-**单文件设置，无数据库**。
-
-## 接入 agent-browser（全局配置）
-
-`~/.agent-browser/config.json`：
+When invoked with no arguments and a piped stdin, `cdproxy` automatically enters `agent-browser.plugin.v1` stdio mode and auto-starts the background service on first use. Add it to `~/.agent-browser/config.json` (or pass `--config <file>` for isolated testing):
 
 ```json
 {
   "headed": true,
   "idleTimeout": "15m",
-  "provider": "ab-proxy",
+  "provider": "cdproxy",
   "plugins": [
     {
-      "name": "ab-proxy",
-      "command": "<cdproxy 二进制绝对路径>",
+      "name": "cdproxy",
+      "command": "/opt/homebrew/bin/cdproxy",
       "capabilities": ["browser.provider"]
     }
   ]
 }
 ```
 
-- `profile` 不放全局——登录态由 keeper 侧管理（默认 `~/agent-browser/profile`）
-- 自管 skill（twitter-daily 等）不受影响：它们经 `AGENT_BROWSER_CONFIG` 指向自己的干净配置
-
-不碰全局配置的试用方式：将上述 JSON 写入本地文件，再执行 `agent-browser --config <配置文件> --session <名> open <url>`。
-
-## 生命周期语义
-
-| 事件 | 行为 |
-|---|---|
-| session 分配 | 预开一个归属 tab（保证 getTargets 非空 + 与基座 UI 隔离） |
-| 上游断连（daemon close/idle） | 60s 宽限后自动回收（容忍 daemon 重启），关名下 tab |
-| 分配后从未连接 | 300s 后回收（防泄漏） |
-| 同名再分配（未连接态） | 复用会话与 tab（重连语义）；连接中则顶掉 |
-| plugin browser.close | 释放会话（agent-browser 0.36.0 的 close 不回调 provider，实际靠断连回收兜底） |
-| 基座 Chrome 挂死 | 下游断线自愈重连 + keeper 重启（清 stale SingletonLock） |
-
-## 端口约定
-
-| 端口 | 用途 |
-|---|---|
-| 9222 | Chrome 调试端口（keeper 固定） |
-| 9224 | 控制面 HTTP |
-| 9225 | 代理 WS（上游 cdpUrl） |
-| 9234 / 9235 | 测试实例常用端口（控制面 / WS） |
-
-## 扩展下游（cdp-ext）
-
-双源**常开并存**：`/ext` 反向入口永远注册，装了 cdp-ext 的用户日常浏览器
-随时回连待命；standalone（基座 Chrome）链路照常按需拉起。新会话走哪个源由
-`settings.routing` 决定（显式 source 参数 > 会话名前缀规则 > 默认源——
-Admin 页「源」tab 在线改，只影响新分配，存量会话继续用原源直到自然结束，
-平滑无感）。适用于"没有可被调试的 Chrome"的场景——
-Chrome 136 起 `--remote-debugging-port` 对默认 profile 失效，扩展走
-`chrome.debugger` 官方通道，无命令行开关要求。
-
-```
-agent-browser daemon ──WS 9225/cdp/<token>──► proxy ─┬─ 按需 dial ──► keeper 基座 Chrome（standalone 会话）
-                                                     └─ 常开待命 ◄── 反向拨出 WS /ext?token= ── cdp-ext(SW)
-                                                                          │ chrome.debugger（26 个 CDP 域）
-                                                                          ▼
-                                                             用户日常 Chrome 的各 tab
-```
-
-用户侧一次性安装：Chrome 加载 `ext/cdp-ext/`（开发者模式→加载已解压），
-扩展 options 页把 relay 指到 `ws://127.0.0.1:9225/ext`、token 与
-`settings.sources.token` 一致。路由示例：
+Then run multiple isolated sessions concurrently against the same logged-in Chrome:
 
 ```bash
-# 默认源切到 extension（存量会话不动；子对象合并语义，rules 不受影响）
-curl -X PUT http://127.0.0.1:9224/settings \
-  -H 'Content-Type: application/json' -d '{"routing":{"default_source":"extension"}}'
-# 默认路由规则已含 ext- 前缀 → extension：ext- 开头的会话名自动走扩展源
+agent-browser --session research-a open https://github.com/yangyaofei/cdproxy
+agent-browser --session research-b open https://news.ycombinator.com
 ```
 
-双源语义与单源完全一致（归属隔离/越权拒绝/焦点策略/基座保护/断连
-回收），差异只有三点：
+### 3. Connect Playwright / Puppeteer / Any CDP Client
 
-- `Browser.close` 由扩展层拒绝（宿主是用户自己的浏览器，双保险）
-- 浏览器级命令面为仿真（Target.* + Browser.getVersion/setDownloadBehavior），
-  未知命令诚实报错；页面会话命令全部透传
-- 一 tab 一 debugger：用户正开着 DevTools 的 tab 无法 attach（诚实报错）
+**Option A — Persistent Direct Endpoint (zero setup)**
 
-两链路隔离规则：会话在分配时定格绑定一种形态；扩展回连只清 extension 侧
-归属（standalone 会话不受牵连），基座重建只清 standalone 侧；事件路由校验
-"来源链路 == 会话绑定"（双浏览器 targetId 撞车防护）。`/keeper/restart`
-只动 chrome 基座；无基座时退化为复位扩展连接（扩展自行重连）。
+Copy a direct endpoint URL from **Sources & Endpoints** in the UI (or query `GET /status`):
 
-扩展内建**虚拟会话多路复用**：一个物理 `chrome.debugger` attach 上可叠加多个
-虚拟 CDP 会话（对齐真浏览器端点每连接独立会话），代理侧以
-`Target.setAutoAttach` 拦截改写保证只 attach 会话名下 target（不给用户其他
-tab 挂调试横幅）。响应回带 sessionId、attachedToTarget/detachedFromTarget
-事件带 browserContextId/targetId、事件先于 setAutoAttach/createTarget 响应
-送达——这些时序/字段细节是 Playwright connectOverCDP 的硬要求，均有测试锁定。
+```js
+import { chromium } from "playwright-core";
 
-### 标签组：组 = 唯一真相，成员 = 会话可见性
+// Connects directly to the "extension" or "standalone" endpoint
+const browser = await chromium.connectOverCDP("ws://127.0.0.1:9225/extension/<endpoint-token>");
+const page = await browser.newPage();
+await page.goto("https://example.com");
+```
 
-扩展把每个会话的 tab 自动归入 Chrome 原生彩色标签组 `ab: <会话名>`（颜色按
-会话名散列）。对齐后模型：**浏览器是唯一真相**——proxy 不再维护独立的创建
-账本，归属表是组事实的投影（扩展回连即上报全量组事实 `gstate`，此后事件驱
-动增量 sync）。用户与 agent 的边界是**可见的物理边界**：
+**Option B — Dynamic Session Allocation via HTTP API**
 
-| 用户操作（Chrome 原生） | 语义 |
+```bash
+# Allocate an isolated session (include Authorization: Bearer <alloc_token> from /status or UI)
+curl -X POST http://127.0.0.1:9224/sessions \
+  -H "Authorization: Bearer <alloc_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "ext-demo"}'
+# => {"cdpUrl": "ws://127.0.0.1:9225/cdp/<session-token>", "session": "ext-demo", "source": "extension"}
+
+# Release explicitly when done (or let disconnect_reap_seconds clean up automatically)
+curl -X POST http://127.0.0.1:9224/sessions/ext-demo/release
+```
+
+### 4. Bridge Your Everyday Chrome with `cdp-ext` (Extension Source)
+
+Use `cdp-ext` when you want agents to operate in your existing logged-in Chrome (works on Chrome 136+ where `--remote-debugging-port` is blocked on default profiles):
+
+1. Export the bundled extension from **About → cdp-ext** in the Desktop App (or load `ext/cdp-ext/` from this repo) via `chrome://extensions` → **Developer mode** → **Load unpacked**.
+2. Open the extension's **Options** page, set Relay URL to `ws://127.0.0.1:9225/ext`, and paste the token shown under **Sources & Endpoints → extension**.
+3. Route sessions prefixed with `ext-` (default rule) or switch default source online:
+
+```bash
+curl -X PUT http://127.0.0.1:9224/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"routing": {"default_source": "extension"}}'
+```
+
+#### Tab Groups as Physical Isolation Boundaries
+
+In `extension` mode, each session's tabs live in a color-coded Chrome Tab Group named `ab: <session>`. **The browser's Tab Group is the single source of truth** — `cdproxy`'s ownership table is a live projection of it:
+
+| Your native Chrome action | Effect in `cdproxy` |
 |---|---|
-| 把自己的 tab 拖进会话组 | 归属该会话（可见、可操作；组内=会话的，可真关） |
-| 把 tab 拖出组 / 从组中移除 | 收回：会话立即失去可见性（合成销毁事件），tab 留在用户手里 |
-| 在两个会话组间拖动 | 领地转移：向原会话收回、归属新会话 |
-| 折叠/展开组 | 纯视觉，无协议语义 |
+| Drag your own tab **into** `ab: <session>` | Immediately grants that session access to the tab |
+| Drag a tab **out of** the group | Revokes access immediately (synthetic detach/destroy to the agent); tab stays open for you |
+| Drag a tab **between** two session groups | Cleanly transfers ownership from the old session to the new one |
+| Collapse / expand group | Visual only — zero protocol disruption |
 
-配套规则：
+Configure release behavior (`close` / `mark` tombstone for later reclaim / `keep`) in the `cdp-ext` Options page.
 
-- **组在即领地**：release 按**扩展配置**处置（options 页 `releasePolicy`）——
-  `close` 全关+删组（默认）/ `mark` 墓碑标记（`· released`+灰色，tab 保留，
-  同名会话回来摘碑复活、整组认领）/ `keep` 原样保留
-- **冷启动无孤儿**：扩展刷新/浏览器重启后 gstate 重建归属，组还在的 tab
-  永不孤儿化（同名 alloc 直接认领既有组）
-- **投影自愈**：组成员变化经防抖 sync 全量差分（事件驱动 + alarm 兜底），
-  幂等，漏事件可自愈
-- 组绑定按标题重建（SW 重启恢复）；入组按会话名串行化（防并发双组）；
-  缓存组已死时清缓存重查
+## Runtime Settings & Ports
 
-## 已验证（真实 agent-browser 0.36.0）
+All settings live in a single `settings.json` under the data directory (`~/agent-browser/proxy/` by default, overridable via `--data-dir` / `AB_PROXY_DATA_DIR`) and apply live via the UI or `PUT /settings`:
 
-- 双 session 并发：URL/eval/tab list 完全隔离，互不可见
-- attach + Runtime.evaluate（带 sessionId）定向路由正确
-- 越权 closeTarget 被 CDP error 拒绝，受害方 tab 完好
-- close 后 60s 自动回收名下 tab，基座存活
-- plugin 自启动：服务未跑时首个 launch 拉起服务并就绪
+| Setting | Default | Description |
+|---|---|---|
+| `control_port` / `ws_port` | `9224` / `9225` | HTTP control plane & CDP WebSocket ports (rebound in-process without losing session state) |
+| `ports_enabled` | `true` | Master switch for external listeners (`false` = Desktop App in-process only) |
+| `admin_web_enabled` | `false` | Serve the browser Admin UI on `GET /` (Desktop App always embeds UI via Wails bindings) |
+| `disconnect_reap_seconds` | `60` | Grace period after upstream disconnect before closing owned tabs |
+| `alloc_reap_seconds` | `300` | Timeout for allocated sessions that never connect |
+| `keeper_idle_shutdown_seconds` | `600` | Auto-stop managed keeper Chrome after idle period (`0` disables) |
+| `rewrites` | Focus guard + `Browser.close` guard | Command-direction CDP rewrite/fake rules (events are strictly read-only & filtered) |
+| `routing` | `standalone` + `ext-` → `extension` | Prefix-based routing table (`explicit source > prefix rule > default_source`) |
+| `endpoints` | `standalone` & `extension` | Persistent direct CDP endpoints (`ws://127.0.0.1:9225/<path>/<token>`) |
 
-已验证（扩展下游，Playwright connectOverCDP 零改动接入）：连接/页面发现/
-setContent/evaluate/content/screenshot/newPage/page.close/newCDPSession/click
-全链路通过；下游重启后扩展自动重连、会话自愈；routing 在线切换
-（`scripts/ext_smoke_test.py` T0–T7 + `scripts/ext_playwright_e2e.mjs`）；
-双源同时在线（standalone 会话与 extension 会话并存，互不牵连）。
+## Development & Tests
 
-## 已知限制（v0.1.0）
+```bash
+go vet ./cmd/... ./internal/... ./desktop
+go test -count=1 ./cmd/... ./internal/...             # Go unit tests
+python3 scripts/sync_admin_frontend.py --check        # Verify single-source Admin UI sync
+uv run --project scripts python scripts/smoke_test.py # 6-item standalone E2E smoke test
+./scripts/concurrency_test.sh 20                      # 4-way concurrent isolation stress test
+```
 
-- release 的 tab 关闭为 fire-and-forget（失败有日志，不重试）
-- 扩展下游：`page.download()` 的落盘路径解析受限（Browser.setDownloadBehavior
-  为假成功，下载按宿主默认行为；精确控制需 chrome.downloads，不在 CDP 层补偿）
-- 扩展下游：heap/CPU profiler 等浏览器级域不可用（chrome.debugger 未开放，
-  诚实报错）；agent/Playwright 常规自动化面 ≈95% 覆盖
-- 扩展下游：SW 被 Chrome 回收后 ≤30s 内自动回连续接（会话表持久化 + restore，
-  同 sid 无感）；手动刷新扩展会连 alarms 一起清掉——点一下工具栏图标立即重连
-- 扩展下游：用户点调试横幅「取消」后会话软休眠（无事件、无报错），下一条
-  命令自动重挂（横幅重现）；休眠中 tab 被关则诚实报错
-- v2 设计方向（未实施）：会话句柄层（E 编号 ↔ target 映射）从 SW 迁到 proxy
-  （sid 编码 targetId），扩展退化为无状态适配器，持久化垫片可整体移除
+## Docs
+
+Architecture, CDP rewrite invariants, dual-source state transitions, and extension projection rules live directly in module docstrings (starting from [internal/proxy/proxy.go](internal/proxy/proxy.go), [internal/state/state.go](internal/state/state.go), [internal/core/core.go](internal/core/core.go), and [ext/cdp-ext/sw.js](ext/cdp-ext/sw.js)). External docs are kept minimal:
+
+| Document | Contents |
+|---|---|
+| [AGENTS.md](AGENTS.md) | Contributor & AI agent contract: module map, dev/test commands, hard rules |
+| [docs/CI-CD.md](docs/CI-CD.md) | Signing certificates, GitHub Secrets, CI/Release workflows, Homebrew & updater ops |
+
+## License
+
+[MIT](LICENSE) © 2026 yangyaofei

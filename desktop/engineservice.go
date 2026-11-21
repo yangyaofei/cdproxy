@@ -99,7 +99,7 @@ func (s *EngineService) UpdaterInfo() map[string]any {
 		"arch":        runtime.GOARCH,
 		"configured":  updaterInitErr == "",
 		"reason":      updaterInitErr,
-		"release_url": "https://github.com/yangyaofei/agent-browser-proxy/releases",
+		"release_url": "https://github.com/yangyaofei/cdproxy/releases",
 	}
 }
 

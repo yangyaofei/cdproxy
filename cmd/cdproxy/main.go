@@ -44,12 +44,12 @@ const usage = `cdproxy ` + "v" + `%s — Chrome CDP 隔离代理（Keeper + 多�
   cdproxy stop     [--control-port 9224]
   cdproxy plugin   (stdin/stdout 插件协议；无参数+管道 stdin 时自动进入)
 
-下游形态（双链路常开并存，settings.downstream_mode 决定新会话默认走哪条，
-Admin 页 / PUT /settings 可在线切换——只影响新分配，存量会话继续用原下游）:
-  chrome      keeper 管理的共享基座 Chrome（9222），按需拉起
+下游源（双源常开并存，会话按 显式 source > routing.rules 前缀 > routing.default_source 定格绑定，
+Admin 页 / PUT /settings 可在线切换——仅影响新会话，存量会话不受干扰）:
+  standalone  keeper 管理的共享基座 Chrome（9222），按需拉起
   extension   ext/cdp-ext 扩展反向回连 GET /ext（用户的宿主 Chrome 经
-              chrome.debugger 仿真成浏览器级 CDP 端点；不管理宿主生命周期）
-              准入令牌 = settings.ext_token（默认 dev，Admin 页可改）
+              chrome.debugger + 标签组映射桥接为下游；不管理宿主生命周期）
+              准入令牌 = settings.sources.token（Admin 页「源与接入点」可查看/重置）
 
 环境变量:
   AB_PROXY_CONTROL   管理面地址（默认 http://127.0.0.1:9224）

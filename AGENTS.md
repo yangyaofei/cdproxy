@@ -1,12 +1,12 @@
-# AGENTS.md — agent-browser-proxy
+# AGENTS.md — cdproxy
 
-> AI 协作入口。先读本文件，再读相关 docstring。
+> AI / 贡献者协作入口。先读本文件，再读对应模块的顶部注释。外部只保留 [README.md](README.md) / [README.zh.md](README.zh.md)（双语用户入口）、本文（协作契约）与 [docs/CI-CD.md](docs/CI-CD.md)（密钥/签名/CI/发版运维）。
 
 ## 1. 项目概述
 
-agent-browser-proxy（品牌名 / 主二进制：`cdproxy`）是 agent-browser 的**共享 Chrome 基座与 CDP 转发代理**：
+`cdproxy`（仓库 `yangyaofei/cdproxy`）是面向 AI Agent（`agent-browser` / Playwright / Puppeteer 等）的**共享 Chrome 基座与会话级隔离 CDP 转发代理**：
 Go 服务统一管理基座 Chrome 生命周期、按会话隔离的 CDP 协议转发、HTTP 控制面与 Admin 页面；
-桌面端以 Wails v3 打包为 `cdproxy-desktop`（macOS / Windows 跨平台），对外亦可走 CLI 或薄 plugin 接入。
+桌面端以 Wails v3 打包为 `cdproxy-desktop`（macOS / Windows 跨平台），对外亦可走 CLI 或隐式 stdio `plugin` 模式接入。
 
 **是什么**：本机浏览器共享基础设施（多 agent/skill 并发用同一个带登录态的 Chrome，
 互不见彼此 tab）。
@@ -157,8 +157,7 @@ release 回收 / Browser.close 基座保护。**任何转发语义改动，chrom
 
 ## 9. 工作流
 
-- 改代码必须同步：模块 docstring（契约变化）、README（使用变化）、
-  AGENTS.md 本文（架构/规范变化）
+- 改代码必须同步：模块 docstring（契约变化）、双语 [README.md](README.md) / [README.zh.md](README.zh.md)（使用变化）、AGENTS.md 本文（架构/规范变化）
 - 提交信息含：问题/发现过程/实现方案/实现过程/总结
-- 变更涉及转发语义 → 冒烟五项 + 真实 agent-browser 双 session 隔离抽查
+- 变更涉及转发语义 → 冒烟六项 + 真实 agent-browser 双 session 隔离抽查
 - 全局配置接线（provider/plugins 四键）属用户决策，Agent 只提供 README 样例

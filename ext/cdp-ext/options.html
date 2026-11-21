@@ -13,10 +13,10 @@
 </head>
 <body>
   <h2>cdp-ext 反向桥设置</h2>
-  <p>扩展会反向拨出到 agent-browser-proxy（<code>--downstream extension</code> 模式），把自己伪装成该代理的浏览器级 CDP 下游。</p>
+  <p>扩展会反向拨出到 cdproxy（<code>extension</code> 下游源），把当前浏览器桥接为代理的标签组隔离下游。</p>
   <label for="relayUrl">Proxy 反向入口（WebSocket URL）</label>
-  <input id="relayUrl" placeholder="ws://127.0.0.1:9235/ext" />
-  <label for="token">连接令牌（proxy --ext-token）</label>
+  <input id="relayUrl" placeholder="ws://127.0.0.1:9225/ext" />
+  <label for="token">连接令牌（与 cdproxy「源与接入点」令牌一致）</label>
   <input id="token" placeholder="dev" />
   <label for="releasePolicy">会话释放时组内标签页怎么办</label>
   <select id="releasePolicy">

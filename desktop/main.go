@@ -119,7 +119,7 @@ func showUI() {
 // 通知（wails:updater:*），UpdateReady 后在托盘亮「重启并更新」项。
 func initUpdater() error {
 	endpoint, err := endpoint.New(endpoint.Config{
-		URL: "https://github.com/yangyaofei/agent-browser-proxy/releases/latest/download/manifest.json",
+		URL: "https://github.com/yangyaofei/cdproxy/releases/latest/download/manifest.json",
 	})
 	if err != nil {
 		return fmt.Errorf("endpoint provider: %w", err)
