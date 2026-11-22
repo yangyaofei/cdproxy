@@ -383,12 +383,15 @@
                     <div class="ov-list" x-show="(status.endpoints || []).length">
                       <template x-for="(ep, idx) in (status.endpoints || []).slice(0, 6)" :key="ep.path">
                         <div class="ov-item">
-                          <div class="rowflex" style="min-width:0;flex:1">
-                            <span class="src-ic" :class="(ep.source || status.routing.default_source) === 'extension' ? 'ext' : 'sa'">
-                              <svg><use :href="(ep.source || status.routing.default_source) === 'extension' ? '#i-puzzle' : '#i-chrome'"/></svg>
-                            </span>
-                            <span class="mono" style="font-weight:550;color:var(--tx)" x-text="endpointDisplayLabel(ep)"></span>
-                            <span class="hint mono truncate" x-text="endpointTargetHint(ep)"></span>
+                          <div class="ov-ep-main">
+                            <div class="ov-ep-top">
+                              <span class="src-ic" :class="(ep.source || status.routing.default_source) === 'extension' ? 'ext' : 'sa'">
+                                <svg><use :href="(ep.source || status.routing.default_source) === 'extension' ? '#i-puzzle' : '#i-chrome'"/></svg>
+                              </span>
+                              <span class="mono" style="font-weight:550;color:var(--tx)" x-text="endpointDisplayLabel(ep)"></span>
+                              <span class="hint mono truncate" x-text="endpointTargetHint(ep)"></span>
+                            </div>
+                            <span class="ov-ep-url mono" x-text="endpointMaskedURL(ep)"></span>
                           </div>
                           <div class="rowflex" style="flex:none">
                             <button class="sm" @click="copyText(endpointURL(ep), t('toast.ep_url_copied', { path: ep.path }), 'ov-ep-' + idx)" :title="t('src.ep_copy_url_title')">
@@ -396,10 +399,8 @@
                               <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-ep-' + idx"><use href="#i-check"/></svg>
                               <span x-text="t('ov.copy_url')"></span>
                             </button>
-                            <button class="sm" @click="copyEndpointHeader(ep, 'ov-ep-hdr-' + idx)" :title="t('ep.copy_header_title')">
-                              <svg class="ic-sm" x-show="copiedKey !== 'ov-ep-hdr-' + idx"><use href="#i-copy"/></svg>
-                              <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-ep-hdr-' + idx"><use href="#i-check"/></svg>
-                              <span x-text="t('ov.copy_header')"></span>
+                            <button class="sm" @click="openConnectModal(ep, 'ai')" :title="t('ep.copy_header_title')">
+                              <span x-text="t('conn.btn')"></span>
                             </button>
                           </div>
                         </div>
@@ -1030,7 +1031,7 @@
                   <div class="save-bar">
                     <button class="primary sm" x-show="abIntegration()?.status !== 'configured' && abIntegration()?.status !== 'invalid_json'"
                             @click="installAbIntegration()" :disabled="abIntBusy"
-                            x-text="abIntegration()?.status === 'outdated' ? t('abint.btn_update') : t('abint.btn_install')"></button>
+                            x-text="abIntActionLabel()"></button>
                     <button class="sm warn" x-show="abIntegration()?.status === 'configured'"
                             @click="uninstallAbIntegration()" :disabled="abIntBusy"
                             x-text="t('abint.btn_uninstall')"></button>
@@ -1100,10 +1101,8 @@
                                   <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ep-url-' + i"><use href="#i-check"/></svg>
                                   <span>URL</span>
                                 </button>
-                                <button class="sm" @click="copyEndpointHeader(ep, 'ep-hdr-' + i)" :disabled="!ep.token" :title="t('ep.copy_header_title')">
-                                  <svg class="ic-sm" x-show="copiedKey !== 'ep-hdr-' + i"><use href="#i-copy"/></svg>
-                                  <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ep-hdr-' + i"><use href="#i-check"/></svg>
-                                  <span x-text="t('ov.copy_header')"></span>
+                                <button class="sm" @click="openConnectModal(ep, 'ai')" :disabled="!ep.token" :title="t('ep.copy_header_title')">
+                                  <span x-text="t('conn.btn')"></span>
                                 </button>
                                 <button class="icon-btn danger" x-show="!isBuiltinEndpoint(ep)" @click="epForm.splice(i, 1)" :title="t('src.ep_remove_title')">
                                   <svg class="ic-sm"><use href="#i-trash"/></svg>
@@ -1481,12 +1480,12 @@
                           <span x-text="t('about.open_dir')"></span>
                         </button>
                       </div>
-                      <div class="tree" style="margin:10px 0">
+                      <div class="tree" style="margin:12px 0">
                         <template x-for="(e, i) in layout.entries" :key="i">
                           <div class="row">
+                            <span class="dot-st" :class="e.exists ? 'exists' : 'missing'" x-text="e.exists ? '●' : '○'"></span>
                             <span class="p mono" :title="e.path" x-text="e.title"></span>
-                            <span :class="e.exists ? 'exists' : 'missing'" x-text="e.exists ? '●' : '○'"></span>
-                            <span class="hint" style="flex:1" x-text="layoutDesc(e)"></span>
+                            <span class="desc" x-text="layoutDesc(e)"></span>
                             <span class="row-acts">
                               <button class="icon-btn ghost" x-show="isDesktop && e.exists" @click="openLocalPath(e.path)" :title="t('about.open_dir')">
                                 <svg class="ic-sm"><use href="#i-folder"/></svg>
@@ -1840,6 +1839,64 @@
           <button class="icon-btn ghost" @click="dismissToast(toastItem.id)"><svg class="ic-sm"><use href="#i-close"/></svg></button>
         </div>
       </template>
+    </div>
+
+    <!-- ══ CDP 接入指南与复制给 AI 弹层 ══ -->
+    <div class="modal-backdrop" id="connect-modal" x-show="connectModal" x-cloak @click.self="closeConnectModal()" @keydown.escape.window="connectModal && closeConnectModal()">
+      <div class="modal-card connect-modal" x-show="connectModal">
+        <div class="connect-head">
+          <div class="connect-head-left">
+            <span class="src-ic" :class="((connectModal?.ep?.source || status?.routing?.default_source) === 'extension') ? 'ext' : 'sa'">
+              <svg><use :href="((connectModal?.ep?.source || status?.routing?.default_source) === 'extension') ? '#i-puzzle' : '#i-chrome'"/></svg>
+            </span>
+            <h3 x-text="connectModal ? t('conn.title', { name: endpointDisplayLabel(connectModal.ep) }) : ''"></h3>
+          </div>
+          <button class="icon-btn ghost" @click="closeConnectModal()" :title="t('conn.close')">
+            <svg class="ic-sm"><use href="#i-close"/></svg>
+          </button>
+        </div>
+
+        <div class="connect-body" x-show="connectModal">
+          <div>
+            <div class="connect-section-label" x-text="t('conn.url_label')"></div>
+            <div class="copyable">
+              <span class="val mono" style="font-size:12px" x-text="connectModal ? (connectModal.showToken ? endpointURL(connectModal.ep) : endpointMaskedURL(connectModal.ep)) : ''"></span>
+              <button class="icon-btn" @click="connectModal.showToken = !connectModal.showToken" :title="connectModal?.showToken ? t('common.hide') : t('common.show')">
+                <svg class="ic-sm" x-show="!connectModal?.showToken"><use href="#i-eye"/></svg>
+                <svg class="ic-sm" x-show="connectModal?.showToken"><use href="#i-eye-off"/></svg>
+              </button>
+              <button class="sm" @click="copyText(endpointURL(connectModal.ep), t('toast.ep_url_copied', { path: connectModal.ep.path }), 'conn-url')">
+                <svg class="ic-sm" x-show="copiedKey !== 'conn-url'"><use href="#i-copy"/></svg>
+                <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'conn-url'"><use href="#i-check"/></svg>
+                <span x-text="t('ov.copy_url')"></span>
+              </button>
+            </div>
+            <div class="field-help" x-text="t('conn.url_hint')"></div>
+          </div>
+
+          <div>
+            <div class="seg" style="margin-bottom:8px">
+              <button :class="connectModal?.tab === 'ai' ? 'on' : ''" @click="connectModal.tab = 'ai'" x-text="t('conn.tab_ai')"></button>
+              <button :class="connectModal?.tab === 'pw' ? 'on' : ''" @click="connectModal.tab = 'pw'" x-text="t('conn.tab_pw')"></button>
+              <button :class="connectModal?.tab === 'pptr' ? 'on' : ''" @click="connectModal.tab = 'pptr'" x-text="t('conn.tab_pptr')"></button>
+              <button :class="connectModal?.tab === 'ab' ? 'on' : ''" @click="connectModal.tab = 'ab'" x-text="t('conn.tab_ab')"></button>
+            </div>
+            <div class="field-help" style="margin:0 0 8px" x-show="connectModal?.tab === 'ai'" x-text="t('conn.ai_hint')"></div>
+            <div class="connect-pre-wrap">
+              <pre class="connect-pre mono" x-text="connectModal ? connectSnippet(connectModal.tab) : ''"></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="connect-foot">
+          <button class="primary sm" @click="copyConnectSnippet()">
+            <svg class="ic-sm" x-show="copiedKey !== ('conn-snip-' + connectModal?.tab)"><use href="#i-copy"/></svg>
+            <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === ('conn-snip-' + connectModal?.tab)"><use href="#i-check"/></svg>
+            <span x-text="connectModal?.tab === 'ai' ? t('conn.copy_ai') : t('conn.copy_snippet')"></span>
+          </button>
+          <button class="sm" @click="closeConnectModal()" x-text="t('conn.close')"></button>
+        </div>
+      </div>
     </div>
 
     <!-- ══ 应用内确认弹层 ══ -->

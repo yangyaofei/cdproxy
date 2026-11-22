@@ -249,6 +249,7 @@ function admin() {
     extSetupOpen: null, // null=自动（未连接时展开，已连接时收起）
     detectingExt: false,
     abIntBusy: false,
+    connectModal: null,
     epForm: [],
     savedEpJson: "",
     epSavedAt: "",
@@ -1285,6 +1286,12 @@ function admin() {
       const st = this.abIntegration()?.status || "not_found";
       return this.t("abint.st_" + st);
     },
+    abIntActionLabel() {
+      const st = this.abIntegration()?.status || "not_found";
+      if (st === "outdated") return this.t("abint.btn_update");
+      if (st === "other_provider") return this.t("abint.btn_set_default");
+      return this.t("abint.btn_install");
+    },
     abIntDetailText() {
       const info = this.abIntegration();
       if (!info) return "";
@@ -1292,7 +1299,7 @@ function admin() {
         case "configured":
           return this.t("abint.detail_configured", { cmd: info.current_command || info.target_command });
         case "outdated":
-          return this.t("abint.detail_outdated", { prov: info.current_provider || "—", cmd: info.current_command || "—" });
+          return this.t("abint.detail_outdated", { cmd: info.current_command || "—" });
         case "other_provider":
           return this.t("abint.detail_other", { prov: info.current_provider || "—" });
         case "not_configured":
@@ -1483,6 +1490,156 @@ function admin() {
         return;
       }
       this.copyText(this.endpointURL(ep, proto), this.t("toast.ep_url_copied", { path: ep.path }), `ep-url-${idx}`);
+    },
+    endpointMaskedURL(ep, proto = "http") {
+      const port = this.status?.ws_port || 9225;
+      const base = `${proto}://127.0.0.1:${port}`;
+      const tokMask = ep?.token ? `${ep.token.slice(0, 6)}••••` : "<token>";
+      const sess = (ep?.session || "").trim();
+      if (ep?.path === "default") {
+        return sess ? `${base}/session/${encodeURIComponent(sess)}/${tokMask}` : `${base}/${tokMask}`;
+      }
+      if (ep?.path === "standalone" || ep?.path === "extension") {
+        return sess ? `${base}/${ep.path}/session/${encodeURIComponent(sess)}/${tokMask}` : `${base}/${ep.path}/${tokMask}`;
+      }
+      const srcPrefix = ep?.source ? `/${ep.source}` : "";
+      const fixed = sess || ep?.path || "";
+      return `${base}${srcPrefix}/session/${encodeURIComponent(fixed)}/${tokMask}`;
+    },
+    openConnectModal(ep, tab = "ai") {
+      if (!ep?.token) {
+        this.toast(this.t("toast.save_ep_first"), "err");
+        return;
+      }
+      this.connectModal = { ep: { ...ep }, tab, showToken: false };
+    },
+    closeConnectModal() {
+      this.connectModal = null;
+    },
+    connectBaseURL(proto = "http") {
+      const port = this.status?.ws_port || 9225;
+      return `${proto}://127.0.0.1:${port}`;
+    },
+    connectSnippet(tab) {
+      const m = this.connectModal;
+      if (!m?.ep) return "";
+      const ep = m.ep;
+      const httpUrl = this.endpointURL(ep, "http");
+      const wsUrl = this.endpointURL(ep, "ws");
+      const baseHttp = this.connectBaseURL("http");
+      const baseWs = this.connectBaseURL("ws");
+      const tok = ep.token || "";
+      const defSrc = this.status?.routing?.default_source || "standalone";
+      const isZh = this.lang === "zh";
+      const pinnedSess = this.isBuiltinEndpoint(ep) ? (ep.session || "").trim() : ((ep.session || ep.path || "").trim());
+      const srcLabel = ep.path === "default"
+        ? (isZh ? `默认入口（当前指向 ${defSrc}，可在 cdproxy App 内随时热切换）` : `Default entry (currently routing to ${defSrc}, hot-switchable in cdproxy)`)
+        : ep.source === "extension"
+          ? (isZh ? "日常 Chrome（Cdproxy Connector 扩展）" : "Everyday Chrome (Cdproxy Connector)")
+          : ep.source === "standalone"
+            ? (isZh ? "独立托管 Chrome（standalone）" : "Dedicated managed Chrome (standalone)")
+            : (isZh ? `跟随默认源（当前 ${defSrc}）` : `Follows default source (currently ${defSrc})`);
+
+      if (tab === "ai") {
+        const sessUrl = pinnedSess
+          ? httpUrl
+          : (ep.path === "default"
+            ? `${baseHttp}/session/work/${tok}`
+            : `${baseHttp}/${ep.path}/session/work/${tok}`);
+        if (isZh) {
+          return [
+            "请帮我把浏览器自动化工具 / MCP 连接到本机的 cdproxy（标准 Chrome CDP 代理）：",
+            "",
+            `- 入口：${this.endpointDisplayLabel(ep)} — ${srcLabel}`,
+            `- 方式 1（推荐，URL 内含令牌，http:// 与 ws:// 均可直接连接）：`,
+            `  ${httpUrl}`,
+            `- 方式 2（若工具将地址与鉴权 Header 分开填，令牌会自动路由到对应源）：`,
+            `  CDP 地址：${baseHttp}`,
+            `  请求头：Authorization: Bearer ${tok}`,
+            pinnedSess
+              ? `- 固定会话：该令牌已绑定到会话「${pinnedSess}」，重连会自动回到同一组标签页。`
+              : `- 会话隔离：每条连接默认自动分配独立会话与标签页分组；如需固定认领某分组（例如 work），使用：${sessUrl}`,
+          ].join("\n");
+        }
+        return [
+          "Please configure my browser automation tool / MCP server to connect to my local cdproxy (standard Chrome CDP proxy):",
+          "",
+          `- Entry: ${this.endpointDisplayLabel(ep)} — ${srcLabel}`,
+          `- Option 1 (recommended, token embedded in URL — works with both http:// and ws://):`,
+          `  ${httpUrl}`,
+          `- Option 2 (if the tool separates URL and auth headers — the token automatically routes to this target):`,
+          `  CDP URL: ${baseHttp}`,
+          `  Header:  Authorization: Bearer ${tok}`,
+          pinnedSess
+            ? `- Pinned session: this token is bound to session "${pinnedSess}" so reconnects resume the same tabs/group.`
+            : `- Session isolation: each connection gets its own isolated session/Tab Group automatically. To pin a specific group (e.g. "work"), use: ${sessUrl}`,
+        ].join("\n");
+      }
+
+      if (tab === "pw") {
+        return [
+          isZh ? "// 1. Playwright 代码" : "// 1. Playwright",
+          `const browser = await chromium.connectOverCDP("${httpUrl}");`,
+          "",
+          isZh ? "// 2. @playwright/mcp 配置（mcpServers）" : "// 2. @playwright/mcp (mcpServers)",
+          JSON.stringify({
+            playwright: {
+              command: "npx",
+              args: [
+                "@playwright/mcp@latest",
+                "--cdp-endpoint", baseHttp,
+                "--cdp-header", `Authorization: Bearer ${tok}`,
+              ],
+            },
+          }, null, 2),
+          "",
+          isZh ? "# 3. playwright-cli" : "# 3. playwright-cli",
+          `playwright-cli attach --cdp="${baseHttp}" --cdp-header="Authorization: Bearer ${tok}"`,
+        ].join("\n");
+      }
+
+      if (tab === "pptr") {
+        return [
+          isZh ? "// 1. Puppeteer 代码（v24+，URL 或 Header 均可）" : "// 1. Puppeteer (URL or Header mode)",
+          `const browser = await puppeteer.connect({`,
+          `  browserURL: "${baseHttp}",`,
+          `  headers: { Authorization: "Bearer ${tok}" },`,
+          `});`,
+          "",
+          isZh ? "// 2. chrome-devtools-mcp 配置（mcpServers）" : "// 2. chrome-devtools-mcp (mcpServers)",
+          JSON.stringify({
+            "chrome-devtools": {
+              command: "npx",
+              args: [
+                "-y", "chrome-devtools-mcp@latest",
+                `--wsEndpoint=${baseWs}`,
+                `--wsHeaders=${JSON.stringify({ Authorization: `Bearer ${tok}` })}`,
+              ],
+            },
+          }, null, 2),
+        ].join("\n");
+      }
+
+      return [
+        isZh ? "# 通过 --cdp + --cdp-headers 直接连接（令牌自动识别对应源）" : "# Direct CLI connection via --cdp + --cdp-headers (token auto-routes)",
+        `agent-browser --cdp "${baseHttp}" \\`,
+        `  --cdp-headers '${JSON.stringify({ Authorization: `Bearer ${tok}` })}' \\`,
+        `  snapshot`,
+        "",
+        isZh ? "# 或直连 WebSocket（免填 Header）" : "# Or direct WebSocket URL (no header needed)",
+        `agent-browser --cdp "${wsUrl}" snapshot`,
+        "",
+        isZh
+          ? "# 提示：日常使用 agent-browser 推荐在「源与接入点 → agent-browser 自动接入」一键配置全局 provider，之后直接跑 agent-browser --session <名> 即可，无需传 --cdp。"
+          : "# Tip: For everyday agent-browser usage, use \"Sources & Endpoints → agent-browser Provider Integration\" once so --session <name> works without passing --cdp.",
+      ].join("\n");
+    },
+    copyConnectSnippet() {
+      const m = this.connectModal;
+      if (!m) return;
+      const text = this.connectSnippet(m.tab);
+      const tip = m.tab === "ai" ? this.t("conn.ai_copied") : this.t("conn.snippet_copied");
+      this.copyText(text, tip, `conn-snip-${m.tab}`);
     },
     copyEndpointHeader(ep, key) {
       if (!ep?.token) {

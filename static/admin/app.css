@@ -1651,12 +1651,140 @@ table.slogt th:nth-child(4), table.slogt td:nth-child(4) { width: auto; }
   gap: 6px;
   margin-top: 8px;
 }
+.tree {
+  font-size: 12px;
+  line-height: 1.55;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--inset);
+  padding: 4px 12px;
+}
 .tree .row {
+  display: flex;
   align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.tree .row:last-child { border-bottom: 0; }
+.tree .row .dot-st {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1;
+}
+.tree .row .p {
+  flex: none;
+  width: 152px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--js-k);
+  font-weight: 500;
+}
+.tree .row .desc {
+  flex: 1;
+  min-width: 0;
+  color: var(--tx2);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
 }
 .tree .row-acts {
   display: inline-flex;
   align-items: center;
   gap: 2px;
   flex: none;
+  width: auto;
+  margin-left: auto;
+}
+
+/* ── CDP 接入用法弹层 ───────────────────────────────────────── */
+.modal-card.connect-modal {
+  max-width: 660px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 20px 16px;
+}
+.connect-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.connect-head-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.connect-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--tx);
+}
+.connect-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.connect-section-label {
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--tx2);
+  margin-bottom: 5px;
+}
+.connect-pre-wrap {
+  position: relative;
+}
+.connect-pre {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  color: var(--tx);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+  user-select: text;
+}
+.connect-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.ov-ep-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.ov-ep-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.ov-ep-url {
+  font-size: 11px;
+  color: var(--tx3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

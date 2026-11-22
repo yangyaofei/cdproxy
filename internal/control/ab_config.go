@@ -108,16 +108,6 @@ func hasCapability(caps []string, want string) bool {
 	return false
 }
 
-func isLegacyProxyPlugin(name, cmd string) bool {
-	lname := strings.ToLower(strings.TrimSpace(name))
-	lcmd := strings.ToLower(strings.TrimSpace(cmd))
-	if lname == "cdproxy" || lname == "ab-proxy" {
-		return true
-	}
-	base := strings.ToLower(filepath.Base(lcmd))
-	return strings.Contains(base, "agent-browser-proxy") || strings.Contains(base, "cdproxy")
-}
-
 func inspectAgentBrowserConfig(cfgPath, targetExe string) AgentBrowserIntegration {
 	res := AgentBrowserIntegration{
 		ConfigPath:    cfgPath,
@@ -159,20 +149,15 @@ func inspectAgentBrowserConfig(cfgPath, targetExe string) AgentBrowserIntegratio
 
 	pluginsRaw, _ := doc["plugins"].([]any)
 	var matchedPlugin map[string]any
-	var legacyPlugin map[string]any
 	for _, item := range pluginsRaw {
 		pm, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
 		name, _ := pm["name"].(string)
-		cmd, _ := pm["command"].(string)
 		if name == "cdproxy" {
 			matchedPlugin = pm
 			break
-		}
-		if legacyPlugin == nil && isLegacyProxyPlugin(name, cmd) {
-			legacyPlugin = pm
 		}
 	}
 
@@ -187,18 +172,7 @@ func inspectAgentBrowserConfig(cfgPath, targetExe string) AgentBrowserIntegratio
 			res.Status = "configured"
 			return res
 		}
-		if curProv != "" && curProv != "cdproxy" && curProv != "ab-proxy" {
-			res.Status = "other_provider"
-			return res
-		}
-		res.Status = "outdated"
-		return res
-	}
-
-	if legacyPlugin != nil {
-		res.CurrentCommand, _ = legacyPlugin["command"].(string)
-		res.CurrentArgs = stringSliceFromAny(legacyPlugin["args"])
-		if curProv != "" && curProv != "ab-proxy" && curProv != "cdproxy" {
+		if curProv != "" && curProv != "cdproxy" {
 			res.Status = "other_provider"
 			return res
 		}
@@ -207,7 +181,7 @@ func inspectAgentBrowserConfig(cfgPath, targetExe string) AgentBrowserIntegratio
 	}
 
 	if curProv != "" {
-		if curProv == "cdproxy" || curProv == "ab-proxy" {
+		if curProv == "cdproxy" {
 			res.Status = "outdated"
 		} else {
 			res.Status = "other_provider"
@@ -306,7 +280,6 @@ func installAgentBrowserConfig(cfgPath, targetExe string, now time.Time) (AgentB
 				continue
 			}
 			name, _ := pm["name"].(string)
-			cmd, _ := pm["command"].(string)
 			if name == "cdproxy" {
 				if !inserted {
 					nextPlugins = append(nextPlugins, newEntry)
@@ -314,10 +287,7 @@ func installAgentBrowserConfig(cfgPath, targetExe string, now time.Time) (AgentB
 				}
 				continue
 			}
-			// 清理旧版 ab-proxy 遗留条目（原文件已完整备份）
-			if name == "ab-proxy" && isLegacyProxyPlugin(name, cmd) {
-				continue
-			}
+			// 原样保留用户已有的其他插件条目（不静默删除任何第三方或旧插件）
 			nextPlugins = append(nextPlugins, item)
 		}
 	}
