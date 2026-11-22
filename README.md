@@ -2,248 +2,208 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-**Shared Chrome keeper & session-isolated Chrome DevTools Protocol (CDP) proxy for AI agents.**
+**A desktop Chrome DevTools Protocol (CDP) proxy app for AI agents and browser automation tools.**
 
-Run multiple AI agents, browser skills, or Playwright/Puppeteer scripts concurrently against **one logged-in Chrome browser** — without agents seeing, hijacking, or closing each other's tabs, stealing window focus, or killing the shared browser.
+When AI assistants or automation scripts browse the web for you, they typically connect to Chrome over CDP (Chrome's built-in remote control protocol). Connecting directly to Chrome causes immediate everyday friction: Chrome keeps popping to the foreground and stealing your focus, concurrent tasks interfere with or close each other's tabs, and connecting to your everyday logged-in Chrome runs into debugging restrictions and repetitive confirmation prompts.
 
-Ships as a **single cross-platform Go binary** (`cdproxy`, CLI + built-in `agent-browser` stdio plugin), a **Wails v3 desktop app** (`cdproxy-desktop` for macOS & Windows), and a **Chrome MV3 extension** (`cdp-ext`) for bridging your everyday Chrome via native Tab Groups.
+`cdproxy` sits quietly between your tools and Chrome as a desktop proxy app for **macOS** and **Windows** — everything is controlled through a clean UI with built-in **English / 中文** switching and **Dark / Light** themes.
 
 <p align="center">
-  <img src="docs/assets/overview-dark-en.png" alt="cdproxy Admin Overview (Dark)" width="960" />
+  <img src="docs/assets/overview-dark-en.png" alt="cdproxy Desktop App Overview (Dark)" width="960" />
 </p>
+
+## What It Proxies & Why Not Connect Directly?
+
+`cdproxy` proxies **two kinds of Chrome browsers** side by side — use either one or keep both ready at once:
+
+1. **Your everyday logged-in Chrome (via the bundled `cdp-ext` extension)**  
+   Turns the Chrome window you are already using — with all your existing logins — into a clean CDP endpoint, without restarting Chrome or tinkering with startup flags.
+2. **A separate, dedicated Chrome managed by the app**  
+   Launches a normal Chrome instance completely isolated from your personal browser so multiple tasks can share it cleanly, and automatically shuts it down when idle to save memory.
+
+Putting `cdproxy` in the middle solves three things direct CDP connections cannot:
+
+| Problem when connecting directly | How `cdproxy` handles it |
+|---|---|
+| Opening pages or switching tabs keeps bringing Chrome to the front and interrupting your work | **Silent background mode by default**: built-in rewrite rules (editable in the app) force new tabs into the background and neutralize focus-stealing commands |
+| One script finishing calls "close browser" and wipes out your entire Chrome window | **Browser close protection**: intercepts full-browser close requests so each task only closes its own pages while Chrome stays alive |
+| Recent Chrome versions block remote debugging on everyday profiles, or nag with repetitive connection prompts | **Direct bridge to your daily Chrome**: install the `cdp-ext` extension once to reuse your logged-in browser without repetitive prompts |
+| Multiple AI tools sharing one browser see, click, or close each other's tabs — or touch your personal tabs | **Per-session isolation & Tab Groups**: every session can only see and touch its own tabs, and leftover tabs are automatically cleaned up after disconnect |
+
+## Sharing Your Everyday Chrome with Native Tab Groups
+
+When multiple AI sessions share your everyday Chrome, `cdproxy` and the `cdp-ext` extension use **Chrome's native color-coded Tab Groups** to draw a clear visual boundary — **each session gets its own colored group** (such as `ab: research` or `ab: docs`).
+
+<p align="center">
+  <img src="docs/assets/tab-groups-en.png" alt="Chrome Native Tab Groups as Visual Isolation Boundaries" width="960" />
+</p>
+
+The Tab Groups you see in Chrome are the live permission boundary — no commands needed:
+
+| Action in Chrome | Live effect |
+|---|---|
+| **Tabs outside any group** (your personal tabs, email, docs) | Completely hidden from all AI sessions by default |
+| **Drag a tab into** an `ab: <session>` group | Immediately grants that AI session access to the page |
+| **Drag a tab out of** a group | Immediately revokes the AI's access while keeping the page open for you |
+| **Drag a tab between** two session groups | Cleanly hands the page over from one AI session to the other |
+| **Collapse / expand** a group | Purely visual — the AI keeps working normally in the background |
+
+In the `cdp-ext` extension options, you can also pick what happens when a session ends:
+- **Close** *(default)* — close the session's tabs and remove the group;
+- **Mark** — grey-mark the group as `· released` and keep the tabs open (if the same session returns later, it automatically reclaims the whole group);
+- **Keep** — detach the session and leave the group and tabs untouched.
 
 ## Live Demos
 
-### Admin UI & Dual-Source Walkthrough
+### Desktop App Walkthrough
 
-Browse dual sources (`standalone` + `extension`), isolated sessions, per-session owned tabs & CDP interaction traces, command rewrite rules, direct endpoints, bilingual UI (`中 / EN`), and dark/light themes:
+Inspect both browser sources, active sessions, step-by-step action traces, background focus rules, and direct connection URLs — with live **中 / EN** language and **Dark / Light** theme switching:
 
 <p align="center">
-  <img src="docs/assets/walkthrough-en.gif" alt="cdproxy UI Walkthrough" width="900" />
+  <img src="docs/assets/walkthrough-en.gif" alt="cdproxy Desktop App Walkthrough" width="900" />
 </p>
 
-### Multi-Agent Session Isolation Lifecycle
+### Multi-Session Isolation in Action
 
-Concurrent agents allocate isolated sessions across `extension` and `standalone`, run CDP commands independently with background focus-guard and base-browser protection, and release cleanly without affecting other sessions:
+Multiple AI sessions run concurrently through `cdproxy`, operating quietly in the background inside their own isolated boundaries and cleaning up only their own tabs when finished:
 
 <p align="center">
-  <img src="docs/assets/session-lifecycle-en.gif" alt="Multi-Agent Session Isolation Lifecycle" width="900" />
+  <img src="docs/assets/session-lifecycle-en.gif" alt="Multi-Session Isolation Lifecycle" width="900" />
 </p>
 
 <details>
-<summary>More screenshots (Sessions + CDP Trace · Light Theme Sources &amp; Endpoints)</summary>
+<summary>More screenshots (Sessions &amp; Action Trace · Light Theme Sources &amp; Endpoints)</summary>
 
 <p align="center">
-  <img src="docs/assets/sessions-dark-en.png" alt="Sessions and CDP Interaction Trace" width="900" />
+  <img src="docs/assets/sessions-dark-en.png" alt="Sessions and Per-Session Action Trace" width="900" />
 </p>
 
 <p align="center">
-  <img src="docs/assets/sources-light-en.png" alt="Sources, Routing Rules, and Direct Endpoints (Light)" width="900" />
+  <img src="docs/assets/sources-light-en.png" alt="Browser Modes, Routing Rules, and Direct Endpoints (Light)" width="900" />
 </p>
 
 </details>
 
-## Why cdproxy?
-
-| Problem without a proxy | How `cdproxy` solves it |
-|---|---|
-| Multiple agents share one Chrome → agents list, mutate, or close each other's tabs | **Session-scoped target ownership**: `Target.getTargets` returns only owned tabs; cross-session `attachToTarget` / `closeTarget` is rejected |
-| Background automation pops Chrome to the foreground while you work | **Background focus guard** (default): rewrites `Target.createTarget` with `background: true`, fakes `Target.activateTarget` & `Page.bringToFront` |
-| One agent calling `Browser.close` terminates Chrome for everyone | **Base browser protection**: `Browser.close` is intercepted with a fake success; shared Chrome stays alive |
-| Chrome 136+ blocks `--remote-debugging-port` on default user profiles | **Dual downstream sources**: run `standalone` (managed keeper Chrome) and `extension` (`cdp-ext` via `chrome.debugger` + Chrome Tab Groups) side by side |
-| Orphaned tabs accumulate when an agent crashes | **Automatic reaping**: disconnected sessions are reaped after 60s (configurable); allocated-but-unused sessions after 300s |
-
-## Architecture
-
-```
-agent-browser / Playwright / Puppeteer / any CDP client
-      │  stdio JSON (implicit plugin mode)  OR  HTTP POST /sessions  OR  direct WS /cdp/<path>/<token>
-      ▼
-cdproxy (CLI daemon or cdproxy-desktop Wails v3 App)
-  ├─ control  (HTTP 127.0.0.1:9224)  session alloc/release, runtime settings, /versions, Admin UI
-  ├─ proxy    (WS   127.0.0.1:9225)  per-session WS routing, target ownership, rewrite rules, ID remapping
-  │    ├─ standalone source ──► keeper Chrome @127.0.0.1:9222 (shared profile, on-demand launch + idle shutdown)
-  │    └─ extension  source ◄── reverse WS /ext?token= ── cdp-ext (MV3) ──► your Chrome Tab Groups (ab: <session>)
-  └─ interlog                        per-session CDP interaction trace (memory ring + disk JSONL)
-```
-
-Both downstream sources stay ready simultaneously. Every new session binds to one source on allocation using:
-`explicit source param` → `routing.rules` prefix match → `routing.default_source`. Changing routing online never disrupts existing sessions.
-
 ## Installation
 
-### Homebrew (macOS & Linux)
+### macOS (Single-Command Homebrew Install — Recommended)
+
+Run one command — Homebrew automatically adds the tap and installs the app in a single step:
 
 ```bash
-brew tap yangyaofei/tap
-
-# CLI daemon & agent-browser plugin (macOS / Linux)
-brew install cdproxy
-
-# Desktop App with menu-bar tray & bundled agent-browser (macOS Apple Silicon)
-brew install --cask cdproxy-desktop
+brew install --cask yangyaofei/tap/cdproxy-desktop
 ```
 
-> **macOS first launch note (Desktop App)**: `cdproxy-desktop.app` is signed with a stable self-signed certificate (not Apple-notarized). If Gatekeeper blocks a browser-downloaded copy, allow it under *System Settings → Privacy & Security → Open Anyway* or run:
+> **macOS first-launch note**: `cdproxy-desktop.app` is signed with a stable self-signed certificate (not Apple-notarized). If Gatekeeper warns on first launch, allow it in *System Settings → Privacy & Security → Open Anyway* or run:
 > ```bash
 > xattr -dr com.apple.quarantine "/Applications/cdproxy-desktop.app"
 > ```
-> Future upgrades via built-in in-app updates (Ed25519-verified `manifest.json`) carry no quarantine flag and preserve permissions.
+> You only need to do this once. Future upgrades via the app's built-in **Update** button are signature-verified and carry no quarantine prompt.
 
-### GitHub Releases
+### Direct Download (macOS & Windows)
 
-Download prebuilt archives directly from [GitHub Releases](https://github.com/yangyaofei/cdproxy/releases):
-- **CLI**: `cdproxy_<version>_<os>_<arch>.tar.gz` (`.zip` on Windows) for darwin / linux / windows × amd64 / arm64
-- **Desktop App**: `cdproxy-desktop_<version>_darwin_arm64.zip` (macOS) · `cdproxy-desktop_<version>_windows_amd64.zip` (Windows)
+Download the prebuilt package from [GitHub Releases](https://github.com/yangyaofei/cdproxy/releases):
+- **macOS (Apple Silicon)**: `cdproxy-desktop_<version>_darwin_arm64.zip` (unzip and drag into `/Applications`)
+- **Windows (64-bit)**: `cdproxy-desktop_<version>_windows_amd64.zip` (unzip and launch; supports in-app updates as well)
 
-### Build from Source
+## Quickstart in 3 Steps
 
-```bash
-# CLI binary (embeds Admin UI + cdp-ext Chrome extension)
-CGO_ENABLED=0 go build -ldflags="-s -w" -o var/cdproxy ./cmd/cdproxy
-codesign --force --sign - var/cdproxy          # required on macOS after stripping symbols
+### 1. Launch `cdproxy`
 
-# Desktop App (macOS, requires Wails v3 CLI)
-cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task package:embedded VERSION=0.10.0
-```
+Open the app and the proxy is ready immediately. Closing the window leaves it running quietly in your menu bar / system tray — click the tray icon anytime to reopen the window, restart the managed browser, or quit.
 
-## Quickstart
+### 2. Choose Your Browser Mode
 
-### 1. Run `cdproxy`
+Both modes can stay enabled side by side, and you can switch the default mode anytime from **Overview** or **Sources & Endpoints**:
 
-Choose **either** the Desktop App **or** the CLI daemon (they share the same default data directory `~/agent-browser/proxy` and ports `9224` / `9225`):
+- **Option A — Dedicated browser (zero setup)**  
+  Ready out of the box. The first time a tool connects, `cdproxy` launches an isolated Chrome automatically and shuts it down after idle time to save memory.
+- **Option B — Bridge your everyday Chrome (one-time extension install)**
+  1. In the app sidebar, open **About**, find the `cdp-ext` card, and click **Export** to save the extension folder.
+  2. Open `chrome://extensions` in your everyday Chrome, turn on **Developer mode**, click **Load unpacked**, and select the exported folder.
+  3. Open the `cdp-ext` extension **Options**, set Relay URL to `ws://127.0.0.1:9225/ext`, and paste the token shown under **Sources & Endpoints → extension** in the app.
+  4. Once `extension` shows **Connected** in the app's top bar, you're all set.
 
-```bash
-cdproxy serve          # start keeper + CDP proxy + HTTP control plane
-cdproxy status         # inspect live sessions & sources
-cdproxy stop           # stop cleanly
-```
+### 3. Copy the Connection URL into Your Tool
 
-Enable the web Admin UI on demand (`admin_web_enabled` defaults to `false` because the Desktop App embeds the UI in-process):
+In **Overview** or **Sources & Endpoints**, click **Copy** on the direct endpoint URL (`ws://127.0.0.1:9225/...`) and paste it into any AI agent or automation tool that supports connecting to Chrome over CDP.
 
-```bash
-curl -X PUT http://127.0.0.1:9224/settings \
-  -H 'Content-Type: application/json' \
-  -d '{"admin_web_enabled": true}'
-open http://127.0.0.1:9224/
-```
-
-### 2. Connect `agent-browser` (Zero-Wrapper Plugin Mode)
-
-When invoked with no arguments and a piped stdin, `cdproxy` automatically enters `agent-browser.plugin.v1` stdio mode and auto-starts the background service on first use. Add it to `~/.agent-browser/config.json` (or pass `--config <file>` for isolated testing):
-
-```json
-{
-  "headed": true,
-  "idleTimeout": "15m",
-  "provider": "cdproxy",
-  "plugins": [
-    {
-      "name": "cdproxy",
-      "command": "/opt/homebrew/bin/cdproxy",
-      "capabilities": ["browser.provider"]
-    }
-  ]
-}
-```
-
-Then run multiple isolated sessions concurrently against the same logged-in Chrome:
-
-```bash
-agent-browser --session research-a open https://github.com/yangyaofei/cdproxy
-agent-browser --session research-b open https://news.ycombinator.com
-```
-
-### 3. Connect Playwright / Puppeteer / Any CDP Client
-
-**Option A — Persistent Direct Endpoint (zero setup)**
-
-Copy a direct endpoint URL from **Sources & Endpoints** in the UI (or query `GET /status`):
+For example, in Playwright:
 
 ```js
 import { chromium } from "playwright-core";
 
-// Connects directly to the "extension" or "standalone" endpoint
-const browser = await chromium.connectOverCDP("ws://127.0.0.1:9225/extension/<endpoint-token>");
+const browser = await chromium.connectOverCDP("ws://127.0.0.1:9225/extension/<token-copied-from-app>");
 const page = await browser.newPage();
 await page.goto("https://example.com");
 ```
 
-**Option B — Dynamic Session Allocation via HTTP API**
+## What You Can Configure in the App
+
+Every common setting is editable directly from the sidebar and takes effect immediately without restarting:
+
+- **Overview**: Check the live status of both browser modes, switch the default mode, restart the dedicated Chrome, or copy connection URLs in one click.
+- **Sessions**: See every active AI session, the tabs it owns, and its step-by-step action log; release any session with one click.
+- **Rewrite Rules**: Inspect or customize background / anti-interruption rules (background tab creation, focus-steal suppression, and browser-close protection are enabled by default).
+- **Sources & Endpoints**: Manage both browser modes, set session-name prefix routing (for example, `ext-` sessions automatically go to your everyday Chrome), and copy or reset access tokens.
+- **Settings**: Adjust listening ports, idle cleanup timeouts (60s after disconnect, 10m idle shutdown for the dedicated browser), and data directory.
+
+---
+
+<details>
+<summary>Developer &amp; Advanced Reference (Dynamic Session API, Ports, Build from Source)</summary>
+
+### Architecture Overview
+
+```
+AI Agent / Playwright / Puppeteer / Any CDP Client
+      │  Direct endpoint ws://127.0.0.1:9225/<path>/<token>  OR  dynamic HTTP session allocation
+      ▼
+cdproxy Desktop App (embedded Go engine + UI)
+  ├─ Control plane  HTTP 127.0.0.1:9224   session alloc/release, live settings, version checks
+  ├─ CDP proxy      WS   127.0.0.1:9225   session isolation, command rewrites, event filtering
+  │    ├─ standalone ──► managed Chrome @127.0.0.1:9222 (on-demand launch + idle shutdown)
+  │    └─ extension  ◄── reverse WS /ext ── cdp-ext (MV3) ──► Chrome native Tab Groups
+  └─ Action trace                         per-session CDP interaction log (memory + disk)
+```
+
+### Dynamic Named Sessions via HTTP API
+
+To spin up named, isolated sessions programmatically (each gets its own `ab: <name>` Tab Group in everyday Chrome), copy the allocation token from **Sources & Endpoints**:
 
 ```bash
-# Allocate an isolated session (include Authorization: Bearer <alloc_token> from /status or UI)
+# Allocate a named session (returns its dedicated WebSocket URL)
 curl -X POST http://127.0.0.1:9224/sessions \
   -H "Authorization: Bearer <alloc_token>" \
   -H "Content-Type: application/json" \
-  -d '{"name": "ext-demo"}'
-# => {"cdpUrl": "ws://127.0.0.1:9225/cdp/<session-token>", "session": "ext-demo", "source": "extension"}
+  -d '{"name": "research"}'
 
-# Release explicitly when done (or let disconnect_reap_seconds clean up automatically)
-curl -X POST http://127.0.0.1:9224/sessions/ext-demo/release
+# Release when done (or let the disconnect timer clean it up automatically)
+curl -X POST http://127.0.0.1:9224/sessions/research/release
 ```
 
-### 4. Bridge Your Everyday Chrome with `cdp-ext` (Extension Source)
+### Default Ports & Data Directory
 
-Use `cdp-ext` when you want agents to operate in your existing logged-in Chrome (works on Chrome 136+ where `--remote-debugging-port` is blocked on default profiles):
+- Default data directory: `~/agent-browser/proxy/` (single `settings.json`, configurable in **Settings**).
+- Default ports: control plane `127.0.0.1:9224`, CDP WebSocket `127.0.0.1:9225`, dedicated Chrome `127.0.0.1:9222` (rebound live in-process without dropping active sessions).
 
-1. Export the bundled extension from **About → cdp-ext** in the Desktop App (or load `ext/cdp-ext/` from this repo) via `chrome://extensions` → **Developer mode** → **Load unpacked**.
-2. Open the extension's **Options** page, set Relay URL to `ws://127.0.0.1:9225/ext`, and paste the token shown under **Sources & Endpoints → extension**.
-3. Route sessions prefixed with `ext-` (default rule) or switch default source online:
-
-```bash
-curl -X PUT http://127.0.0.1:9224/settings \
-  -H 'Content-Type: application/json' \
-  -d '{"routing": {"default_source": "extension"}}'
-```
-
-#### Tab Groups as Physical Isolation Boundaries
-
-In `extension` mode, each session's tabs live in a color-coded Chrome Tab Group named `ab: <session>`. **The browser's Tab Group is the single source of truth** — `cdproxy`'s ownership table is a live projection of it:
-
-| Your native Chrome action | Effect in `cdproxy` |
-|---|---|
-| Drag your own tab **into** `ab: <session>` | Immediately grants that session access to the tab |
-| Drag a tab **out of** the group | Revokes access immediately (synthetic detach/destroy to the agent); tab stays open for you |
-| Drag a tab **between** two session groups | Cleanly transfers ownership from the old session to the new one |
-| Collapse / expand group | Visual only — zero protocol disruption |
-
-Configure release behavior (`close` / `mark` tombstone for later reclaim / `keep`) in the `cdp-ext` Options page.
-
-## Runtime Settings & Ports
-
-All settings live in a single `settings.json` under the data directory (`~/agent-browser/proxy/` by default, overridable via `--data-dir` / `AB_PROXY_DATA_DIR`) and apply live via the UI or `PUT /settings`:
-
-| Setting | Default | Description |
-|---|---|---|
-| `control_port` / `ws_port` | `9224` / `9225` | HTTP control plane & CDP WebSocket ports (rebound in-process without losing session state) |
-| `ports_enabled` | `true` | Master switch for external listeners (`false` = Desktop App in-process only) |
-| `admin_web_enabled` | `false` | Serve the browser Admin UI on `GET /` (Desktop App always embeds UI via Wails bindings) |
-| `disconnect_reap_seconds` | `60` | Grace period after upstream disconnect before closing owned tabs |
-| `alloc_reap_seconds` | `300` | Timeout for allocated sessions that never connect |
-| `keeper_idle_shutdown_seconds` | `600` | Auto-stop managed keeper Chrome after idle period (`0` disables) |
-| `rewrites` | Focus guard + `Browser.close` guard | Command-direction CDP rewrite/fake rules (events are strictly read-only & filtered) |
-| `routing` | `standalone` + `ext-` → `extension` | Prefix-based routing table (`explicit source > prefix rule > default_source`) |
-| `endpoints` | `standalone` & `extension` | Persistent direct CDP endpoints (`ws://127.0.0.1:9225/<path>/<token>`) |
-
-## Development & Tests
+### Build & Test from Source
 
 ```bash
+# Run Go unit tests and Admin UI single-source check
 go vet ./cmd/... ./internal/... ./desktop
-go test -count=1 ./cmd/... ./internal/...             # Go unit tests
-python3 scripts/sync_admin_frontend.py --check        # Verify single-source Admin UI sync
-uv run --project scripts python scripts/smoke_test.py # 6-item standalone E2E smoke test
-./scripts/concurrency_test.sh 20                      # 4-way concurrent isolation stress test
+go test -count=1 ./cmd/... ./internal/...
+python3 scripts/sync_admin_frontend.py --check
+
+# Package macOS Desktop App (requires Wails v3 CLI)
+cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task package:embedded VERSION=0.10.0
 ```
 
-## Docs
+Further contributor and release references:
+- [AGENTS.md](AGENTS.md) — module map, development & test commands, engineering rules
+- [docs/CI-CD.md](docs/CI-CD.md) — signing certificates, release pipelines, Homebrew & in-app updater ops
 
-Architecture, CDP rewrite invariants, dual-source state transitions, and extension projection rules live directly in module docstrings (starting from [internal/proxy/proxy.go](internal/proxy/proxy.go), [internal/state/state.go](internal/state/state.go), [internal/core/core.go](internal/core/core.go), and [ext/cdp-ext/sw.js](ext/cdp-ext/sw.js)). External docs are kept minimal:
-
-| Document | Contents |
-|---|---|
-| [AGENTS.md](AGENTS.md) | Contributor & AI agent contract: module map, dev/test commands, hard rules |
-| [docs/CI-CD.md](docs/CI-CD.md) | Signing certificates, GitHub Secrets, CI/Release workflows, Homebrew & updater ops |
+</details>
 
 ## License
 

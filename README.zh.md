@@ -2,247 +2,208 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-**面向 AI Agent 的共享 Chrome 基座与会话级隔离 CDP 转发代理。**
+**一个面向 AI 助手与浏览器自动化工具的 CDP（Chrome 调试控制协议）桌面代理应用。**
 
-让多个 AI Agent、浏览器 Skill 或 Playwright / Puppeteer 脚本同时并发复用**同一个带登录态的 Chrome**——彼此看不到也关不掉对方的标签页，后台操作不抢用户窗口焦点，单个会话调用 `Browser.close` 也杀不掉共享浏览器。
+当 AI 助手或自动化工具需要帮你打开网页、查资料、填表单时，它们通常通过 Chrome 的远程控制协议（CDP）来操作浏览器。但直接连 Chrome 会遇到一连串烦人的问题：操作时窗口反复弹到最前面打断你工作、多任务同时跑会互相把对方的网页点乱或关掉、连日常浏览器限制多还总弹确认框。
 
-提供三种形态共用同一套 Go 内核：**单文件跨平台 CLI 二进制**（`cdproxy`，原生内置 `agent-browser` stdio 插件模式）、**Wails v3 桌面应用**（`cdproxy-desktop`，支持 macOS / Windows）以及 **Chrome MV3 扩展**（`cdp-ext`，通过原生标签组直接桥接你日常使用的 Chrome）。
+`cdproxy` 装在你的电脑上，放在工具和 Chrome 中间做一层代理，把这些问题一次性挡在外面——支持 **macOS** 与 **Windows**，全部操作在桌面界面里点击完成，内置中/英文界面与暗色/亮色外观。
 
 <p align="center">
-  <img src="docs/assets/overview-dark.png" alt="cdproxy 管理台概览（暗色主题）" width="960" />
+  <img src="docs/assets/overview-dark.png" alt="cdproxy 桌面应用主界面（暗色主题）" width="960" />
 </p>
 
-## 效果演示
+## 它代理什么？为什么不直接连 Chrome？
 
-### 管理台与双源路由总览
+`cdproxy` 可以同时代理**两类 Chrome 浏览器**，按需选择或同时开启：
 
-一屏查看双浏览器源（`standalone` + `extension`）、活跃会话与单会话 CDP 交互流水、命令改写规则、免申请直连入口，支持暗色/亮色外观实时切换：
+1. **你当前正在用的日常 Chrome（通过内置插件 `cdp-ext`）**  
+   直接把你平时已经打开、登录好各种网站的 Chrome 变成一个可被代理的 CDP 入口——不用为了给 AI 用而重新登录，也不用折腾浏览器启动参数。
+2. **一个与日常使用完全分开的独立 Chrome**  
+   由 App 单独启动并托管一个干净的普通 Chrome 实例，专门给多个自动化任务共享复用，与你的个人浏览器互不干扰，长时间不用还会自动关闭省内存。
+
+之所以要在工具和浏览器之间多加这一层代理，核心解决三件事：
+
+| 直接连 Chrome 的麻烦 | `cdproxy` 做的处理 |
+|---|---|
+| 后台自动化每次开网页、切标签，Chrome 就自动弹到前台抢走焦点，不断打断正在做的事 | **默认后台静默运行**：内置改写规则（支持在界面自定义），把新建标签和切换窗口改为默认后台执行，全程不抢焦点、不打扰 |
+| 某个工具结束时调用关闭浏览器，把整个 Chrome 和你正在看的页面一起关掉 | **防止整机被关**：代理自动拦截关闭整个浏览器的指令，只结束当前任务自己的页面，浏览器始终保持运行 |
+| 新版 Chrome 限制直接调试日常浏览器，或每次连接都要手动点烦人的授权确认弹窗 | **装一次插件直接连日常 Chrome**：通过 `cdp-ext` 扩展稳定接管，免去反复确认，直接复用已有登录态 |
+| 多个 AI 或任务共用同一个浏览器，彼此看得到也关得掉对方的网页，甚至误碰你的私人标签 | **按会话隔离 + 标签页分组**：每个任务只能看到和操作自己的标签页；崩溃或断开后还会自动清理残留网页 |
+
+## 用 Chrome 原生「标签页分组」共享你的日常浏览器
+
+当你让多个 AI 会话同时使用你的日常 Chrome 时，`cdproxy` 会配合 `cdp-ext` 插件，利用 **Chrome 原生的彩色标签页分组（Tab Group）** 划出清晰可见的边界——**每个会话对应一个独立颜色的分组**（例如 `ab: research`、`ab: writing`）。
 
 <p align="center">
-  <img src="docs/assets/walkthrough.gif" alt="cdproxy 界面功能演示" width="900" />
+  <img src="docs/assets/tab-groups.png" alt="Chrome 原生标签页分组可视化隔离边界" width="960" />
 </p>
 
-### 多会话隔离生命周期
+你不需要记任何命令，浏览器里的分组状态就是实时的权限边界：
 
-多个 Agent 同时在 `extension` 标签组源与 `standalone` 独立基座源上并发分配会话，互不干扰执行 CDP 命令（后台建 tab、跨会话隔离、`Browser.close` 基座保护），并在释放时仅清理自身标签页：
+| 你在 Chrome 里的操作 | 实时效果 |
+|---|---|
+| **分组之外**（你原本打开的网页、邮件、文档） | 对所有 AI 会话默认完全不可见，不会误点或误关 |
+| 把网页**拖进**某个 `ab: <会话名>` 分组 | 立刻把这张网页交给对应的 AI 会话查看和操作 |
+| 把网页**拖出**分组 | 立刻收回 AI 的控制权，网页原样留在你手里继续看 |
+| 把网页在**两个分组之间拖动** | 把这张网页直接转交给另一个 AI 会话 |
+| **折叠 / 展开**分组 | 只是界面收纳，不影响 AI 在后台继续工作 |
+
+在 `cdp-ext` 插件设置页中，还可以自由选择任务结束后的收尾方式：
+- **自动关闭**（默认）：关闭该组内的标签页并移除分组；
+- **标灰保留**：给分组打上 `· released` 灰色标记并保留网页，下次同名会话回来会自动重新接管整组；
+- **原样保留**：只解除会话关联，分组和网页保持不动。
+
+## 界面演示
+
+### 桌面应用主界面巡览
+
+在 App 中直观查看两类浏览器状态、所有运行中的会话和每一步操作记录、后台防打扰规则与固定连接地址，支持一键切换暗色/亮色主题与中/英文界面：
 
 <p align="center">
-  <img src="docs/assets/session-lifecycle.gif" alt="多 Agent 会话隔离生命周期演示" width="900" />
+  <img src="docs/assets/walkthrough.gif" alt="cdproxy 桌面应用功能演示" width="900" />
+</p>
+
+### 多会话并行互不干扰
+
+多个 AI 会话同时接入同一个代理，在各自独立的分组或独立浏览器里并行操作，互不抢焦点、互不干扰，结束后仅清理各自打开的网页：
+
+<p align="center">
+  <img src="docs/assets/session-lifecycle.gif" alt="多会话隔离并行生命周期演示" width="900" />
 </p>
 
 <details>
-<summary>更多截图（会话与 CDP 交互流水 · 亮色主题源与接入点）</summary>
+<summary>更多界面截图（会话与操作记录 · 亮色主题连接地址与路由设置）</summary>
 
 <p align="center">
-  <img src="docs/assets/sessions-dark.png" alt="会话列表与 CDP 交互流水" width="900" />
+  <img src="docs/assets/sessions-dark.png" alt="会话列表与每步操作记录" width="900" />
 </p>
 
 <p align="center">
-  <img src="docs/assets/sources-light.png" alt="双源配置、前缀路由与固定接入点（亮色主题）" width="900" />
+  <img src="docs/assets/sources-light.png" alt="双浏览器模式、路由规则与固定连接地址（亮色主题）" width="900" />
 </p>
 
 </details>
 
-## 解决什么问题
-
-| 直接连 Chrome 的痛点 | `cdproxy` 的解决方式 |
-|---|---|
-| 多 Agent 共用一个 Chrome，互相列举、误操作或误关对方标签页 | **会话级归属隔离**：`Target.getTargets` 只返回当前会话名下 tab，跨会话 `attachToTarget` / `closeTarget` 直接拒绝 |
-| 后台自动化不断把 Chrome 弹到前台，打断正在写代码/看文档 | **后台焦点守卫（默认）**：`Target.createTarget` 自动加 `background: true`，`Target.activateTarget` / `Page.bringToFront` 假成功拦截 |
-| 任意一个脚本退出时调 `Browser.close`，整台 Chrome 直接没了 | **基座保护**：代理侧拦截 `Browser.close` 返回假成功，共享 Chrome 始终存活 |
-| Chrome 136 起默认 profile 禁用 `--remote-debugging-port` | **双源常开并存**：独立托管基座（`standalone`）与宿主浏览器扩展（`extension` / `cdp-ext`）同时在线、按规则分流 |
-| Agent 异常崩溃后残留大量僵尸标签页 | **自动回收**：断连 60s（可调）自动关闭名下标签页并摘除会话；分配后未连 300s 自动回收 |
-
-## 架构全景
-
-```
-agent-browser / Playwright / Puppeteer / 任意 CDP 客户端
-      │  stdio JSON（隐式 plugin 模式） 或 HTTP POST /sessions 或直连 WS /cdp/<path>/<token>
-      ▼
-cdproxy（CLI 服务 或 cdproxy-desktop Wails v3 桌面 App）
-  ├─ control  (HTTP 127.0.0.1:9224)  会话分配/释放、运行时设置、/versions 版本升级、Admin 界面
-  ├─ proxy    (WS   127.0.0.1:9225)  每会话独立 WS、归属过滤、命令改写、事件定向路由、ID 重映射
-  │    ├─ standalone 源 ──► keeper 托管基座 Chrome @127.0.0.1:9222（共享登录态，按需拉起 + 空闲关闭）
-  │    └─ extension  源 ◄── 反向回连 WS /ext?token= ── cdp-ext (MV3) ──► 日常 Chrome 原生标签组 (ab: <会话名>)
-  └─ interlog                        每会话独立 CDP 交互流水（内存环形 + 落盘 JSONL）
-```
-
-双下游源常开并存。每个新会话在分配时按 `显式 source 参数` → `routing.rules 前缀匹配` → `routing.default_source` 定格绑定一个源；在线切换默认源只影响后续新会话，存量会话平滑无感。
-
 ## 安装
 
-### Homebrew（macOS / Linux）
+### macOS（Homebrew 一行安装，推荐）
+
+直接执行下面这一行命令（Homebrew 会自动关联软件源并完成安装，无需先手动 `brew tap`）：
 
 ```bash
-brew tap yangyaofei/tap
-
-# CLI 服务与 agent-browser 插件（macOS / Linux）
-brew install cdproxy
-
-# 桌面客户端（含托盘菜单、内嵌管理台与捆绑 agent-browser，macOS Apple Silicon）
-brew install --cask cdproxy-desktop
+brew install --cask yangyaofei/tap/cdproxy-desktop
 ```
 
-> **macOS 桌面端首次打开说明**：`cdproxy-desktop.app` 使用项目固定自签证书签名（未走 Apple 公证）。通过浏览器下载的包首次打开若被 Gatekeeper 拦截，在「系统设置 → 隐私与安全性 → 仍要打开」放行，或执行：
+> **macOS 首次打开提示**：应用使用项目固定自签证书签名（未走 Apple 公证）。首次打开如遇系统安全拦截，前往「系统设置 → 隐私与安全性 → 仍要打开」放行一次，或执行：
 > ```bash
 > xattr -dr com.apple.quarantine "/Applications/cdproxy-desktop.app"
 > ```
-> 后续通过应用内更新（Ed25519 验签 `manifest.json`）自动下载替换不带隔离标记，无二次弹窗。
+> 放行一次即可。后续在 App 顶栏点「更新」走内置自动更新（带签名校验），不会再弹系统拦截。
 
-### GitHub Releases
+### macOS & Windows 直接下载
 
-直接从 [GitHub Releases](https://github.com/yangyaofei/cdproxy/releases) 下载预编译产物：
-- **CLI**：`cdproxy_<版本>_<os>_<arch>.tar.gz`（Windows 为 `.zip`），覆盖 darwin / linux / windows × amd64 / arm64
-- **桌面端**：`cdproxy-desktop_<版本>_darwin_arm64.zip`（macOS）· `cdproxy-desktop_<版本>_windows_amd64.zip`（Windows）
+前往 [GitHub Releases](https://github.com/yangyaofei/cdproxy/releases) 下载对应系统的压缩包，解压即可使用：
+- **macOS（Apple Silicon）**：`cdproxy-desktop_<版本>_darwin_arm64.zip`（解压后拖入「应用程序」）
+- **Windows（64 位）**：`cdproxy-desktop_<版本>_windows_amd64.zip`（解压后直接运行，同样支持应用内自动更新）
 
-### 从源码构建
+## 三步开始使用
 
-```bash
-# CLI 单二进制（内嵌 Admin 页面与 cdp-ext 扩展资产）
-CGO_ENABLED=0 go build -ldflags="-s -w" -o var/cdproxy ./cmd/cdproxy
-codesign --force --sign - var/cdproxy          # macOS 剥离符号后必须重签
+### 第 1 步：打开 `cdproxy` 桌面应用
 
-# 桌面端（macOS，需已安装 Wails v3 CLI）
-cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task package:embedded VERSION=0.10.0
-```
+打开应用后代理会自动在后台就绪。关闭主窗口时，应用会继续安静驻留在系统菜单栏 / 托盘中，随时点托盘图标可重新打开界面、重启浏览器或退出。
 
-## 快速上手
+### 第 2 步：选择要使用的浏览器模式
 
-### 1. 启动 `cdproxy`
+两种模式可以同时开启，在 App 的「概览」或「源与接入点」页随时一键切换默认模式：
 
-桌面 App 与 CLI daemon **二选一运行**（共用同一份数据目录 `~/agent-browser/proxy` 与端口 `9224` / `9225`）：
+- **方式 A — 独立浏览器（开箱即用）**  
+  默认已经就绪，不需要任何额外配置。第一次有工具连进来时，App 会自动拉起一个与你日常浏览隔离的独立 Chrome，平时不用一段时间后自动退出释放内存。
+- **方式 B — 连接你日常正在用的 Chrome（装一次插件）**
+  1. 在 App 左侧打开 **「版本与关于」**，找到 `cdp-ext` 扩展卡片，点击一键导出扩展文件夹。
+  2. 在你的日常 Chrome 地址栏打开 `chrome://extensions`，打开右上角 **「开发者模式」**，点击 **「加载已解压的扩展程序」**，选中刚刚导出的文件夹。
+  3. 打开 `cdp-ext` 插件的 **「选项」** 页面，把连接地址填为 `ws://127.0.0.1:9225/ext`，再把 App「源与接入点 → extension」里显示的令牌复制粘贴进去保存。
+  4. 看到 App 顶栏 `extension` 状态变为 **已回连**，就连接完成了。
 
-```bash
-cdproxy serve          # 前台启动 keeper + CDP 代理 + HTTP 控制面
-cdproxy status         # 查看双源与活跃会话状态
-cdproxy stop           # 精确停机
-```
+### 第 3 步：复制连接地址，填进你的 AI 或浏览器工具
 
-如使用 CLI 并希望在浏览器访问网页版 Admin（桌面 App 已进程内直连，默认关闭 `admin_web_enabled`）：
+在 App 的 **「概览」** 或 **「源与接入点」** 页面，直接点 **「复制」** 拿到对应模式的固定连接地址（形如 `ws://127.0.0.1:9225/...`），粘贴到任意支持连接已有 Chrome（CDP）的 AI 助手或自动化工具中即可开始使用。
 
-```bash
-curl -X PUT http://127.0.0.1:9224/settings \
-  -H 'Content-Type: application/json' \
-  -d '{"admin_web_enabled": true}'
-open http://127.0.0.1:9224/
-```
-
-### 2. 接入 `agent-browser`（零壳隐式插件模式）
-
-`cdproxy` 在「无子命令 + stdin 为管道」时自动进入 `agent-browser.plugin.v1` 协议模式，并在服务未启动时自动拉起后台。将如下配置写入 `~/.agent-browser/config.json`（也可写入临时文件配合 `--config` 单独试用）：
-
-```json
-{
-  "headed": true,
-  "idleTimeout": "15m",
-  "provider": "cdproxy",
-  "plugins": [
-    {
-      "name": "cdproxy",
-      "command": "/opt/homebrew/bin/cdproxy",
-      "capabilities": ["browser.provider"]
-    }
-  ]
-}
-```
-
-随后即可并发运行多个彼此隔离的浏览器会话：
-
-```bash
-agent-browser --session research-a open https://github.com/yangyaofei/cdproxy
-agent-browser --session research-b open https://news.ycombinator.com
-```
-
-### 3. 接入 Playwright / Puppeteer / 任意 CDP 客户端
-
-**方式 A — 免申请固定接入点（开箱即用）**
-
-在「源与接入点」页直接复制对应接入点 URL（或读 `GET /status`）：
+例如在 Playwright 中只需这一行连接地址：
 
 ```js
 import { chromium } from "playwright-core";
 
-// 直连 extension 或 standalone 固定入口
-const browser = await chromium.connectOverCDP("ws://127.0.0.1:9225/extension/<endpoint-token>");
+const browser = await chromium.connectOverCDP("ws://127.0.0.1:9225/extension/<从App复制的令牌>");
 const page = await browser.newPage();
 await page.goto("https://example.com");
 ```
 
-**方式 B — HTTP 控制面动态申请会话**
+## 应用界面里能调什么？
+
+所有常用开关都在左侧栏里直接可视化配置，保存后立即生效，不需要重启：
+
+- **概览**：一眼看清独立浏览器与日常 Chrome 扩展的连接状态、快速切换默认模式、一键复制连接地址。
+- **会话**：查看当前所有正在运行的 AI 会话、各自打开的标签页、完整的操作流水记录，支持一键释放某个会话。
+- **改写规则**：查看和增删防打扰规则（默认已开启「新建页后台打开」「禁止切到前台」「禁止关闭整个浏览器」）。
+- **源与接入点**：管理两类浏览器模式、按会话名前缀自动分流（如 `ext-` 开头的会话自动走日常 Chrome），以及查看/重置连接令牌。
+- **设置**：调整监听端口、断开后自动清理残留网页的等待时间（默认 60 秒）、独立浏览器空闲自动退出的等待时间（默认 10 分钟）和数据存放目录。
+
+---
+
+<details>
+<summary>开发者与进阶说明（动态会话 API、端口与源码构建）</summary>
+
+### 架构简图
+
+```
+AI 助手 / Playwright / Puppeteer / 任意 CDP 客户端
+      │  固定直连地址 ws://127.0.0.1:9225/<path>/<token> 或动态分配会话
+      ▼
+cdproxy 桌面应用（内嵌 Go 引擎 + 管理界面）
+  ├─ 控制面  HTTP 127.0.0.1:9224   会话分配/释放、运行时设置、版本检查
+  ├─ 代理层  WS   127.0.0.1:9225   会话隔离、命令改写（默认后台不打扰）、事件过滤
+  │    ├─ standalone ──► 独立托管 Chrome @127.0.0.1:9222（按需拉起 + 空闲退出）
+  │    └─ extension  ◄── 反向 WS /ext ── cdp-ext (MV3) ──► 日常 Chrome 标签页分组
+  └─ 操作流水                       按会话记录每一步 CDP 交互（内存 + 本地日志）
+```
+
+### 通过 HTTP 接口动态分配独立会话
+
+如需给多个并行任务分别创建命名的独立会话（在日常 Chrome 中对应不同的 `ab: <会话名>` 分组），可在「源与接入点」复制分配令牌后调用：
 
 ```bash
-# 分配隔离会话（Bearer 令牌可在管理台「源与接入点」一键复制）
+# 创建命名会话（返回专属 WebSocket 地址）
 curl -X POST http://127.0.0.1:9224/sessions \
   -H "Authorization: Bearer <alloc_token>" \
   -H "Content-Type: application/json" \
-  -d '{"name": "ext-demo"}'
-# => {"cdpUrl": "ws://127.0.0.1:9225/cdp/<session-token>", "session": "ext-demo", "source": "extension"}
+  -d '{"name": "research"}'
 
-# 用完可显式释放（也可断连后等待 disconnect_reap_seconds 自动回收）
-curl -X POST http://127.0.0.1:9224/sessions/ext-demo/release
+# 任务结束后释放（也可在断开后由断连回收自动清理）
+curl -X POST http://127.0.0.1:9224/sessions/research/release
 ```
 
-### 4. 用 `cdp-ext` 桥接你的日常 Chrome（extension 源）
+### 默认端口与配置位置
 
-当你希望 Agent 直接复用日常 Chrome 里的全部登录态（无需重启 Chrome、不受 Chrome 136 默认 profile 远程调试限制）：
+- 默认数据目录：`~/agent-browser/proxy/`（设置单文件 `settings.json`，可在 App「设置」页修改）。
+- 默认端口：控制面 `127.0.0.1:9224`、CDP 代理 `127.0.0.1:9225`、独立 Chrome `127.0.0.1:9222`（支持在界面里热修改，不中断现有会话）。
 
-1. 在桌面端「版本与关于 → `cdp-ext`」一键导出扩展目录（或直接使用仓库 `ext/cdp-ext/`），在 Chrome 打开 `chrome://extensions` → 开启开发者模式 → **加载已解压的扩展程序**。
-2. 打开扩展 **选项页**，将 Relay 地址设为 `ws://127.0.0.1:9225/ext`，填入管理台「源与接入点 → extension」中的准入令牌并保存。
-3. 以 `ext-` 开头的会话名会按默认前缀规则自动走扩展源，也可在线将默认源切换为 `extension`：
-
-```bash
-curl -X PUT http://127.0.0.1:9224/settings \
-  -H 'Content-Type: application/json' \
-  -d '{"routing": {"default_source": "extension"}}'
-```
-
-#### Chrome 标签组即物理隔离边界
-
-在 `extension` 源下，每个会话的标签页会自动归入彩色 Chrome 原生标签组 `ab: <会话名>`。**浏览器的标签组是唯一真相**，`cdproxy` 归属表实时投影组内成员关系：
-
-| 你在 Chrome 里的原生操作 | 代理侧语义 |
-|---|---|
-| 把自己的 tab **拖进** `ab: <会话名>` 组 | 立即归属该会话，Agent 立即可见可操作 |
-| 把 tab **拖出**组 / 移出分组 | 立即收回可见性（向 Agent 合成销毁事件），页面保留在你手里 |
-| 在两个会话组之间拖动 | 领地平滑转移：旧会话失去可见性、新会话自动接管 |
-| 折叠 / 展开标签组 | 纯视觉操作，不影响协议与会话 |
-
-在扩展选项页可配置释放策略：`close`（关闭组内页并删组，默认）/ `mark`（灰标 `· released` 保留页面，同名会话回来自动整组认领）/ `keep`（原样保留）。
-
-## 运行时设置与端口
-
-设置单文件落盘于数据目录（默认 `~/agent-browser/proxy/settings.json`，可用 `--data-dir` 或 `AB_PROXY_DATA_DIR` 覆盖），在管理台或经 `PUT /settings` 修改后立即生效：
-
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `control_port` / `ws_port` | `9224` / `9225` | HTTP 控制面与 CDP WS 端口（支持进程内热重绑，不丢会话/令牌） |
-| `ports_enabled` | `true` | 外部端口总开关（`false` 时仅桌面 App 进程内绑定可用） |
-| `admin_web_enabled` | `false` | 是否开放网页版 Admin（桌面 App 经 Wails 内嵌提供，不受此开关限制） |
-| `disconnect_reap_seconds` | `60` | 上游断连后回收宽限（容忍客户端短暂重连） |
-| `alloc_reap_seconds` | `300` | 分配后从未连接的超时回收时限 |
-| `keeper_idle_shutdown_seconds` | `600` | 独立基座 Chrome 空闲自动退出阈值（`0` 关闭） |
-| `rewrites` | 焦点守卫 + 基座保护 | 命令向改写/假成功规则（事件向只过滤不回写） |
-| `routing` | `standalone` + `ext-` → `extension` | 前缀分流表（显式 source > 前缀规则 > 默认源） |
-| `endpoints` | `standalone` 与 `extension` | 免申请固定直连端点（`ws://127.0.0.1:9225/<path>/<token>`） |
-
-## 开发与测试
+### 源码构建与测试
 
 ```bash
+# 运行 Go 单元测试与前端同步校验
 go vet ./cmd/... ./internal/... ./desktop
-go test -count=1 ./cmd/... ./internal/...             # Go 单元测试
-python3 scripts/sync_admin_frontend.py --check        # Admin 单一源同步校验
-uv run --project scripts python scripts/smoke_test.py # standalone 六项端到端冒烟
-./scripts/concurrency_test.sh 20                      # 四路并发零串扰压测
+go test -count=1 ./cmd/... ./internal/...
+python3 scripts/sync_admin_frontend.py --check
+
+# 构建 macOS 桌面应用（需安装 Wails v3 CLI）
+cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task package:embedded VERSION=0.10.0
 ```
 
-## 文档索引
+更多模块设计、测试套件与发版运维说明见：
+- [AGENTS.md](AGENTS.md) — 项目模块地图、开发与测试规范
+- [docs/CI-CD.md](docs/CI-CD.md) — 签名证书、双端发布、自动更新与 Homebrew 运维
 
-架构、CDP 改写不变式、双源状态机与扩展标签组投影规则均直接沉淀在对应源码顶部注释中（入口见 [internal/proxy/proxy.go](internal/proxy/proxy.go)、[internal/state/state.go](internal/state/state.go)、[internal/core/core.go](internal/core/core.go) 与 [ext/cdp-ext/sw.js](ext/cdp-ext/sw.js)）；外部仅保留极简文档：
-
-| 文档 | 内容 |
-|---|---|
-| [AGENTS.md](AGENTS.md) | 贡献者与 AI 协作契约：模块地图、开发测试命令、硬红线 |
-| [docs/CI-CD.md](docs/CI-CD.md) | 签名证书、GitHub Secrets、CI/Release 流水线、Homebrew 与热更新运维 |
+</details>
 
 ## 开源协议
 
