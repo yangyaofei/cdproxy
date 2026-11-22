@@ -1,6 +1,6 @@
 // Package plugin 实现 agent-browser.plugin.v1 stdio provider 协议桥。
 //
-// 桌面端（cdproxy-desktop plugin）与 CLI（cdproxy plugin / 隐式 stdin 管道）共用本包：
+// 桌面端（cdproxy.app/Contents/MacOS/cdproxy plugin）与 CLI（cdproxy plugin / 隐式 stdin 管道）共用本包：
 // 读取 stdin 的 JSON 信封，按需自动拉起后台服务，再经 HTTP POST /sessions 为指定
 // session 分配隔离 CDP 连接并回写 stdout。
 // 分配令牌优先从本地 <dataDir>/settings.json 读取（不依赖无鉴权 /status）。

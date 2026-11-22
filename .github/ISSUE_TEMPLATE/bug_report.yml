@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug or unexpected behavior in cdproxy / cdproxy-desktop / cdp-ext
+description: Report a bug or unexpected behavior in cdproxy / cdp-ext
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -9,7 +9,7 @@ body:
       label: Component
       options:
         - CLI daemon (cdproxy)
-        - Desktop App (cdproxy-desktop)
+        - Desktop App (cdproxy)
         - Chrome Extension (cdp-ext)
         - Admin Web UI
         - Homebrew / Release Packaging

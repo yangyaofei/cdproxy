@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""app_smoke_test.py — 桌面 App（cdproxy-desktop）冒烟测试。
+"""app_smoke_test.py — 桌面 App（cdproxy.app）冒烟测试。
 
 App 与 daemon 二选一持 9224/9225，本脚本直接对"打包版 App"做黑盒验证：
   T1 App冷启动：杀掉现有 App → 启动打包二进制 → 引擎就绪（9224 health）
@@ -14,7 +14,7 @@ App 与 daemon 二选一持 9224/9225，本脚本直接对"打包版 App"做黑�
   python3 scripts/app_smoke_test.py T1 T4     # 指定项
 环境：
   ABP_APP_BINARY  App 可执行文件路径
-                  （默认 desktop/bin/cdproxy-desktop.app/Contents/MacOS/cdproxy-desktop）
+                  （默认 desktop/bin/cdproxy.app/Contents/MacOS/cdproxy）
   ABP_CONTROL     控制面地址（默认 http://127.0.0.1:9224）
 注意：会真实重启 App 与切换端口——扩展/会话会断线自愈（设计行为）。
 """
@@ -31,7 +31,7 @@ import urllib.error
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP_BINARY = os.environ.get(
     "ABP_APP_BINARY",
-    os.path.join(ROOT, "desktop/bin/cdproxy-desktop.app/Contents/MacOS/cdproxy-desktop"))
+    os.path.join(ROOT, "desktop/bin/cdproxy.app/Contents/MacOS/cdproxy"))
 CONTROL = os.environ.get("ABP_CONTROL", "http://127.0.0.1:9224")
 SHOT_DIR = os.path.join(ROOT, "var", "app-smoke")
 WS_PORT = 9225
@@ -67,7 +67,7 @@ def port_listening(port):
 
 
 def kill_app():
-    subprocess.run(["pkill", "-f", "cdproxy-desktop"], capture_output=True)
+    subprocess.run(["pkill", "-f", "cdproxy.app/Contents/MacOS/cdproxy"], capture_output=True)
     for _ in range(20):
         if not port_listening(9224):
             break
@@ -154,14 +154,14 @@ def t4_e2e():
 
 def t5_ports():
     print("T5 端口开关（引擎不死）")
-    pid_before = subprocess.run(["pgrep", "-f", "cdproxy-desktop"],
+    pid_before = subprocess.run(["pgrep", "-f", "cdproxy.app/Contents/MacOS/cdproxy"],
                                 capture_output=True, text=True).stdout.strip()
     code, _ = http("PUT", "/settings", {"ports_enabled": False})
     check("PUT ports_enabled=false 应答先回", code == 200)
     time.sleep(1.5)
     check("9224 已关", not port_listening(9224))
     check("9225 已关", not port_listening(WS_PORT))
-    pid_after = subprocess.run(["pgrep", "-f", "cdproxy-desktop"],
+    pid_after = subprocess.run(["pgrep", "-f", "cdproxy.app/Contents/MacOS/cdproxy"],
                                capture_output=True, text=True).stdout.strip()
     check("App 进程存活（引擎未死）", pid_before != "" and pid_after == pid_before)
     # 恢复：进程内已无监听，改由重开验证——重启 App 后设置仍生效

@@ -11,7 +11,7 @@ import (
 func TestAgentBrowserConfigLifecycle(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, ".agent-browser", "config.json")
-	exe := filepath.Join(tmp, "cdproxy-desktop")
+	exe := filepath.Join(tmp, "cdproxy")
 
 	// 1) Missing file -> not_found
 	st := inspectAgentBrowserConfig(cfgPath, exe)
@@ -68,7 +68,7 @@ func TestAgentBrowserConfigLifecycle(t *testing.T) {
 	}
 
 	// 3b) Moving app executable path -> outdated
-	stMoved := inspectAgentBrowserConfig(cfgPath, filepath.Join(tmp, "moved", "cdproxy-desktop"))
+	stMoved := inspectAgentBrowserConfig(cfgPath, filepath.Join(tmp, "moved", "cdproxy"))
 	if stMoved.Status != "outdated" {
 		t.Fatalf("want outdated when cdproxy path changed, got %+v", stMoved)
 	}

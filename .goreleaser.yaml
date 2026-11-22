@@ -2,7 +2,7 @@
 #
 # 触发：push tag v*（.github/workflows/release.yml）
 # 产物：全平台 CLI 二进制（darwin/linux/windows × amd64/arm64）+ 归档 + SHA256SUMS
-# Homebrew 分发维护在 yangyaofei/homebrew-tap（Formula/cdproxy.rb + Casks/cdproxy-desktop.rb）。
+# Homebrew 分发维护在 yangyaofei/homebrew-tap（Casks/cdproxy.rb）。
 version: 2
 
 project_name: cdproxy
@@ -27,7 +27,7 @@ builds:
 archives:
   - id: default
     name_template: >-
-      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+      cdproxy-cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     formats:
       - tar.gz
     format_overrides:

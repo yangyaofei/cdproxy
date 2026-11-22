@@ -1,7 +1,7 @@
 version: '3'
 
 vars:
-  APP_NAME: "cdproxy-desktop"
+  APP_NAME: "cdproxy"
   # 版本注入：wails3 task package:embedded VERSION=1.2.3（CI 从 tag 取）；
   # 默认 dev。updater 的 CurrentVersion 依赖它做 semver 比较。
   VERSION: '{{.VERSION | default "dev"}}'

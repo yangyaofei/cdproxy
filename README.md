@@ -94,17 +94,17 @@ Run one command — Homebrew automatically adds the tap and installs the app in 
 brew install --cask yangyaofei/tap/cdproxy
 ```
 
-> **macOS first-launch note**: `cdproxy-desktop.app` is signed with a stable self-signed certificate (not Apple-notarized). If Gatekeeper warns on first launch, allow it in *System Settings → Privacy & Security → Open Anyway* or run:
+> **macOS first-launch note**: `cdproxy.app` is signed with a stable self-signed certificate (not Apple-notarized). If Gatekeeper warns on first launch, allow it in *System Settings → Privacy & Security → Open Anyway* or run:
 > ```bash
-> xattr -dr com.apple.quarantine "/Applications/cdproxy-desktop.app"
+> xattr -dr com.apple.quarantine "/Applications/cdproxy.app"
 > ```
 > You only need to do this once. Future upgrades via the app's built-in **Update** button are signature-verified and carry no quarantine prompt.
 
 ### Direct Download (macOS & Windows)
 
 Download the prebuilt package from [GitHub Releases](https://github.com/yangyaofei/cdproxy/releases):
-- **macOS (Apple Silicon)**: `cdproxy-desktop_<version>_darwin_arm64.zip` (unzip and drag into `/Applications`)
-- **Windows (64-bit)**: `cdproxy-desktop_<version>_windows_amd64.zip` (unzip and launch; supports in-app updates as well)
+- **macOS (Apple Silicon)**: `cdproxy_<version>_darwin_arm64.zip` (unzip and drag into `/Applications`)
+- **Windows (64-bit)**: `cdproxy_<version>_windows_amd64.zip` (unzip and launch; supports in-app updates as well)
 
 ## Quickstart in 3 Steps
 

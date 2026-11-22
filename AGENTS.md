@@ -6,7 +6,7 @@
 
 `cdproxy`（仓库 `yangyaofei/cdproxy`）是面向 AI Agent（`agent-browser` / Playwright / Puppeteer 等）的**共享 Chrome 基座与会话级隔离 CDP 转发代理**：
 Go 服务统一管理基座 Chrome 生命周期、按会话隔离的 CDP 协议转发、HTTP 控制面与 Admin 页面；
-桌面端以 Wails v3 打包为 `cdproxy-desktop`（macOS / Windows 跨平台），对外亦可走 CLI 或隐式 stdio `plugin` 模式接入。
+桌面端以 Wails v3 打包为 `cdproxy.app` / `cdproxy.exe`（macOS / Windows 跨平台），对外亦可走 CLI 或隐式 stdio `plugin` 模式接入。
 
 **是什么**：本机浏览器共享基础设施（多 agent/skill 并发用同一个带登录态的 Chrome，
 互不见彼此 tab）。
@@ -26,7 +26,7 @@ Go 主实现模块（生产 CLI 与桌面 App 共用内核；旧 Python `src/` �
 | `internal/keeper` | Chrome 基座探活/冷启动/精确停止 + `agent-browser` 唯一解析链 | 绝不允许无差别 killall/pkill |
 | `internal/interlog` | per-session CDP 交互日志（落盘 + 内存环形） | — |
 | `cmd/cdproxy` | CLI 入口（serve/status/stop/plugin，无子命令+管道隐式进 plugin） | 端口 flags 为启动覆盖，启动后 settings 是事实源 |
-| `desktop/` | Wails v3 桌面宿主（`cdproxy-desktop`）：`plugin` 子命令前置分流不启 GUI；Dock/托盘+管理窗口；EngineService.DoRequest 进程内执行 control 路由；内嵌 agent-browser（pin+校验+staging+解析链） | App 与 daemon 二选一（同数据目录同端口）；窗口操作勿用 app.Show()（非主线程 SIGTRAP） |
+| `desktop/` | Wails v3 桌面宿主（`cdproxy.app` / `cdproxy.exe`）：`plugin` 子命令前置分流不启 GUI；Dock/托盘+管理窗口；EngineService.DoRequest 进程内执行 control 路由；内嵌 agent-browser（pin+校验+staging+解析链） | App 与 daemon 二选一（同数据目录同端口）；窗口操作勿用 app.Show()（非主线程 SIGTRAP） |
 | `static/admin/` | Admin 前端单一源（零构建 Alpine + vendored Tabulator + `i18n.js` 中/英双语）；`scripts/sync_admin_frontend.py` 同步到 `desktop/frontend/` | 改完必须跑 `--check` 验证一致 |
 | `ext/cdp-ext/` | Chrome MV3 扩展 **Cdproxy Connector**（反向回连 `/ext` + 标签组归属映射 + Popup/Options 内置实时 `中 / EN` 切换与 `_locales/{en,zh_CN}` 双语），`assets.go` 经 `all:ext/cdp-ext` 编译期嵌入二进制 | 同步更新 `manifest.json` 版本号 |
 
@@ -104,7 +104,7 @@ var/cdproxy serve                 # 运行（status/stop 同入口）
 cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task package:embedded   # 同步+bindings+内嵌 agent-browser+.app 打包一体
 # 或纯二进制构建：
 cd desktop && PATH="$HOME/go/bin:$PATH" wails3 build
-codesign --force --sign - desktop/bin/cdproxy-desktop                  # 本地运行需 ad-hoc 重签
+codesign --force --sign - desktop/bin/cdproxy                          # 本地运行需 ad-hoc 重签
 # Admin 前端单一源检查（改 static/admin 后须重跑 sync）：
 python3 scripts/sync_admin_frontend.py --check
 ```

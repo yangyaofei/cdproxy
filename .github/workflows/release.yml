@@ -1,7 +1,7 @@
 # 发布管线：push tag v*（或手动 workflow_dispatch 指定 tag）
 #   1. release（ubuntu-latest）：CLI 质量门禁 + GoReleaser 全平台 CLI（darwin/linux/windows × amd64/arm64）
 #   2. desktop（macos-15）：Wails macOS .app（内嵌 agent-browser）+ p12 签名 + zip/SHA256 上传
-#   3. desktop-windows（windows-latest）：Wails Windows cdproxy-desktop.exe + zip/SHA256 上传
+#   3. desktop-windows（windows-latest）：Wails Windows cdproxy.exe + zip/SHA256 上传
 #   4. manifest（ubuntu-latest）：合并 macOS + Windows 产物统一签发 Ed25519 manifest.json 并验签上传
 #   5. homebrew（ubuntu-latest）：可选自动回写 yangyaofei/homebrew-tap（未配置 HOMEBREW_TAP_TOKEN 时提示并跳过）
 name: Release
@@ -105,12 +105,12 @@ jobs:
           echo "${{ secrets.CDPROXY_CERT_P12_BASE64 }}" | base64 -d > ../certs/ci.p12
 
       - name: Codesign with p12 (after embed — covers bundled binary)
-        run: wails3 tool sign --input "bin/cdproxy-desktop.app" --certificate ../certs/ci.p12 --password "${{ secrets.CDPROXY_CERT_PASSWORD }}"
+        run: wails3 tool sign --input "bin/cdproxy.app" --certificate ../certs/ci.p12 --password "${{ secrets.CDPROXY_CERT_PASSWORD }}"
 
       - name: Guard — signature authority must be stable
         run: |
-          codesign --verify --deep --strict "bin/cdproxy-desktop.app"
-          DV="$(codesign -dvv "bin/cdproxy-desktop.app" 2>&1 || true)"
+          codesign --verify --deep --strict "bin/cdproxy.app"
+          DV="$(codesign -dvv "bin/cdproxy.app" 2>&1 || true)"
           case "$DV" in
             *"Authority=Denpa Jack Dev"*) echo "签名身份 ✓ Denpa Jack Dev" ;;
             *) echo "::error::签名身份不是 Denpa Jack Dev（TCC/更新连续性破坏），拒绝发布"; printf '%s\n' "$DV" | head -6; exit 1 ;;
@@ -119,7 +119,7 @@ jobs:
       - name: Package update artifact (zip of signed .app)
         run: |
           mkdir -p ../dist
-          ditto -c -k --keepParent "bin/cdproxy-desktop.app" "../dist/cdproxy-desktop_${VERSION#v}_darwin_arm64.zip"
+          ditto -c -k --keepParent "bin/cdproxy.app" "../dist/cdproxy_${VERSION#v}_darwin_arm64.zip"
 
       - name: Checksums
         run: cd ../dist && shasum -a 256 -- *.zip > SHA256SUMS_darwin.txt
@@ -127,16 +127,16 @@ jobs:
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$VERSION" ../dist/cdproxy-desktop_*_darwin_arm64.zip ../dist/SHA256SUMS_darwin.txt --clobber
+        run: gh release upload "$VERSION" ../dist/cdproxy_*_darwin_arm64.zip ../dist/SHA256SUMS_darwin.txt --clobber
 
       - name: Stage artifact for unified updater manifest
         uses: actions/upload-artifact@v4
         with:
           name: desktop-darwin
-          path: dist/cdproxy-desktop_*_darwin_arm64.zip
+          path: dist/cdproxy_*_darwin_arm64.zip
           retention-days: 1
 
-  # Windows 桌面 App（Wails v3）：构建 cdproxy-desktop.exe 并打包 zip 上传同一 Release
+  # Windows 桌面 App（Wails v3）：构建 cdproxy.exe 并打包 zip 上传同一 Release
   desktop-windows:
     runs-on: windows-latest
     needs: [release]
@@ -188,21 +188,21 @@ jobs:
         run: |
           $v = "${{ env.VERSION }}".TrimStart('v')
           New-Item -ItemType Directory -Force -Path ../dist | Out-Null
-          $zip = "../dist/cdproxy-desktop_${v}_windows_amd64.zip"
-          Compress-Archive -Path "bin/cdproxy-desktop.exe" -DestinationPath $zip -Force
+          $zip = "../dist/cdproxy_${v}_windows_amd64.zip"
+          Compress-Archive -Path "bin/cdproxy.exe" -DestinationPath $zip -Force
           $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
-          "$hash  cdproxy-desktop_${v}_windows_amd64.zip" | Out-File -FilePath "../dist/SHA256SUMS_windows.txt" -Encoding ascii
+          "$hash  cdproxy_${v}_windows_amd64.zip" | Out-File -FilePath "../dist/SHA256SUMS_windows.txt" -Encoding ascii
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$env:VERSION" ../dist/cdproxy-desktop_*_windows_amd64.zip ../dist/SHA256SUMS_windows.txt --clobber
+        run: gh release upload "$env:VERSION" ../dist/cdproxy_*_windows_amd64.zip ../dist/SHA256SUMS_windows.txt --clobber
 
       - name: Stage artifact for unified updater manifest
         uses: actions/upload-artifact@v4
         with:
           name: desktop-windows
-          path: dist/cdproxy-desktop_*_windows_amd64.zip
+          path: dist/cdproxy_*_windows_amd64.zip
           retention-days: 1
 
   # 统一更新清单：合并 macOS + Windows 桌面产物签发 Ed25519 manifest.json 并验签上传
@@ -297,7 +297,7 @@ jobs:
               return out
 
           desk_sums = parse_sums(sums_dir / "SHA256SUMS_darwin.txt")
-          desk_fname = f"cdproxy-desktop_{ver}_darwin_arm64.zip"
+          desk_fname = f"cdproxy_{ver}_darwin_arm64.zip"
           desk_sha = desk_sums.get(desk_fname)
           if not desk_sha:
               raise SystemExit(f"SHA256SUMS_darwin.txt 缺少 {desk_fname}")

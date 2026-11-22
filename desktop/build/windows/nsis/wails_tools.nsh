@@ -5,7 +5,7 @@
 !include "FileFunc.nsh"
 
 !ifndef INFO_PROJECTNAME
-    !define INFO_PROJECTNAME "cdproxy-desktop"
+    !define INFO_PROJECTNAME "cdproxy"
 !endif
 !ifndef INFO_COMPANYNAME
     !define INFO_COMPANYNAME "yangyaofei"

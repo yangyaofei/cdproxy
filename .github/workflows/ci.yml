@@ -74,7 +74,7 @@ jobs:
           go test -count=1 ./cmd/... ./internal/...
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/... ./internal/... ./desktop
           mkdir -p desktop/bin
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags production -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui -X main.version=ci" -o desktop/bin/cdproxy-desktop.exe ./desktop
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags production -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui -X main.version=ci" -o desktop/bin/cdproxy.exe ./desktop
 
   desktop-macos:
     runs-on: macos-15
@@ -106,4 +106,4 @@ jobs:
         run: |
           go vet ./desktop
           mkdir -p desktop/bin
-          CGO_ENABLED=1 go build -tags production -trimpath -buildvcs=false -ldflags="-w -s -X main.version=ci" -o desktop/bin/cdproxy-desktop ./desktop
+          CGO_ENABLED=1 go build -tags production -trimpath -buildvcs=false -ldflags="-w -s -X main.version=ci" -o desktop/bin/cdproxy ./desktop

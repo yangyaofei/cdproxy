@@ -96,15 +96,15 @@ brew install --cask yangyaofei/tap/cdproxy
 
 > **macOS 首次打开提示**：应用使用项目固定自签证书签名（未走 Apple 公证）。首次打开如遇系统安全拦截，前往「系统设置 → 隐私与安全性 → 仍要打开」放行一次，或执行：
 > ```bash
-> xattr -dr com.apple.quarantine "/Applications/cdproxy-desktop.app"
+> xattr -dr com.apple.quarantine "/Applications/cdproxy.app"
 > ```
 > 放行一次即可。后续在 App 顶栏点「更新」走内置自动更新（带签名校验），不会再弹系统拦截。
 
 ### macOS & Windows 直接下载
 
 前往 [GitHub Releases](https://github.com/yangyaofei/cdproxy/releases) 下载对应系统的压缩包，解压即可使用：
-- **macOS（Apple Silicon）**：`cdproxy-desktop_<版本>_darwin_arm64.zip`（解压后拖入「应用程序」）
-- **Windows（64 位）**：`cdproxy-desktop_<版本>_windows_amd64.zip`（解压后直接运行，同样支持应用内自动更新）
+- **macOS（Apple Silicon）**：`cdproxy_<版本>_darwin_arm64.zip`（解压后拖入「应用程序」）
+- **Windows（64 位）**：`cdproxy_<版本>_windows_amd64.zip`（解压后直接运行，同样支持应用内自动更新）
 
 ## 三步开始使用
 
