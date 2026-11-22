@@ -1,104 +1,14 @@
 {
   "extName": {
-    "message": "cdproxy Browser Bridge (cdp-ext)",
+    "message": "Cdproxy Connector",
     "description": "Extension display name"
   },
   "extDescription": {
-    "message": "Connect your everyday Chrome to the cdproxy desktop app with Tab-Group-isolated CDP proxying.",
+    "message": "Connect Chrome to Cdproxy so AI tools can work silently in color-coded Tab Groups.",
     "description": "Extension description"
   },
   "actionTitle": {
-    "message": "cdproxy Bridge — click to view status & settings",
+    "message": "Cdproxy Connector",
     "description": "Toolbar icon tooltip"
-  },
-  "optionsPageTitle": {
-    "message": "cdproxy Extension Settings"
-  },
-  "optionsHeading": {
-    "message": "cdproxy Bridge"
-  },
-  "statusConnected": {
-    "message": "Connected"
-  },
-  "statusConnecting": {
-    "message": "Connecting…"
-  },
-  "statusAuthError": {
-    "message": "Token mismatch (401)"
-  },
-  "statusMissingToken": {
-    "message": "Access token required"
-  },
-  "statusProxyOffline": {
-    "message": "cdproxy app offline"
-  },
-  "statusSourceDisabled": {
-    "message": "Extension source disabled"
-  },
-  "statusDisconnected": {
-    "message": "Disconnected"
-  },
-  "btnReconnect": {
-    "message": "Reconnect"
-  },
-  "activeGroupsLabel": {
-    "message": "Active session groups"
-  },
-  "noActiveGroups": {
-    "message": "No active sessions"
-  },
-  "pairHint": {
-    "message": "Tip: paste a full pairing URL (ws://...?token=...) into either field to fill both automatically."
-  },
-  "pairParsed": {
-    "message": "Pairing URL parsed"
-  },
-  "labelRelayUrl": {
-    "message": "Proxy WebSocket URL"
-  },
-  "labelToken": {
-    "message": "Access Token"
-  },
-  "tokenPlaceholder": {
-    "message": "Paste token or full pairing URL"
-  },
-  "showToken": {
-    "message": "Show"
-  },
-  "hideToken": {
-    "message": "Hide"
-  },
-  "labelGroupPrefix": {
-    "message": "Tab Group Prefix"
-  },
-  "groupPrefixPreview": {
-    "message": "Preview:"
-  },
-  "labelReleasePolicy": {
-    "message": "When a session ends"
-  },
-  "policyClose": {
-    "message": "Close tabs and remove group (default)"
-  },
-  "policyMark": {
-    "message": "Keep tabs, grey-mark group (· released)"
-  },
-  "policyKeep": {
-    "message": "Keep tabs and group untouched"
-  },
-  "saveButton": {
-    "message": "Save & Connect"
-  },
-  "syncBundledButton": {
-    "message": "Load App Defaults"
-  },
-  "savedNotice": {
-    "message": "Saved & reconnecting…"
-  },
-  "syncedNotice": {
-    "message": "Synced from cdproxy app"
-  },
-  "openFullOptions": {
-    "message": "Open full page"
   }
 }

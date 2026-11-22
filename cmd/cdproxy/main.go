@@ -20,7 +20,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -29,6 +28,7 @@ import (
 
 	"github.com/yangyaofei/cdproxy/internal/core"
 	"github.com/yangyaofei/cdproxy/internal/datadir"
+	"github.com/yangyaofei/cdproxy/internal/plugin"
 )
 
 // version 经 -ldflags -X main.version 注入。
@@ -324,160 +324,8 @@ func httpPost(url string, payload []byte) ([]byte, int) {
 	return body, resp.StatusCode
 }
 
-// httpPostAuth 带 Bearer 准入令牌的 POST（alloc 路径凭证）。
-func httpPostAuth(url string, payload []byte, token string) ([]byte, int) {
-	req, err := http.NewRequest("POST", url, strings.NewReader(string(payload)))
-	if err != nil {
-		return nil, 0
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, 0
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
-	return body, resp.StatusCode
-}
-
-// allocToken 分配令牌解析链：env 显式指定 > 管理面 /status 自取（回环
-// 信任域内读取——管理面与代理面分离，代理面准入凭证由管理面分发）。
-func allocToken(base string) string {
-	if v := os.Getenv("AB_PROXY_ALLOC_TOKEN"); v != "" {
-		return v
-	}
-	resp, err := http.Get(base + "/status")
-	if err != nil {
-		return ""
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var st struct {
-		Sources struct {
-			AllocToken string `json:"alloc_token"`
-		} `json:"sources"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&st)
-	return st.Sources.AllocToken
-}
-
 // ── plugin（agent-browser stdio 协议桥）──────────────────────────
 
-// pluginResponse 协议信封。
-type pluginResponse struct {
-	Protocol string         `json:"protocol"`
-	Success  bool           `json:"success"`
-	Browser  *pluginBrowser `json:"browser,omitempty"`
-	Error    string         `json:"error,omitempty"`
-}
-
-type pluginBrowser struct {
-	CdpURL string `json:"cdpUrl"`
-}
-
 func runPlugin() int {
-	raw, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Error: "stdin 读取失败"})
-		return 1
-	}
-	var envelope struct {
-		Type    string `json:"type"`
-		Request struct {
-			Session string `json:"session"`
-		} `json:"request"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Error: "invalid JSON request"})
-		return 1
-	}
-	session := envelope.Request.Session
-	if session == "" {
-		session = "default"
-	}
-	switch envelope.Type {
-	case "browser.launch":
-		if err := ensureServiceUp(); err != nil {
-			respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Error: fmt.Sprintf("服务拉起失败: %v", err)})
-			return 1
-		}
-		base := controlBase(nil)
-		body, code := httpPostAuth(base+"/sessions", mustJSON(map[string]string{"name": session}), allocToken(base))
-		if code == http.StatusUnauthorized {
-			respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1",
-				Error: "alloc 被拒（401）：分配令牌无效或管理面不可读——用 AB_PROXY_ALLOC_TOKEN 显式指定，或在 Admin「源」页查看分配令牌"})
-			return 1
-		}
-		if code != 200 {
-			respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Error: fmt.Sprintf("alloc 失败 (HTTP %d): %s", code, string(body))})
-			return 1
-		}
-		var alloc struct {
-			CdpURL string `json:"cdpUrl"`
-		}
-		_ = json.Unmarshal(body, &alloc)
-		respondPlugin(pluginResponse{
-			Protocol: "agent-browser.plugin.v1",
-			Success:  true,
-			Browser:  &pluginBrowser{CdpURL: alloc.CdpURL},
-		})
-		return 0
-	case "browser.close":
-		// agent-browser 0.36.0 的 close 实际不回调 provider（回收靠断连触发）；
-		// 此分支为协议完备性保留，服务不在则静默降级。
-		_, _ = httpPost(controlBase(nil)+"/sessions/"+session+"/release", nil)
-		respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Success: true})
-		return 0
-	default:
-		respondPlugin(pluginResponse{Protocol: "agent-browser.plugin.v1", Error: "unsupported request type: " + envelope.Type})
-		return 1
-	}
-}
-
-// ensureServiceUp 控制面存活检查，不可达则自启动（脱离会话）并等就绪。
-func ensureServiceUp() error {
-	if _, code := httpGet(controlBase(nil) + "/health"); code == 200 {
-		return nil
-	}
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	dataDir := defaultDataDir()
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return err
-	}
-	logFile, err := os.OpenFile(filepath.Join(dataDir, "plugin-autostart.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = logFile.Close() }()
-	cmd := exec.Command(self, "serve", "--data-dir", dataDir)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	cmd.Stdin = nil
-	cmd.SysProcAttr = detachedSysProcAttr()
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, code := httpGet(controlBase(nil) + "/health"); code == 200 {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	return fmt.Errorf("60s 内未就绪")
-}
-
-func respondPlugin(resp pluginResponse) {
-	out, _ := json.Marshal(resp)
-	fmt.Println(string(out))
-}
-
-func mustJSON(v any) []byte {
-	data, _ := json.Marshal(v)
-	return data
+	return plugin.Run(plugin.Options{DesktopApp: false})
 }

@@ -16,7 +16,7 @@ When AI assistants or automation scripts browse the web for you, they typically 
 
 `cdproxy` proxies **two kinds of Chrome browsers** side by side — use either one or keep both ready at once:
 
-1. **Your everyday logged-in Chrome (via the bundled `cdp-ext` extension)**  
+1. **Your everyday logged-in Chrome (via the bundled `Cdproxy Connector` extension)**  
    Turns the Chrome window you are already using — with all your existing logins — into a clean CDP endpoint, without restarting Chrome or tinkering with startup flags.
 2. **A separate, dedicated Chrome managed by the app**  
    Launches a normal Chrome instance completely isolated from your personal browser so multiple tasks can share it cleanly, and automatically shuts it down when idle to save memory.
@@ -27,12 +27,12 @@ Putting `cdproxy` in the middle solves three things direct CDP connections canno
 |---|---|
 | Opening pages or switching tabs keeps bringing Chrome to the front and interrupting your work | **Silent background mode by default**: built-in rewrite rules (editable in the app) force new tabs into the background and neutralize focus-stealing commands |
 | One script finishing calls "close browser" and wipes out your entire Chrome window | **Browser close protection**: intercepts full-browser close requests so each task only closes its own pages while Chrome stays alive |
-| Recent Chrome versions block remote debugging on everyday profiles, or nag with repetitive connection prompts | **Direct bridge to your daily Chrome**: install the `cdp-ext` extension once to reuse your logged-in browser without repetitive prompts |
+| Recent Chrome versions block remote debugging on everyday profiles, or nag with repetitive connection prompts | **Direct connection to your daily Chrome**: install `Cdproxy Connector` once to reuse your logged-in browser without repetitive prompts |
 | Multiple AI tools sharing one browser see, click, or close each other's tabs — or touch your personal tabs | **Per-session isolation & Tab Groups**: every session can only see and touch its own tabs, and leftover tabs are automatically cleaned up after disconnect |
 
 ## Sharing Your Everyday Chrome with Native Tab Groups
 
-When multiple AI sessions share your everyday Chrome, `cdproxy` and the `cdp-ext` extension use **Chrome's native color-coded Tab Groups** to draw a clear visual boundary — **each session gets its own colored group** (default prefix `cdproxy:`, such as `cdproxy: research` or `cdproxy: docs`, customizable in the app or extension popup).
+When multiple AI sessions share your everyday Chrome, `cdproxy` and `Cdproxy Connector` use **Chrome's native color-coded Tab Groups** to draw a clear visual boundary — **each session gets its own colored group** (default prefix `cdproxy:`, such as `cdproxy: research` or `cdproxy: docs`, customizable in the app or extension popup).
 
 <p align="center">
   <img src="docs/assets/tab-groups-en.png" alt="Chrome Native Tab Groups as Visual Isolation Boundaries" width="960" />
@@ -144,7 +144,7 @@ Every common setting is editable directly from the sidebar and takes effect imme
 - **Overview**: Check the live status of both browser modes, switch the default mode, restart the dedicated Chrome, or copy connection URLs in one click.
 - **Sessions**: See every active AI session, the tabs it owns, and its step-by-step action log; release any session with one click.
 - **Rewrite Rules**: Inspect or customize background / anti-interruption rules (background tab creation, focus-steal suppression, and browser-close protection are enabled by default).
-- **Sources & Endpoints**: Manage both browser modes, set session-name prefix routing (for example, `ext-` sessions automatically go to your everyday Chrome), and copy or reset access tokens.
+- **Sources & Endpoints**: Manage both browser modes, set session-name prefix routing (for example, `ext-` sessions automatically go to your everyday Chrome), detect/back up/wire `agent-browser` global config in one click, and copy or reset access tokens.
 - **Settings**: Adjust listening ports, idle cleanup timeouts (60s after disconnect, 10m idle shutdown for the dedicated browser), and data directory.
 
 ---

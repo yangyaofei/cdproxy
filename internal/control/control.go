@@ -142,6 +142,7 @@ func (c *Control) Handler() http.Handler {
 		snapshot["version"] = c.version
 		snapshot["recent_sessions"] = c.ilg.Recent(50)
 		snapshot["chrome_ext"] = c.detectChromeExtension()
+		snapshot["agent_browser_integration"] = c.agentBrowserIntegration()
 		writeJSON(w, http.StatusOK, snapshot)
 	})
 
@@ -200,6 +201,54 @@ func (c *Control) Handler() http.Handler {
 	// cdp-ext 扩展：检测 Chrome 安装态、导出更新到本地 <dataDir>/extension/cdp-ext、触发浏览器重载、或打包 zip 下载
 	mux.HandleFunc("GET /sources/extension/detect", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, c.detectChromeExtension())
+	})
+
+	// 外部 agent-browser 全局配置接入（~/.agent-browser/config.json 检测、备份写入、卸载与恢复）
+	mux.HandleFunc("GET /integrations/agent-browser", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, c.agentBrowserIntegration())
+	})
+	mux.HandleFunc("POST /integrations/agent-browser/install", func(w http.ResponseWriter, _ *http.Request) {
+		st, bak, err := installAgentBrowserConfig(defaultAgentBrowserConfigPath(), currentProviderExecutable(), time.Now())
+		if err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+			return
+		}
+		if c.onState != nil {
+			c.onState()
+		}
+		c.log.Info("已写入 agent-browser provider 配置", "path", st.ConfigPath, "backup", bak)
+		writeJSON(w, http.StatusOK, map[string]any{"integration": st, "backup_path": bak})
+	})
+	mux.HandleFunc("POST /integrations/agent-browser/uninstall", func(w http.ResponseWriter, _ *http.Request) {
+		st, bak, err := uninstallAgentBrowserConfig(defaultAgentBrowserConfigPath(), currentProviderExecutable(), time.Now())
+		if err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+			return
+		}
+		if c.onState != nil {
+			c.onState()
+		}
+		c.log.Info("已移除 agent-browser provider 配置", "path", st.ConfigPath, "backup", bak)
+		writeJSON(w, http.StatusOK, map[string]any{"integration": st, "backup_path": bak})
+	})
+	mux.HandleFunc("POST /integrations/agent-browser/restore", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Backup string `json:"backup"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Backup) == "" {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "backup 必填"})
+			return
+		}
+		st, err := restoreAgentBrowserConfig(defaultAgentBrowserConfigPath(), currentProviderExecutable(), strings.TrimSpace(body.Backup))
+		if err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+			return
+		}
+		if c.onState != nil {
+			c.onState()
+		}
+		c.log.Info("已还原 agent-browser 配置备份", "path", st.ConfigPath, "backup", body.Backup)
+		writeJSON(w, http.StatusOK, map[string]any{"integration": st})
 	})
 	mux.HandleFunc("POST /sources/extension/export", func(w http.ResponseWriter, _ *http.Request) {
 		res, err := c.exportBundledExtension()

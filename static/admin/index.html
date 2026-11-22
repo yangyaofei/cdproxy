@@ -973,6 +973,63 @@
                   </div>
                 </div>
 
+                <!-- agent-browser Provider 自动接入 -->
+                <div class="card" id="ab-integration-card" x-show="abIntegration()">
+                  <div class="card-head">
+                    <h2>
+                      <span class="src-ic lg sa"><svg><use href="#i-chrome"/></svg></span>
+                      <span x-text="t('abint.title')"></span>
+                      <span class="bdg" :class="abIntBadgeClass()" x-text="abIntStatusText()"></span>
+                    </h2>
+                    <button class="sm" @click="redetectAbIntegration()" :disabled="abIntBusy">
+                      <svg class="ic-sm" :class="abIntBusy ? 'spin' : ''"><use href="#i-refresh"/></svg>
+                      <span x-text="t('ext.detect_refresh')"></span>
+                    </button>
+                  </div>
+                  <p class="sub" x-text="t('abint.sub')"></p>
+                  <table class="kv" x-show="abIntegration()">
+                    <tr>
+                      <td x-text="t('abint.cfg_path')"></td>
+                      <td>
+                        <div class="copyable">
+                          <span class="val mono" :title="abIntegration()?.config_path || ''" x-text="abIntegration()?.config_path || ''"></span>
+                          <button class="icon-btn" @click="copyText(abIntegration()?.config_path || '', t('toast.path_copied'), 'abint-path')" :title="t('common.copy_path')">
+                            <svg class="ic-sm" x-show="copiedKey !== 'abint-path'"><use href="#i-copy"/></svg>
+                            <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'abint-path'"><use href="#i-check"/></svg>
+                          </button>
+                          <button class="sm" x-show="isDesktop && abIntegration()?.exists" @click="openLocalPath(abIntegration()?.config_path || '')">
+                            <svg class="ic-sm"><use href="#i-folder"/></svg>
+                            <span x-text="t('about.open_dir')"></span>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td x-text="t('abint.status_row')"></td>
+                      <td>
+                        <div class="field-help" style="margin-top:0" x-text="abIntDetailText()"></div>
+                      </td>
+                    </tr>
+                    <tr x-show="(abIntegration()?.backups || []).length > 0">
+                      <td x-text="t('abint.backups_row')"></td>
+                      <td>
+                        <div class="rowflex">
+                          <span class="hint mono" x-text="t('abint.backups_count', { n: (abIntegration()?.backups || []).length, latest: (abIntegration()?.backups || [])[0] || '' })"></span>
+                          <button class="sm" @click="restoreAbBackup((abIntegration()?.backups || [])[0])" :disabled="abIntBusy" x-text="t('abint.btn_restore')"></button>
+                        </div>
+                      </td>
+                    </tr>
+                  </table>
+                  <div class="save-bar">
+                    <button class="primary sm" x-show="abIntegration()?.status !== 'configured' && abIntegration()?.status !== 'invalid_json'"
+                            @click="installAbIntegration()" :disabled="abIntBusy"
+                            x-text="abIntegration()?.status === 'outdated' ? t('abint.btn_update') : t('abint.btn_install')"></button>
+                    <button class="sm warn" x-show="abIntegration()?.status === 'configured'"
+                            @click="uninstallAbIntegration()" :disabled="abIntBusy"
+                            x-text="t('abint.btn_uninstall')"></button>
+                  </div>
+                </div>
+
                 <!-- 接入点 -->
                 <div class="card" id="ep-card">
                   <div class="card-head">

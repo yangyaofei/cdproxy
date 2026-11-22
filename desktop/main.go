@@ -27,6 +27,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 	"github.com/wailsapp/wails/v3/pkg/updater"
 	"github.com/wailsapp/wails/v3/pkg/updater/providers/endpoint"
+	"github.com/yangyaofei/cdproxy/internal/plugin"
 )
 
 // version 经 -ldflags -X main.version 注入（与 CLI 二进制同源）。
@@ -302,6 +303,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Println(version)
 		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "plugin" {
+		os.Exit(plugin.Run(plugin.Options{DesktopApp: true}))
 	}
 	engine = NewEngineService("", nil)
 

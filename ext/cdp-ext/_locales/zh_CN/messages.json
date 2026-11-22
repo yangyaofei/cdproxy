@@ -1,104 +1,14 @@
 {
   "extName": {
-    "message": "cdproxy 浏览器桥接（cdp-ext）",
+    "message": "Cdproxy Connector",
     "description": "扩展显示名称"
   },
   "extDescription": {
-    "message": "将你日常使用的 Chrome 连接到 cdproxy 桌面应用，按标签页分组隔离提供后台静默 CDP 代理。",
+    "message": "配合 Cdproxy 桌面应用，按标签页分组让 AI 在后台安全使用当前 Chrome。",
     "description": "扩展简介"
   },
   "actionTitle": {
-    "message": "cdproxy 桥接插件 — 点击查看状态与配置",
+    "message": "Cdproxy Connector",
     "description": "工具栏图标悬停提示"
-  },
-  "optionsPageTitle": {
-    "message": "cdproxy 扩展配置"
-  },
-  "optionsHeading": {
-    "message": "cdproxy 桥接"
-  },
-  "statusConnected": {
-    "message": "已连接"
-  },
-  "statusConnecting": {
-    "message": "连接中…"
-  },
-  "statusAuthError": {
-    "message": "令牌不匹配 (401)"
-  },
-  "statusMissingToken": {
-    "message": "请填写连接令牌"
-  },
-  "statusProxyOffline": {
-    "message": "未检测到 cdproxy 运行"
-  },
-  "statusSourceDisabled": {
-    "message": "扩展源已在 App 中关闭"
-  },
-  "statusDisconnected": {
-    "message": "未连接"
-  },
-  "btnReconnect": {
-    "message": "重连"
-  },
-  "activeGroupsLabel": {
-    "message": "当前活跃会话分组"
-  },
-  "noActiveGroups": {
-    "message": "暂无活跃会话"
-  },
-  "pairHint": {
-    "message": "提示：从 App 复制「配对链接」后直接粘贴到任意输入框，即可自动拆分地址和令牌。"
-  },
-  "pairParsed": {
-    "message": "已自动填入地址与令牌"
-  },
-  "labelRelayUrl": {
-    "message": "代理连接地址（WebSocket URL）"
-  },
-  "labelToken": {
-    "message": "连接令牌（Access Token）"
-  },
-  "tokenPlaceholder": {
-    "message": "粘贴令牌或完整配对链接"
-  },
-  "showToken": {
-    "message": "显示"
-  },
-  "hideToken": {
-    "message": "隐藏"
-  },
-  "labelGroupPrefix": {
-    "message": "标签页分组前缀"
-  },
-  "groupPrefixPreview": {
-    "message": "效果预览："
-  },
-  "labelReleasePolicy": {
-    "message": "会话结束后如何处理标签页"
-  },
-  "policyClose": {
-    "message": "关闭标签页并移除分组（默认）"
-  },
-  "policyMark": {
-    "message": "保留标签页，标灰标记（· released）"
-  },
-  "policyKeep": {
-    "message": "原样保留，不做任何改动"
-  },
-  "saveButton": {
-    "message": "保存并连接"
-  },
-  "syncBundledButton": {
-    "message": "读取 App 默认配置"
-  },
-  "savedNotice": {
-    "message": "已保存并重连…"
-  },
-  "syncedNotice": {
-    "message": "已同步 App 导出配置"
-  },
-  "openFullOptions": {
-    "message": "独立页面打开"
   }
 }

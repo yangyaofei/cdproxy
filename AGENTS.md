@@ -20,14 +20,15 @@ Go 主实现模块（生产 CLI 与桌面 App 共用内核；旧 Python `src/` �
 | `internal/core` | 引擎编排：settings/interlog/keeper 配置/proxy/control 组装 + 监听生命周期（端口重绑/开关） | CLI 与桌面 App 共用；重绑不得丢会话/令牌状态 |
 | `internal/proxy` | CDP 转发核心 + 双源（standalone/extension）链路 + 监听重绑 | 协议语义改动必须过 `scripts/smoke_test.py` 全部六项 |
 | `internal/state` | 归属表 / 会话表 / sid 绑定 / pending 组 | 不做 IO |
-| `internal/control` | HTTP 控制面 + Admin 静态页 + `/versions` 组件自检与升级；端口类设置变更触发异步重绑回调 | 不写业务，只转发调用 |
+| `internal/control` | HTTP 控制面 + Admin 静态页 + `/versions` 组件自检与升级 + `/integrations/agent-browser` 全局配置检测/备份/接入/还原；端口类设置变更触发异步重绑回调 | 不写业务，只转发调用；改写 `~/.agent-browser/config.json` 前必须自动备份 |
+| `internal/plugin` | `agent-browser.plugin.v1` stdio provider 协议实现（CLI 与桌面 App 共用；读本地 `settings.json` 取端口与 `alloc_token`，服务未起时后台自启） | 不得弹出桌面窗口 |
 | `internal/settings` | 运行时设置（单文件 settings.json，在线生效） | 端口互斥校验；越下限钳制 |
 | `internal/keeper` | Chrome 基座探活/冷启动/精确停止 + `agent-browser` 唯一解析链 | 绝不允许无差别 killall/pkill |
 | `internal/interlog` | per-session CDP 交互日志（落盘 + 内存环形） | — |
 | `cmd/cdproxy` | CLI 入口（serve/status/stop/plugin，无子命令+管道隐式进 plugin） | 端口 flags 为启动覆盖，启动后 settings 是事实源 |
-| `desktop/` | Wails v3 桌面宿主（`cdproxy-desktop`）：Dock/托盘+管理窗口；EngineService.DoRequest 进程内执行 control 路由；内嵌 agent-browser（pin+校验+staging+解析链） | App 与 daemon 二选一（同数据目录同端口）；窗口操作勿用 app.Show()（非主线程 SIGTRAP） |
+| `desktop/` | Wails v3 桌面宿主（`cdproxy-desktop`）：`plugin` 子命令前置分流不启 GUI；Dock/托盘+管理窗口；EngineService.DoRequest 进程内执行 control 路由；内嵌 agent-browser（pin+校验+staging+解析链） | App 与 daemon 二选一（同数据目录同端口）；窗口操作勿用 app.Show()（非主线程 SIGTRAP） |
 | `static/admin/` | Admin 前端单一源（零构建 Alpine + vendored Tabulator + `i18n.js` 中/英双语）；`scripts/sync_admin_frontend.py` 同步到 `desktop/frontend/` | 改完必须跑 `--check` 验证一致 |
-| `ext/cdp-ext/` | Chrome MV3 扩展（反向回连 `/ext` + 标签组归属映射 + `_locales/{en,zh_CN}` 双语），`assets.go` 经 `all:ext/cdp-ext` 编译期嵌入二进制 | 同步更新 `manifest.json` 版本号 |
+| `ext/cdp-ext/` | Chrome MV3 扩展 **Cdproxy Connector**（反向回连 `/ext` + 标签组归属映射 + Popup/Options 内置实时 `中 / EN` 切换与 `_locales/{en,zh_CN}` 双语），`assets.go` 经 `all:ext/cdp-ext` 编译期嵌入二进制 | 同步更新 `manifest.json` 版本号 |
 
 ## 2. 架构全景
 

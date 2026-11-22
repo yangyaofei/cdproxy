@@ -1,21 +1,92 @@
-// config-ui.js — cdp-ext Popup 与 Options 共用前端逻辑（实时状态 + 智能粘贴配对串 + 保存即重连）。
+// config-ui.js — Cdproxy Connector Popup 与 Options 共用逻辑（实时中/英双语切换 + 状态诊断 + 智能粘贴配对串）。
 "use strict";
 
 const DEFAULT_RELAY = "ws://127.0.0.1:9225/ext";
 const DEFAULT_GROUP_PREFIX = "cdproxy:";
 
-function msg(key, fallback = "") {
-  if (typeof chrome !== "undefined" && chrome.i18n && chrome.i18n.getMessage) {
-    const val = chrome.i18n.getMessage(key);
-    if (val) return val;
-  }
-  return fallback || key;
+const I18N = {
+  zh: {
+    pageTitle: "Cdproxy Connector 设置",
+    statusConnected: "已连接",
+    statusConnecting: "连接中…",
+    statusAuthError: "令牌不匹配 (401)",
+    statusMissingToken: "请填写连接令牌",
+    statusProxyOffline: "未检测到 Cdproxy 运行",
+    statusSourceDisabled: "扩展源已在 App 中关闭",
+    statusDisconnected: "未连接",
+    btnReconnect: "重连",
+    activeGroupsLabel: "活跃会话分组",
+    noActiveGroups: "暂无活跃会话",
+    pairHint: "提示：从 App 复制「配对链接」后粘贴到任意输入框，即可自动拆分地址与令牌。",
+    pairParsed: "已自动填入地址与令牌",
+    labelRelayUrl: "代理连接地址（WebSocket URL）",
+    labelToken: "连接令牌（Access Token）",
+    tokenPlaceholder: "粘贴令牌或完整配对链接",
+    showToken: "显示",
+    hideToken: "隐藏",
+    labelGroupPrefix: "标签页分组前缀",
+    labelReleasePolicy: "会话结束后如何处理标签页",
+    policyClose: "关闭标签页并移除分组（默认）",
+    policyMark: "保留标签页，标灰标记（· released）",
+    policyKeep: "原样保留，不做任何改动",
+    saveButton: "保存并连接",
+    syncBundledButton: "读取 App 默认配置",
+    savedNotice: "已保存并重连…",
+    syncedNotice: "已同步 App 导出配置",
+    openFullOptions: "独立页",
+    langToggleTitle: "Switch to English",
+  },
+  en: {
+    pageTitle: "Cdproxy Connector Settings",
+    statusConnected: "Connected",
+    statusConnecting: "Connecting…",
+    statusAuthError: "Token mismatch (401)",
+    statusMissingToken: "Access token required",
+    statusProxyOffline: "Cdproxy app offline",
+    statusSourceDisabled: "Extension source disabled",
+    statusDisconnected: "Disconnected",
+    btnReconnect: "Reconnect",
+    activeGroupsLabel: "Active session groups",
+    noActiveGroups: "No active sessions",
+    pairHint: "Tip: paste a full pairing URL (ws://...?token=...) into either field to fill both automatically.",
+    pairParsed: "Pairing URL parsed",
+    labelRelayUrl: "Proxy WebSocket URL",
+    labelToken: "Access Token",
+    tokenPlaceholder: "Paste token or full pairing URL",
+    showToken: "Show",
+    hideToken: "Hide",
+    labelGroupPrefix: "Tab Group Prefix",
+    labelReleasePolicy: "When a session ends",
+    policyClose: "Close tabs and remove group (default)",
+    policyMark: "Keep tabs, grey-mark group (· released)",
+    policyKeep: "Keep tabs and group untouched",
+    saveButton: "Save & Connect",
+    syncBundledButton: "Load App Defaults",
+    savedNotice: "Saved & reconnecting…",
+    syncedNotice: "Synced from Cdproxy app",
+    openFullOptions: "Full page",
+    langToggleTitle: "切换为中文",
+  },
+};
+
+function detectBrowserLang() {
+  const raw =
+    (typeof chrome !== "undefined" && chrome.i18n && chrome.i18n.getUILanguage && chrome.i18n.getUILanguage()) ||
+    navigator.language ||
+    "en";
+  return /^zh/i.test(String(raw)) ? "zh" : "en";
+}
+
+let currentLang = detectBrowserLang();
+let lastStatusPayload = null;
+
+function msg(key) {
+  return (I18N[currentLang] && I18N[currentLang][key]) || I18N.en[key] || key;
 }
 
 function applyI18n() {
-  if (typeof chrome !== "undefined" && chrome.i18n && chrome.i18n.getUILanguage) {
-    document.documentElement.lang = chrome.i18n.getUILanguage();
-  }
+  document.documentElement.lang = currentLang === "zh" ? "zh-CN" : "en";
+  document.title = msg("pageTitle");
   for (const el of document.querySelectorAll("[data-i18n]")) {
     const val = msg(el.getAttribute("data-i18n"));
     if (val) el.textContent = val;
@@ -23,6 +94,17 @@ function applyI18n() {
   for (const el of document.querySelectorAll("[data-i18n-placeholder]")) {
     const val = msg(el.getAttribute("data-i18n-placeholder"));
     if (val) el.setAttribute("placeholder", val);
+  }
+  if (elToggleToken) {
+    elToggleToken.textContent = elToken.type === "password" ? msg("showToken") : msg("hideToken");
+  }
+  if (elLangBtn) {
+    elLangBtn.textContent = currentLang === "zh" ? "EN" : "中文";
+    elLangBtn.title = msg("langToggleTitle");
+  }
+  if (lastStatusPayload) {
+    renderStatus(lastStatusPayload.connState);
+    renderGroups(lastStatusPayload.activeGroups, lastStatusPayload.config?.groupPrefix);
   }
 }
 
@@ -43,9 +125,8 @@ function tryParsePairingString(raw) {
   }
 }
 
-applyI18n();
-
 const elVersion = document.getElementById("extVersion");
+const elLangBtn = document.getElementById("btnLang");
 const elStatus = document.getElementById("statusBadge");
 const elReconnect = document.getElementById("btnReconnect");
 const elGroupsRow = document.getElementById("groupsRow");
@@ -80,25 +161,25 @@ function renderStatus(state) {
   elStatus.className = "badge";
   if (st === "connected") {
     elStatus.classList.add("ok");
-    elStatus.textContent = msg("statusConnected", "Connected");
+    elStatus.textContent = msg("statusConnected");
   } else if (st === "connecting") {
     elStatus.classList.add("warn");
-    elStatus.textContent = msg("statusConnecting", "Connecting…");
+    elStatus.textContent = msg("statusConnecting");
   } else if (st === "auth_error" || reason === "invalid_token") {
     elStatus.classList.add("bad");
-    elStatus.textContent = msg("statusAuthError", "Token mismatch (401)");
+    elStatus.textContent = msg("statusAuthError");
   } else if (reason === "missing_token") {
     elStatus.classList.add("bad");
-    elStatus.textContent = msg("statusMissingToken", "Access token required");
+    elStatus.textContent = msg("statusMissingToken");
   } else if (reason === "source_disabled") {
     elStatus.classList.add("warn");
-    elStatus.textContent = msg("statusSourceDisabled", "Extension source disabled");
+    elStatus.textContent = msg("statusSourceDisabled");
   } else if (reason === "proxy_offline") {
     elStatus.classList.add("warn");
-    elStatus.textContent = msg("statusProxyOffline", "cdproxy app offline");
+    elStatus.textContent = msg("statusProxyOffline");
   } else {
     elStatus.classList.add("warn");
-    elStatus.textContent = msg("statusDisconnected", "Disconnected");
+    elStatus.textContent = msg("statusDisconnected");
   }
 }
 
@@ -106,11 +187,11 @@ function renderGroups(groups, prefix) {
   const p = (prefix || "").trim() || DEFAULT_GROUP_PREFIX;
   elGroupsRow.innerHTML = "";
   const label = document.createElement("span");
-  label.textContent = msg("activeGroupsLabel", "Active groups") + ":";
+  label.textContent = msg("activeGroupsLabel") + ":";
   elGroupsRow.appendChild(label);
   if (!groups || !groups.length) {
     const empty = document.createElement("span");
-    empty.textContent = msg("noActiveGroups", "None");
+    empty.textContent = msg("noActiveGroups");
     elGroupsRow.appendChild(empty);
     return;
   }
@@ -122,10 +203,21 @@ function renderGroups(groups, prefix) {
   }
 }
 
+async function initLang() {
+  try {
+    const got = await chrome.storage.local.get(["uiLang"]);
+    if (got.uiLang === "zh" || got.uiLang === "en") {
+      currentLang = got.uiLang;
+    }
+  } catch {}
+  applyI18n();
+}
+
 async function refresh(fillInputs = false) {
   try {
     const res = await chrome.runtime.sendMessage({ type: "getStatus" });
     if (!res || !res.ok) return;
+    lastStatusPayload = res;
     if (elVersion && res.version) elVersion.textContent = "v" + res.version;
     renderStatus(res.connState);
     renderGroups(res.activeGroups, res.config?.groupPrefix);
@@ -149,21 +241,30 @@ function handleSmartInput(inputEl) {
   if (!parsed) return;
   elRelay.value = parsed.relayUrl;
   elToken.value = parsed.token;
-  showNotice(msg("pairParsed", "Pairing URL parsed"));
+  showNotice(msg("pairParsed"));
 }
 
 elRelay.addEventListener("input", () => handleSmartInput(elRelay));
 elToken.addEventListener("input", () => handleSmartInput(elToken));
 elPrefix.addEventListener("input", updatePrefixPreview);
 
+if (elLangBtn) {
+  elLangBtn.addEventListener("click", async () => {
+    currentLang = currentLang === "zh" ? "en" : "zh";
+    applyI18n();
+    try {
+      await chrome.storage.local.set({ uiLang: currentLang });
+    } catch {}
+  });
+}
+
 elToggleToken.addEventListener("click", () => {
   const hidden = elToken.type === "password";
   elToken.type = hidden ? "text" : "password";
-  elToggleToken.textContent = hidden ? msg("hideToken", "Hide") : msg("showToken", "Show");
+  elToggleToken.textContent = hidden ? msg("hideToken") : msg("showToken");
 });
 
 elSave.addEventListener("click", async () => {
-  // 保存前也检查一次是否直接粘贴了完整配对串
   const parsed = tryParsePairingString(elRelay.value) || tryParsePairingString(elToken.value);
   if (parsed) {
     elRelay.value = parsed.relayUrl;
@@ -176,7 +277,7 @@ elSave.addEventListener("click", async () => {
     groupPrefix: elPrefix.value.trim() || DEFAULT_GROUP_PREFIX,
     releasePolicy: elPolicy.value,
   });
-  showNotice(msg("savedNotice", "Saved & reconnecting…"));
+  showNotice(msg("savedNotice"));
   setTimeout(() => refresh(false), 350);
   setTimeout(() => refresh(false), 1100);
 });
@@ -195,7 +296,7 @@ if (elSync) {
       elToken.value = res.config.token || "";
       elPrefix.value = res.config.groupPrefix || DEFAULT_GROUP_PREFIX;
       updatePrefixPreview();
-      showNotice(msg("syncedNotice", "Synced from cdproxy app"));
+      showNotice(msg("syncedNotice"));
       setTimeout(() => refresh(false), 400);
     }
   });
@@ -207,5 +308,5 @@ if (elFullOptions) {
   });
 }
 
-refresh(true);
+initLang().then(() => refresh(true));
 setInterval(() => refresh(false), 1500);

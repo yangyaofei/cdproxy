@@ -248,6 +248,7 @@ function admin() {
     savedExtGroupPrefix: "cdproxy:",
     extSetupOpen: null, // null=自动（未连接时展开，已连接时收起）
     detectingExt: false,
+    abIntBusy: false,
     epForm: [],
     savedEpJson: "",
     epSavedAt: "",
@@ -1232,6 +1233,116 @@ function admin() {
         return;
       }
       await this.openLocalPath(dir);
+    },
+    abIntegration() {
+      return this.status?.agent_browser_integration || null;
+    },
+    abIntBadgeClass() {
+      const st = this.abIntegration()?.status || "not_found";
+      if (st === "configured") return "ok";
+      if (st === "invalid_json") return "bad";
+      if (st === "outdated" || st === "other_provider") return "warn";
+      return "idle";
+    },
+    abIntStatusText() {
+      const st = this.abIntegration()?.status || "not_found";
+      return this.t("abint.st_" + st);
+    },
+    abIntDetailText() {
+      const info = this.abIntegration();
+      if (!info) return "";
+      switch (info.status) {
+        case "configured":
+          return this.t("abint.detail_configured", { cmd: info.current_command || info.target_command });
+        case "outdated":
+          return this.t("abint.detail_outdated", { prov: info.current_provider || "—", cmd: info.current_command || "—" });
+        case "other_provider":
+          return this.t("abint.detail_other", { prov: info.current_provider || "—" });
+        case "not_configured":
+          return this.t("abint.detail_not_configured");
+        case "invalid_json":
+          return this.t("abint.detail_invalid", { err: info.error || "" });
+        default:
+          return this.t("abint.detail_not_found");
+      }
+    },
+    async redetectAbIntegration() {
+      if (this.abIntBusy) return;
+      this.abIntBusy = true;
+      try {
+        const res = await this.api("GET", "/integrations/agent-browser");
+        if (this.status) this.status = { ...this.status, agent_browser_integration: res };
+        this.toast(this.t("abint.toast_redetected"), "ok", 2200);
+      } catch (err) {
+        this.toast(err.message, "err", 3500);
+      } finally {
+        this.abIntBusy = false;
+      }
+    },
+    async installAbIntegration() {
+      const info = this.abIntegration();
+      if (!info || this.abIntBusy) return;
+      const ok = await this.askConfirm({
+        title: this.t("abint.confirm_install_title"),
+        body: this.t("abint.confirm_install_body", { path: info.config_path }),
+        confirmText: this.t("abint.confirm_install_btn"),
+      });
+      if (!ok) return;
+      this.abIntBusy = true;
+      try {
+        const r = await this.api("POST", "/integrations/agent-browser/install", {});
+        if (this.status && r.integration) this.status = { ...this.status, agent_browser_integration: r.integration };
+        await this.refresh();
+        this.toast(r.backup_path ? this.t("abint.toast_installed") : this.t("abint.toast_installed_new"), "ok", 3200);
+      } catch (err) {
+        this.toast(err.message, "err", 4500);
+      } finally {
+        this.abIntBusy = false;
+      }
+    },
+    async uninstallAbIntegration() {
+      const info = this.abIntegration();
+      if (!info || this.abIntBusy) return;
+      const ok = await this.askConfirm({
+        title: this.t("abint.confirm_uninstall_title"),
+        body: this.t("abint.confirm_uninstall_body", { path: info.config_path }),
+        confirmText: this.t("abint.btn_uninstall"),
+        danger: true,
+      });
+      if (!ok) return;
+      this.abIntBusy = true;
+      try {
+        const r = await this.api("POST", "/integrations/agent-browser/uninstall", {});
+        if (this.status && r.integration) this.status = { ...this.status, agent_browser_integration: r.integration };
+        await this.refresh();
+        this.toast(this.t("abint.toast_uninstalled"), "ok", 3000);
+      } catch (err) {
+        this.toast(err.message, "err", 4000);
+      } finally {
+        this.abIntBusy = false;
+      }
+    },
+    async restoreAbBackup(bak) {
+      const info = this.abIntegration();
+      if (!info || !bak || this.abIntBusy) return;
+      const ok = await this.askConfirm({
+        title: this.t("abint.confirm_restore_title"),
+        body: this.t("abint.confirm_restore_body", { bak, path: info.config_path }),
+        confirmText: this.t("common.restore"),
+        danger: true,
+      });
+      if (!ok) return;
+      this.abIntBusy = true;
+      try {
+        const r = await this.api("POST", "/integrations/agent-browser/restore", { backup: bak });
+        if (this.status && r.integration) this.status = { ...this.status, agent_browser_integration: r.integration };
+        await this.refresh();
+        this.toast(this.t("abint.toast_restored", { bak }), "ok", 3000);
+      } catch (err) {
+        this.toast(err.message, "err", 4000);
+      } finally {
+        this.abIntBusy = false;
+      }
     },
     abSourceText(src) {
       const map = {

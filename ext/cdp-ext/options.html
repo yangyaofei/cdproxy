@@ -2,22 +2,25 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title data-i18n="optionsPageTitle">cdproxy Extension Settings</title>
+  <title data-i18n="pageTitle">Cdproxy Connector</title>
   <link rel="stylesheet" href="config-ui.css" />
 </head>
 <body class="mode-options">
   <div class="panel">
     <div class="head">
       <div class="brand">
-        <img src="icons/icon-48.png" alt="cdproxy" />
-        <h1 data-i18n="optionsHeading">cdproxy Bridge</h1>
+        <img src="icons/icon-48.png" alt="Cdproxy" />
+        <h1>Cdproxy Connector</h1>
         <span class="ver" id="extVersion"></span>
+      </div>
+      <div class="head-acts">
+        <button class="lang-btn" id="btnLang" type="button" title="中文 / English">中 / EN</button>
       </div>
     </div>
 
     <div class="status-bar">
       <span class="badge warn" id="statusBadge">…</span>
-      <button class="sm" id="btnReconnect" data-i18n="btnReconnect">Reconnect</button>
+      <button class="sm" id="btnReconnect" type="button" data-i18n="btnReconnect">Reconnect</button>
     </div>
 
     <div class="groups-box" id="groupsRow"></div>
@@ -54,8 +57,8 @@
     </div>
 
     <div class="actions">
-      <button class="primary" id="btnSave" data-i18n="saveButton">Save &amp; Connect</button>
-      <button id="btnSyncBundled" style="display:none" data-i18n="syncBundledButton">Load App Defaults</button>
+      <button class="primary" id="btnSave" type="button" data-i18n="saveButton">Save &amp; Connect</button>
+      <button id="btnSyncBundled" type="button" style="display:none" data-i18n="syncBundledButton">Load App Defaults</button>
     </div>
 
     <div class="notice" id="notice"></div>
