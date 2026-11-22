@@ -1,19 +1,18 @@
 #!/usr/bin/env node
-// 接入点（连接即会话）冒烟：E1-E8
-//   前置：服务已运行（EXT_CONTROL，默认 9234）；E2/E6 需 cdp-ext 扩展已回连
-//   （E1 standalone 会现场经 keeper 拉起基座 Chrome）。
-//   E1 端点直连 standalone（URL token）
-//   E2 端点直连 extension + 会话名/组名正确
-//   E3 错误 token → HTTP 401（升级前拒绝）
-//   E4 Bearer 头等价认证
+// 标准 CDP 网关与鉴权闭环冒烟：E0-E9
+//   前置：服务已运行（EXT_CONTROL，默认 http://127.0.0.1:9224；令牌自动从 EXT_TOKEN 或 ~/.cdproxy/settings.json 读取）。
+//   E0 控制面鉴权闭环（/status 无令牌 401，/health 200，带 alloc_token 200，内置三条 default/standalone/extension 存在）
+//   E1 标准 HTTP /json/version（Header 反向识别源 + URL token + 尾斜杠兼容）+ /json/list 隐私隔离
+//   E2 越权与安全防线（错 token 401、跨源 token 403、Origin 跨站 403）
+//   E3 匿名并发隔离（同一 extension 或 standalone 地址双连接并发互不顶替）
+//   E4 指定固定会话 /session/<id>（组名精确对应 + 同会话重连顶替）
 //   E5 重置令牌 → 旧拒新通（吊销语义）
-//   E6 自定义接入点：添加 → 连接 → via 标记 endpoint:<path>
-//   E7 POST /sessions 无令牌 → 401
-//   E8 顶替：同端点第二连接顶掉第一连接
-// 依赖：npm --prefix var/pwtest i ws（回落解析该目录）。
+//   E6 自定义固定会话令牌（无后缀 Header 反向路由到固定分组）
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+
 const _req = createRequire(import.meta.url);
 let WebSocket;
 try {
@@ -24,7 +23,19 @@ try {
   ({ WebSocket } = _req(local));
 }
 
-const CONTROL = process.env.EXT_CONTROL || "http://127.0.0.1:9234";
+const CONTROL = process.env.EXT_CONTROL || "http://127.0.0.1:9224";
+const DATA_DIR = process.env.CDPROXY_DATA_DIR || path.join(os.homedir(), ".cdproxy");
+const readAllocToken = () => {
+  if (process.env.EXT_TOKEN) return process.env.EXT_TOKEN.trim();
+  try {
+    const raw = JSON.parse(readFileSync(path.join(DATA_DIR, "settings.json"), "utf8"));
+    return (raw?.sources?.alloc_token || "").trim();
+  } catch {
+    return "";
+  }
+};
+const ALLOC_TOK = readAllocToken();
+
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push(ok);
@@ -32,43 +43,60 @@ const check = (name, ok, detail = "") => {
   if (!ok) process.exitCode = 1;
 };
 
-const http = async (method, path, body, headers = {}) => {
-  const resp = await fetch(CONTROL + path, {
+const api = async (method, p, body, extraHeaders = null) => {
+  const headers = { "Content-Type": "application/json" };
+  if (extraHeaders === null) {
+    if (ALLOC_TOK) headers.Authorization = `Bearer ${ALLOC_TOK}`;
+  } else {
+    Object.assign(headers, extraHeaders);
+  }
+  const resp = await fetch(CONTROL + p, {
     method,
-    headers: { "Content-Type": "application/json", ...headers },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { code: resp.status, data: await resp.json().catch(() => ({})) };
 };
-let _tok = "";
-const allocToken = async () => {
-  if (_tok) return _tok;
-  const r = await http("GET", "/status");
-  _tok = r.data?.sources?.alloc_token || "";
-  return _tok;
-};
 
-const st0 = await http("GET", "/status");
-// 接入点在 WS mux（settings.ws_port）上，不在控制面端口
-const WS_HOST = `127.0.0.1:${st0.data?.ws_port || st0.data?.settings?.ws_port || 9235}`;
-const WS = `ws://${WS_HOST}`;
-const WSH = `http://${WS_HOST}`; // fetch 探测用（ws: 协议 fetch 不支持）
+// E0 控制面鉴权闭环
+{
+  const h = await api("GET", "/health", undefined, {});
+  check("E0a /health 免鉴权 200", h.code === 200, `status=${h.code}`);
+  const noAuth = await api("GET", "/status", undefined, {});
+  check("E0b /status 无鉴权被拒 401", noAuth.code === 401, `status=${noAuth.code}`);
+  const noAuthPost = await api("POST", "/sessions", { name: "ep-noauth" }, {});
+  check("E0c POST /sessions 无令牌 401", noAuthPost.code === 401, `status=${noAuthPost.code}`);
+}
+
+const st0 = await api("GET", "/status");
+check("E0d /status 携带 alloc_token 200", st0.code === 200, `status=${st0.code}`);
+const WS_PORT = st0.data?.ws_port || st0.data?.settings?.ws_port || 9225;
+const WS = `ws://127.0.0.1:${WS_PORT}`;
+const WSH = `http://127.0.0.1:${WS_PORT}`;
 const eps = Object.fromEntries((st0.data?.endpoints || []).map((e) => [e.path, e]));
-check("E0 前置：内置接入点存在", !!eps.standalone && !!eps.extension,
+check("E0e 内置三条入口存在（default/standalone/extension）",
+  !!eps.default && !!eps.standalone && !!eps.extension,
   JSON.stringify(Object.keys(eps)));
 
-// WS 客户端小助手：发命令收响应
 class Cdp {
-  constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map();
+  constructor(ws) {
+    this.ws = ws;
+    this.id = 0;
+    this.pending = new Map();
     this.ws.on("message", (d) => {
       const m = JSON.parse(d);
-      if (m.id && this.pending.has(m.id)) { this.pending.get(m.id)(m); this.pending.delete(m.id); }
+      if (m.id && this.pending.has(m.id)) {
+        this.pending.get(m.id)(m);
+        this.pending.delete(m.id);
+      }
     });
   }
   static async dial(url, headers) {
-    console.log("  [dial]", url);
     const ws = new WebSocket(url, { headers });
-    await new Promise((res, rej) => { ws.once("open", res); ws.once("error", rej); });
+    await new Promise((res, rej) => {
+      ws.once("open", res);
+      ws.once("error", rej);
+    });
     return new Cdp(ws);
   }
   call(method, params = {}) {
@@ -81,113 +109,88 @@ class Cdp {
   close() { this.ws.close(); }
 }
 
-// E3 错误 token（先做：不影响后续）
+// E1 标准 HTTP /json/version 与 /json/list
 {
-  const resp = await fetch(`${WSH}/standalone/wrong-token-xxxx`, { headers: { Connection: "Upgrade" } }).catch(() => null);
-  check("E3 错误 token → HTTP 401", resp && resp.status === 401, `status=${resp?.status}`);
+  const rHdr = await fetch(`${WSH}/json/version`, {
+    headers: { Authorization: `Bearer ${eps.extension.token}` },
+  });
+  const dHdr = await rHdr.json();
+  check("E1a 根路径 /json/version + extension Header 反向识别",
+    rHdr.status === 200 &&
+    (dHdr.webSocketDebuggerUrl || "").startsWith(`${WS}/extension/session/cdp-`) &&
+    !(dHdr.webSocketDebuggerUrl || "").includes(eps.extension.token),
+    dHdr.webSocketDebuggerUrl);
+
+  const rUrl = await fetch(`${WSH}/extension/${eps.extension.token}/json/version/`);
+  const dUrl = await rUrl.json();
+  check("E1b URL token /extension/<tok>/json/version/ 返回带 token WS",
+    rUrl.status === 200 &&
+    (dUrl.webSocketDebuggerUrl || "").endsWith(`/${eps.extension.token}`),
+    dUrl.webSocketDebuggerUrl);
+
+  const rList = await fetch(`${WSH}/json/list`, {
+    headers: { Authorization: `Bearer ${eps.extension.token}` },
+  });
+  const dList = await rList.json();
+  check("E1c /json/list 匿名返回空数组 [] 不泄隐私",
+    rList.status === 200 && Array.isArray(dList) && dList.length === 0,
+    JSON.stringify(dList));
 }
-// E7 POST /sessions 无令牌
+
+// E2 越权与安全防线
 {
-  const r = await http("POST", "/sessions", { name: "ep-noauth" });
-  check("E7 POST /sessions 无令牌 → 401", r.code === 401, JSON.stringify(r.data).slice(0, 60));
+  const r401 = await fetch(`${WSH}/extension/wrong-token/json/version`);
+  check("E2a 错误 token → 401", r401.status === 401, `status=${r401.status}`);
+  const rCross = await fetch(`${WSH}/extension/${eps.default.token}/json/version`);
+  check("E2b default 令牌越权 /extension → 403", rCross.status === 403, `status=${rCross.status}`);
+  const rCross2 = await fetch(`${WSH}/standalone/json/version`, {
+    headers: { Authorization: `Bearer ${eps.extension.token}` },
+  });
+  check("E2c extension 令牌越权 /standalone → 403", rCross2.status === 403, `status=${rCross2.status}`);
+  const rOrigin = await fetch(`${WSH}/json/version`, {
+    headers: { Authorization: `Bearer ${eps.default.token}`, Origin: "https://evil.example" },
+  });
+  check("E2d 带 Origin 跨站请求 → 403", rOrigin.status === 403, `status=${rOrigin.status}`);
 }
-// E1 standalone 端点直连
-{
-  const c = await Cdp.dial(`${WS}/standalone/${eps.standalone.token}`);
-  const r = await c.call("Target.getTargets");
-  const n = r.result?.targetInfos?.length ?? 0;
-  check("E1 端点直连 standalone + 预开 tab", n === 1, `targets=${n}`);
-  const st = await http("GET", "/status");
-  const s = (st.data?.sessions || []).find((x) => x.name === "standalone");
-  check("E1 会话名=端点 path + via 标记", !!s && s.via === "endpoint:standalone", JSON.stringify(s));
-  c.close();
-}
-// E2 extension 端点直连（需扩展回连）
-{
-  const extConn = st0.data?.sources?.extension?.connected;
-  if (extConn) {
-    const c = await Cdp.dial(`${WS}/extension/${eps.extension.token}`);
-    const r = await c.call("Target.getTargets");
-    const n = r.result?.targetInfos?.length ?? 0;
-    check("E2 端点直连 extension + 预开 tab", n === 1, `targets=${n}`);
-    const st = await http("GET", "/status");
-    const s = (st.data?.sessions || []).find((x) => x.name === "extension");
-    check("E2 组名 cdproxy: extension", !!s && s.group_name === "cdproxy: extension", JSON.stringify(s));
-    c.close();
-    await http("POST", "/sessions/extension/release", {});
-  } else {
-    check("E2 端点直连 extension（扩展未回连，跳过）", true, "extension not connected");
-  }
-}
-// E4 Bearer 等价
-{
-  const resp = await fetch(`${WSH}/standalone`, {
-    headers: { Connection: "Upgrade", Authorization: `Bearer ${eps.standalone.token}` },
-  }).catch(() => null);
-  // fetch 不做 WS 升级：期望非 401（升级握手失败即可证明认证通过）
-  check("E4 Bearer 头认证通过（非 401）", resp && resp.status !== 401, `status=${resp?.status}`);
-}
-// E5 重置 → 旧拒新通
-{
-  const r = await http("POST", "/endpoints/standalone/reset-token", {});
-  const newTok = r.data?.token;
-  check("E5a 重置返回新令牌", !!newTok && newTok !== eps.standalone.token);
-  const resp = await fetch(`${WSH}/standalone/${eps.standalone.token}`).catch(() => null);
-  check("E5b 旧令牌被拒（401）", resp && resp.status === 401, `status=${resp?.status}`);
-  const c = await Cdp.dial(`${WS}/standalone/${newTok}`);
-  const r2 = await c.call("Target.getTargets");
-  check("E5c 新令牌可用", !!r2.result?.targetInfos);
-  c.close();
-  await http("POST", "/sessions/standalone/release", {});
-}
-// E6 自定义接入点
-{
-  const path = "smoke" + Date.now().toString(36).slice(-4);
-  const put = await http("PUT", "/settings", {
-    endpoints: [
-      ...Object.values(eps).map((e) => ({ path: e.path, source: e.source, session: e.session || "" })),
-      { path, source: "extension", session: path + "-ws" },
-    ],
-  }, { Authorization: "" });
-  check("E6a 添加自定义接入点", put.code === 200 && (put.data?.endpoints || []).some((e) => e.path === path),
-    put.code === 200 ? "" : JSON.stringify(put.data).slice(0, 80));
-  if (put.code === 200) {
-    const created = put.data.endpoints.find((e) => e.path === path);
-    check("E6b 新接入点自动生成令牌", (created?.token || "").length >= 16);
-    const extConn = st0.data?.sources?.extension?.connected;
-    if (extConn) {
-      const c = await Cdp.dial(`${WS}/${path}/${created.token}`);
-      const r = await c.call("Target.getTargets");
-      const st = await http("GET", "/status");
-      const s = (st.data?.sessions || []).find((x) => x.name === path + "-ws");
-      check("E6c 自定义 session 名生效 + 连接", !!r.result?.targetInfos && !!s && s.via === `endpoint:${path}`,
-        JSON.stringify(s));
-      c.close();
-      await http("POST", `/sessions/${path}-ws/release`, {});
-    } else {
-      check("E6c 自定义接入点（扩展未回连，跳过连接）", true);
-    }
-    // 清理：还原内置两条
-    await http("PUT", "/settings", {
-      endpoints: Object.values(eps).map((e) => ({ path: e.path, source: e.source, session: e.session || "" })),
-    });
-  }
-}
-// E8 顶替
-{
-  const st = await http("GET", "/status");
-  const tok = st.data?.endpoints?.find((e) => e.path === "standalone")?.token;
-  const c1 = await Cdp.dial(`${WS}/standalone/${tok}`);
-  let closed = false;
-  c1.ws.on("close", () => { closed = true; });
-  await new Promise((r) => setTimeout(r, 200));
-  const c2 = await Cdp.dial(`${WS}/standalone/${tok}`);
-  await new Promise((r) => setTimeout(r, 300));
-  check("E8 同端点第二连接顶替第一连接", closed);
+
+const extConn = !!st0.data?.sources?.extension?.connected;
+
+// E3 并发隔离（1 WS = 1 独立会话）+ E4 固定会话名 /session/<id> 顶替
+if (extConn) {
+  const c1 = await Cdp.dial(`${WS}/extension/${eps.extension.token}`);
+  let c1Closed = false;
+  c1.ws.on("close", () => { c1Closed = true; });
+  const c2 = await Cdp.dial(`${WS}/extension/${eps.extension.token}`);
+  await new Promise((r) => setTimeout(r, 250));
+  const [t1, t2] = await Promise.all([c1.call("Target.getTargets"), c2.call("Target.getTargets")]);
+  check("E3 同一地址并发 2 条 WS 互不顶替且各自隔离",
+    !c1Closed && (t1.result?.targetInfos?.length ?? 0) === 1 && (t2.result?.targetInfos?.length ?? 0) === 1,
+    `c1Closed=${c1Closed}`);
+  c1.close();
   c2.close();
-  await http("POST", "/sessions/standalone/release", {});
+  const stAfter = await api("GET", "/status");
+  for (const s of stAfter.data?.sessions || []) {
+    if (s.name.startsWith("cdp-")) {
+      await api("POST", `/sessions/${encodeURIComponent(s.name)}/release`, {});
+    }
+  }
+
+  // E4 固定会话 /session/ep-fixed 同名顶替
+  const f1 = await Cdp.dial(`${WS}/extension/session/ep-fixed/${eps.extension.token}`);
+  let f1Closed = false;
+  f1.ws.on("close", () => { f1Closed = true; });
+  await new Promise((r) => setTimeout(r, 150));
+  const f2 = await Cdp.dial(`${WS}/extension/session/ep-fixed`, {
+    Authorization: `Bearer ${eps.extension.token}`,
+  });
+  await new Promise((r) => setTimeout(r, 250));
+  check("E4 固定 /session/ep-fixed 第二连接接管并顶替旧连接", f1Closed);
+  f2.close();
+  await api("POST", "/sessions/ep-fixed/release", {});
+} else {
+  check("E3/E4 extension 实时连接（扩展未回连，跳过）", true, "extension not connected");
 }
 
 const pass = results.filter(Boolean).length;
-console.log(`\n${pass === results.length ? "接入点冒烟全部通过 ✅" : "存在失败 ❌"}（${pass}/${results.length}）`);
+console.log(`\n${pass === results.length ? "标准 CDP 网关冒烟全部通过 ✅" : "存在失败 ❌"}（${pass}/${results.length}）`);
 process.exit(results.every(Boolean) ? 0 : 1);

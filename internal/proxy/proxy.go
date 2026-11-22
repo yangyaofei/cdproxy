@@ -288,11 +288,9 @@ func (p *Proxy) listenWS(port int) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /cdp/{token}", p.handleUpstream)
 	mux.HandleFunc("GET /ext", p.handleExtension)
-	// 常驻接入点：/{path}/{token}（URL 即完整凭证）与 /{path}
-	//（Authorization: Bearer <token>）。字面路由 /cdp、/ext 优先，
-	// 接入点 path 另有保留字校验（settings.validEndpoints）。
-	mux.HandleFunc("GET /{path}/{token}", p.handleEndpointWS)
-	mux.HandleFunc("GET /{path}", p.handleEndpointWS)
+	// 标准 CDP HTTP 发现（/json/version, /json/list, /json）与 WS 统一网关；
+	// 字面路由 /cdp/{token} 与 /ext 优先级更高。
+	mux.HandleFunc("GET /", p.handleCDPGateway)
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -686,62 +684,11 @@ func tokenEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
-// handleEndpointWS 常驻接入点入口：/{path}/{token} 或 /{path}+Bearer 头。
-// 认证 → 按 endpoint.source 分配/复用 endpoint.session 会话 → 接管连接
-//（与 /cdp/<token> 同一上游语义：顶替、事件路由、守卫全一致）。
-func (p *Proxy) handleEndpointWS(w http.ResponseWriter, r *http.Request) {
-	path := r.PathValue("path")
-	token := r.PathValue("token")
-	if token == "" {
-		token = bearerToken(r)
-	}
-	var ep *settings.Endpoint
-	cfg := p.store.Get()
-	for i := range cfg.Endpoints {
-		if cfg.Endpoints[i].Path == path {
-			ep = &cfg.Endpoints[i]
-			break
-		}
-	}
-	if ep == nil || token == "" || !tokenEqual(ep.Token, token) {
-		// 拒绝留痕：path 进日志（无敏感），token 只进前缀。
-		p.log.Warn("接入点认证失败", "path", path,
-			"token_prefix", token[:min(8, len(token))], "via_bearer", r.PathValue("token") == "")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "接入点不存在或令牌无效"})
-		return
-	}
-	name := sessionNameOf(ep)
-	if _, err := p.AllocSession(name, ep.Source); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
-	}
-	sess := p.st.FindByName(name)
-	if sess == nil { // AllocSession 成功后必然在场；防御性兜底
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	sess.SetOrigin("endpoint:" + ep.Path)
-	p.log.Info("接入点连接", "endpoint", ep.Path, "session", sess.Name, "source", ep.Source)
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
-	if err != nil {
-		return
-	}
-	p.attachUpstream(sess, conn, r)
-}
-
-// sessionNameOf 接入点的会话名（配置空 = path）。
-func sessionNameOf(ep *settings.Endpoint) string {
-	if s := strings.TrimSpace(ep.Session); s != "" {
-		return s
-	}
-	return ep.Path
-}
-
 func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
+	if !checkLocalHostOrigin(w, r) {
+		p.log.Warn("拒绝非本机或跨站 /cdp 请求", "host", r.Host, "origin", r.Header.Get("Origin"))
+		return
+	}
 	token := r.PathValue("token")
 	sess := p.st.FindByToken(token)
 	conn, err := websocket.Accept(w, r, nil)
@@ -970,8 +917,12 @@ func (p *Proxy) sendTo(sess *state.Session, msg map[string]any) {
 // 并合成销毁，双方状态一致。chrome 侧归属不受牵连。令牌不匹配回 401，
 // 扩展侧按退避重试。令牌取自 settings.ext_token。
 func (p *Proxy) handleExtension(w http.ResponseWriter, r *http.Request) {
+	if !isLoopbackHost(r.Host) {
+		http.Error(w, "invalid host", http.StatusForbidden)
+		return
+	}
 	token := p.store.Get().Sources.ExtensionToken
-	if token != "" && r.URL.Query().Get("token") != token {
+	if token != "" && !tokenEqual(r.URL.Query().Get("token"), token) {
 		p.log.Warn("拒绝令牌不匹配的扩展连接", "remote", r.RemoteAddr)
 		http.Error(w, "invalid extension token", http.StatusUnauthorized)
 		return

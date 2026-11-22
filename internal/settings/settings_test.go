@@ -147,12 +147,15 @@ func TestDownstreamModeAndExtToken(t *testing.T) {
 		t.Fatalf("首启应生成强随机令牌: ext=%q alloc=%q", ft, fa)
 	}
 	eps := fresh.Get().Endpoints
-	if len(eps) != 2 || eps[0].Path != "standalone" || eps[1].Path != "extension" {
-		t.Fatalf("首启应生成内置两条接入点: %+v", eps)
+	if len(eps) != 3 || eps[0].Path != "default" || eps[0].Source != "" || eps[1].Path != "standalone" || eps[2].Path != "extension" {
+		t.Fatalf("首启应生成内置三条接入点（default/standalone/extension）: %+v", eps)
 	}
 	for _, ep := range eps {
 		if len(ep.Token) < 16 {
 			t.Fatalf("接入点令牌应自动生成: %+v", ep)
+		}
+		if ep.EffectiveSession() != "" {
+			t.Fatalf("内置入口默认应为动态会话（EffectiveSession 为空）: %+v", ep)
 		}
 	}
 	// 弱默认 dev 在加载时被废除换新（旧文件迁移路径）
@@ -162,54 +165,84 @@ func TestDownstreamModeAndExtToken(t *testing.T) {
 	if ds.Get().Sources.ExtensionToken == "dev" || ds.Get().Sources.AllocToken == "dev" {
 		t.Fatalf("dev 默认令牌应被自动废除: %+v", ds.Get().Sources)
 	}
+	// alloc_token 持久化跨重载不变 + 文件权限收紧 0600
+	savedAlloc := ds.Get().Sources.AllocToken
+	ds2 := NewStore(devPath)
+	if ds2.Get().Sources.AllocToken != savedAlloc {
+		t.Fatalf("alloc_token 重载后不应改变: %q vs %q", ds2.Get().Sources.AllocToken, savedAlloc)
+	}
+	if fi, err := os.Stat(devPath); err == nil && fi.Mode().Perm() != 0o600 {
+		t.Fatalf("settings.json 权限应收紧为 0600，实际 %o", fi.Mode().Perm())
+	}
+	// 旧配置迁移：仅有 standalone + extension 时自动前置补齐 default 且保留原令牌不动
+	legacyPath := filepath.Join(t.TempDir(), "legacy.json")
+	os.WriteFile(legacyPath, []byte(`{"endpoints":[{"path":"standalone","source":"standalone","token":"sa-tok-1234567890abcdef"},{"path":"extension","source":"extension","token":"ext-tok-1234567890abcdef"}]}`), 0o644)
+	ls := NewStore(legacyPath)
+	leps := ls.Get().Endpoints
+	if len(leps) != 3 || leps[0].Path != "default" || leps[0].Source != "" ||
+		leps[1].Token != "sa-tok-1234567890abcdef" || leps[2].Token != "ext-tok-1234567890abcdef" {
+		t.Fatalf("旧配置迁移应前置补齐 default 且保留原令牌: %+v", leps)
+	}
 }
 
 func TestEndpointsUpdate(t *testing.T) {
 	store, _ := newStore(t)
 	base := store.Get()
-	tokSA := base.Endpoints[0].Token
-	// 整表更新：改 session 名 + 新增自定义端点；token 不随 PUT 变（按 path 保留）
+	tokDef := base.Endpoints[0].Token
+	tokSA := base.Endpoints[1].Token
+	// 整表更新：保留内置三条 + 新增自定义固定会话端点（支持 source="" 跟随默认）；token 不随 PUT 变
 	updated, err := store.Update(map[string]any{"endpoints": []any{
+		map[string]any{"path": "default", "source": ""},
 		map[string]any{"path": "standalone", "source": "standalone", "session": "base-work"},
 		map[string]any{"path": "extension", "source": "extension"},
 		map[string]any{"path": "work", "source": "extension", "session": "research"},
+		map[string]any{"path": "auto-group", "source": ""},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(updated.Endpoints) != 3 {
-		t.Fatalf("应有三条接入点: %+v", updated.Endpoints)
+	if len(updated.Endpoints) != 5 {
+		t.Fatalf("应有五条接入点: %+v", updated.Endpoints)
 	}
-	if updated.Endpoints[0].Token != tokSA {
-		t.Fatalf("PUT 不应更换现有接入点令牌: %q vs %q", updated.Endpoints[0].Token, tokSA)
+	if updated.Endpoints[0].Token != tokDef || updated.Endpoints[1].Token != tokSA {
+		t.Fatalf("PUT 不应更换现有接入点令牌: %+v", updated.Endpoints)
 	}
-	if updated.Endpoints[0].Session != "base-work" || updated.Endpoints[2].Session != "research" {
+	if updated.Endpoints[1].Session != "base-work" || updated.Endpoints[3].Session != "research" || updated.Endpoints[4].EffectiveSession() != "auto-group" {
 		t.Fatalf("session 名未生效: %+v", updated.Endpoints)
 	}
-	if len(updated.Endpoints[2].Token) < 16 {
-		t.Fatalf("新接入点应自动生成令牌: %+v", updated.Endpoints[2])
+	if len(updated.Endpoints[3].Token) < 16 {
+		t.Fatalf("新接入点应自动生成令牌: %+v", updated.Endpoints[3])
 	}
-	// 非法：保留字 / 重复 / 非法 source
+	// 非法：保留字 / 重复 / 非法 source / 内置源篡改 / 保留 session 名
 	if _, err := store.Update(map[string]any{"endpoints": []any{map[string]any{"path": "cdp", "source": "standalone"}}}); err == nil {
 		t.Fatal("保留字 path 应被拒绝")
 	}
+	if _, err := store.Update(map[string]any{"endpoints": []any{map[string]any{"path": "session", "source": "standalone"}}}); err == nil {
+		t.Fatal("保留字 session path 应被拒绝")
+	}
 	if _, err := store.Update(map[string]any{"endpoints": []any{
-		map[string]any{"path": "a", "source": "standalone"},
-		map[string]any{"path": "a", "source": "extension"},
+		map[string]any{"path": "a1", "source": "standalone"},
+		map[string]any{"path": "a1", "source": "extension"},
 	}}); err == nil {
 		t.Fatal("重复 path 应被拒绝")
 	}
 	if _, err := store.Update(map[string]any{"endpoints": []any{map[string]any{"path": "ok", "source": "bogus"}}}); err == nil {
 		t.Fatal("非法 source 应被拒绝")
 	}
-	// 重置令牌：新值生效；reset 是写时复制——旧快照（updated）不受影响
-	oldTok := updated.Endpoints[2].Token
-	after, err := store.ResetEndpointToken("work")
-	if err != nil || after.Endpoints[2].Token == oldTok {
-		t.Fatalf("重置应换新令牌: err=%v old=%s new=%s", err, oldTok, after.Endpoints[2].Token)
+	if _, err := store.Update(map[string]any{"endpoints": []any{map[string]any{"path": "default", "source": "extension"}}}); err == nil {
+		t.Fatal("default 入口强制改 source 应被拒绝")
 	}
-	if updated.Endpoints[2].Token != oldTok {
-		t.Fatalf("reset 不应改动旧快照（写时复制）: %s", updated.Endpoints[2].Token)
+	if _, err := store.Update(map[string]any{"endpoints": []any{map[string]any{"path": "work", "source": "extension", "session": "extension"}}}); err == nil {
+		t.Fatal("保留字 session 名应被拒绝")
+	}
+	// 重置令牌：新值生效；reset 是写时复制——旧快照（updated）不受影响
+	oldTok := updated.Endpoints[3].Token
+	after, err := store.ResetEndpointToken("work")
+	if err != nil || after.Endpoints[3].Token == oldTok {
+		t.Fatalf("重置应换新令牌: err=%v old=%s new=%s", err, oldTok, after.Endpoints[3].Token)
+	}
+	if updated.Endpoints[3].Token != oldTok {
+		t.Fatalf("reset 不应改动旧快照（写时复制）: %s", updated.Endpoints[3].Token)
 	}
 	if _, err := store.ResetEndpointToken("nope"); err == nil {
 		t.Fatal("重置不存在的接入点应报错")

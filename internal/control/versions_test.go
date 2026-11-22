@@ -27,7 +27,7 @@ func newTestHandler(t *testing.T) (http.Handler, *settings.Store, string) {
 	kcfg := keeper.Config{Session: "test-base", ProfileDir: filepath.Join(dir, "profile")}
 	p := proxy.New(kcfg, 0, store, ilg, log, proxy.Options{})
 	ctl := New(p, ilg, store, kcfg, filepath.Join(dir, "service.log"), "0.8.0-test", nil, nil, log)
-	return ctl.Handler(), store, dir
+	return ctl.InternalHandler(), store, dir
 }
 
 func TestCleanAndCompareSemver(t *testing.T) {

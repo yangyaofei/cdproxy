@@ -125,16 +125,30 @@ brew install --cask yangyaofei/tap/cdproxy
 
 ### 第 3 步：复制连接地址，填进你的 AI 或浏览器工具
 
-在 App 的 **「概览」** 或 **「源与接入点」** 页面，直接点 **「复制」** 拿到对应模式的固定连接地址（形如 `ws://127.0.0.1:9225/...`），粘贴到任意支持连接已有 Chrome（CDP）的 AI 助手或自动化工具中即可开始使用。
+在 App 的 **「概览」** 或 **「源与接入点」** 页面，直接点 **「复制地址」**（或 **「Header」**）拿到标准 CDP 连接地址，粘贴到任意支持连接已有 Chrome 的 AI 助手或自动化工具中即可开始使用（同时支持 `http://` 与 `ws://`，以及 URL 携带令牌或 `Authorization: Bearer` 请求头两种方式）：
 
-例如在 Playwright 中只需这一行连接地址：
+- **默认入口**（`http://127.0.0.1:9225/<令牌>`）：跟随 App 首页选中的默认浏览器模式，切一次默认源即可热切，无需修改客户端配置；
+- **指定浏览器**（`/standalone/<令牌>` 或 `/extension/<令牌>`）：明确指向独立 Chrome 或日常 Chrome；
+- **每条连接自动隔离**：多个 AI 窗口或脚本共用同一条地址时，每条连接自动获得独立会话与标签页分组，互不打扰；需要固定认领某个分组时，在路径中加上 `/session/<名字>` 即可。
+
+例如在 Playwright 或 Puppeteer 中只需一行连接地址：
 
 ```js
 import { chromium } from "playwright-core";
 
-const browser = await chromium.connectOverCDP("ws://127.0.0.1:9225/extension/<从App复制的令牌>");
+// URL 携带令牌（默认入口，跟随 App 中选择的默认浏览器模式）
+const browser = await chromium.connectOverCDP("http://127.0.0.1:9225/<从App复制的令牌>");
 const page = await browser.newPage();
 await page.goto("https://example.com");
+```
+
+如果工具偏好使用标准根地址 + 请求头（例如 Puppeteer / `playwright-cli` / `agent-browser --cdp`），也可把令牌放在 `Authorization: Bearer` 中，代理会根据令牌自动识别对应的浏览器模式：
+
+```js
+const browser = await puppeteer.connect({
+  browserURL: "http://127.0.0.1:9225",
+  headers: { Authorization: "Bearer <从App复制的令牌>" },
+});
 ```
 
 ## 应用界面里能调什么？

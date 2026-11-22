@@ -304,8 +304,35 @@ func runStop(args []string) int {
 	return 0
 }
 
+// readLocalAllocToken 从本地 settings.json 读取控制面管理/分配令牌（兼容 AB_PROXY_TOKEN 覆盖）。
+func readLocalAllocToken() string {
+	if v := strings.TrimSpace(os.Getenv("AB_PROXY_TOKEN")); v != "" {
+		return v
+	}
+	data, err := os.ReadFile(filepath.Join(defaultDataDir(), "settings.json"))
+	if err != nil {
+		return ""
+	}
+	var raw struct {
+		Sources struct {
+			AllocToken string `json:"alloc_token"`
+		} `json:"sources"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return ""
+	}
+	return strings.TrimSpace(raw.Sources.AllocToken)
+}
+
 func httpGet(url string) ([]byte, int) {
-	resp, err := http.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, 0
+	}
+	if tok := readLocalAllocToken(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, 0
 	}
@@ -315,7 +342,15 @@ func httpGet(url string) ([]byte, int) {
 }
 
 func httpPost(url string, payload []byte) ([]byte, int) {
-	resp, err := http.Post(url, "application/json", strings.NewReader(string(payload)))
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(string(payload)))
+	if err != nil {
+		return nil, 0
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if tok := readLocalAllocToken(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, 0
 	}

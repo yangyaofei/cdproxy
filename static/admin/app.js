@@ -528,6 +528,24 @@ function admin() {
       }
     },
 
+    getWebAdminToken() {
+      try {
+        const hash = String(window.location.hash || "");
+        const m = hash.match(/token=([^&]+)/);
+        if (m && m[1]) {
+          const tok = decodeURIComponent(m[1]).trim();
+          if (tok) {
+            sessionStorage.setItem("cdproxy_admin_token", tok);
+            try { history.replaceState(null, "", window.location.pathname + window.location.search); } catch (e) {}
+            return tok;
+          }
+        }
+        return sessionStorage.getItem("cdproxy_admin_token") || "";
+      } catch (e) {
+        return "";
+      }
+    },
+
     async api(method, path, body) {
       if (window.__cdpWails) {
         const r = await window.__cdpWails.doRequest(method, path, body === undefined ? "" : JSON.stringify(body));
@@ -535,11 +553,30 @@ function admin() {
         if (r.status >= 400) throw new Error(data.error || `${method} ${path} → ${r.status}`);
         return data;
       }
-      const resp = await fetch(path, {
-        method,
-        headers: body !== undefined ? { "Content-Type": "application/json" } : {},
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
+      const doFetch = async (tok) => {
+        const headers = body !== undefined ? { "Content-Type": "application/json" } : {};
+        if (tok) headers["Authorization"] = `Bearer ${tok}`;
+        return fetch(path, {
+          method,
+          headers,
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+        });
+      };
+      let tok = this.getWebAdminToken();
+      let resp = await doFetch(tok);
+      if (resp.status === 401 && !this._authPrompting) {
+        this._authPrompting = true;
+        try {
+          const entered = window.prompt(this.t("web.auth_prompt"), tok || "");
+          if (entered && entered.trim()) {
+            tok = entered.trim();
+            try { sessionStorage.setItem("cdproxy_admin_token", tok); } catch (e) {}
+            resp = await doFetch(tok);
+          }
+        } finally {
+          this._authPrompting = false;
+        }
+      }
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data.error || `${method} ${path} → ${resp.status}`);
       return data;
@@ -1404,15 +1441,55 @@ function admin() {
       }
     },
 
-    endpointURL(ep) {
-      return `ws://127.0.0.1:${this.status.ws_port}/${ep.path}/${ep.token}`;
+    isBuiltinEndpoint(ep) {
+      return ep && (ep.path === "default" || ep.path === "standalone" || ep.path === "extension");
     },
-    copyEndpoint(ep, idx) {
+    endpointDisplayLabel(ep) {
+      if (!ep) return "";
+      if (ep.path === "default") return this.t("ep.label_default");
+      return ep.path || "";
+    },
+    endpointTargetHint(ep) {
+      if (!ep) return "";
+      const defSrc = this.status?.routing?.default_source || "standalone";
+      const sess = (ep.session || "").trim();
+      if (ep.path === "default") {
+        return sess ? `→ ${defSrc} / ${sess}` : `→ ${defSrc}`;
+      }
+      if (ep.path === "standalone" || ep.path === "extension") {
+        return sess ? `→ ${sess}` : this.t("ep.auto_session_short");
+      }
+      const name = sess || ep.path;
+      return ep.source ? `→ ${name}` : `→ ${name} (${defSrc})`;
+    },
+    endpointURL(ep, proto = "http") {
+      const port = this.status?.ws_port || 9225;
+      const base = `${proto}://127.0.0.1:${port}`;
+      const tok = ep.token || "";
+      const sess = (ep.session || "").trim();
+      if (ep.path === "default") {
+        return sess ? `${base}/session/${encodeURIComponent(sess)}/${tok}` : `${base}/${tok}`;
+      }
+      if (ep.path === "standalone" || ep.path === "extension") {
+        return sess ? `${base}/${ep.path}/session/${encodeURIComponent(sess)}/${tok}` : `${base}/${ep.path}/${tok}`;
+      }
+      const srcPrefix = ep.source ? `/${ep.source}` : "";
+      const fixed = sess || ep.path || "";
+      return `${base}${srcPrefix}/session/${encodeURIComponent(fixed)}/${tok}`;
+    },
+    copyEndpoint(ep, idx, proto = "http") {
       if (!ep.path || !ep.token) {
         this.toast(this.t("toast.save_ep_first"), "err");
         return;
       }
-      this.copyText(this.endpointURL(ep), this.t("toast.ep_url_copied", { path: ep.path }), `ep-url-${idx}`);
+      this.copyText(this.endpointURL(ep, proto), this.t("toast.ep_url_copied", { path: ep.path }), `ep-url-${idx}`);
+    },
+    copyEndpointHeader(ep, key) {
+      if (!ep?.token) {
+        this.toast(this.t("toast.save_ep_first"), "err");
+        return;
+      }
+      this.copyText(`Authorization: Bearer ${ep.token}`, this.t("ep.header_copied", { path: ep.path }), key);
     },
     epTokenPreview(ep) {
       return ep.token ? ep.token.slice(0, 8) + "…" : this.t("src.ep_gen_auto");
@@ -1462,7 +1539,7 @@ function admin() {
 
     epDirty() {
       if (!this.savedEpJson) return false;
-      const cur = JSON.stringify(this.epForm.map(e => ({ path: e.path || "", source: e.source || "extension", session: e.session || "" })));
+      const cur = JSON.stringify(this.epForm.map(e => ({ path: e.path || "", source: e.source ?? "", session: e.session || "" })));
       return cur !== this.savedEpJson;
     },
     resetEndpoints() {
@@ -1476,7 +1553,7 @@ function admin() {
       for (const ep of this.epForm) {
         const path = (ep.path || "").trim();
         if (!path) continue;
-        eps.push({ path, source: ep.source, session: (ep.session || "").trim() });
+        eps.push({ path, source: ep.source ?? "", session: (ep.session || "").trim() });
       }
       this.saving = { ...this.saving, endpoints: true };
       try {

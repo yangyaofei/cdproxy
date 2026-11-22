@@ -524,7 +524,7 @@ func (c *Control) Handler() http.Handler {
 		}
 	})
 
-	return mux
+	return c.externalAuthGuard(mux)
 }
 
 // noCache 静态资源禁缓存包装（嵌入资产随二进制发布，浏览器不得缓存旧版）。

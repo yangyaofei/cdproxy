@@ -384,17 +384,24 @@
                       <template x-for="(ep, idx) in (status.endpoints || []).slice(0, 6)" :key="ep.path">
                         <div class="ov-item">
                           <div class="rowflex" style="min-width:0;flex:1">
-                            <span class="src-ic" :class="ep.source === 'extension' ? 'ext' : 'sa'">
-                              <svg><use :href="ep.source === 'extension' ? '#i-puzzle' : '#i-chrome'"/></svg>
+                            <span class="src-ic" :class="(ep.source || status.routing.default_source) === 'extension' ? 'ext' : 'sa'">
+                              <svg><use :href="(ep.source || status.routing.default_source) === 'extension' ? '#i-puzzle' : '#i-chrome'"/></svg>
                             </span>
-                            <span class="mono" style="font-weight:550;color:var(--tx)" x-text="'/' + ep.path"></span>
-                            <span class="hint mono" x-text="'→ ' + (ep.session || ep.path)"></span>
+                            <span class="mono" style="font-weight:550;color:var(--tx)" x-text="endpointDisplayLabel(ep)"></span>
+                            <span class="hint mono truncate" x-text="endpointTargetHint(ep)"></span>
                           </div>
-                          <button class="sm" @click="copyText(endpointURL(ep), t('toast.ep_url_copied', { path: ep.path }), 'ov-ep-' + idx)">
-                            <svg class="ic-sm" x-show="copiedKey !== 'ov-ep-' + idx"><use href="#i-copy"/></svg>
-                            <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-ep-' + idx"><use href="#i-check"/></svg>
-                            <span x-text="t('ov.copy_url')"></span>
-                          </button>
+                          <div class="rowflex" style="flex:none">
+                            <button class="sm" @click="copyText(endpointURL(ep), t('toast.ep_url_copied', { path: ep.path }), 'ov-ep-' + idx)" :title="t('src.ep_copy_url_title')">
+                              <svg class="ic-sm" x-show="copiedKey !== 'ov-ep-' + idx"><use href="#i-copy"/></svg>
+                              <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-ep-' + idx"><use href="#i-check"/></svg>
+                              <span x-text="t('ov.copy_url')"></span>
+                            </button>
+                            <button class="sm" @click="copyEndpointHeader(ep, 'ov-ep-hdr-' + idx)" :title="t('ep.copy_header_title')">
+                              <svg class="ic-sm" x-show="copiedKey !== 'ov-ep-hdr-' + idx"><use href="#i-copy"/></svg>
+                              <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-ep-hdr-' + idx"><use href="#i-check"/></svg>
+                              <span x-text="t('ov.copy_header')"></span>
+                            </button>
+                          </div>
                         </div>
                       </template>
                     </div>
@@ -402,11 +409,11 @@
 
                     <div class="save-bar" style="justify-content:space-between">
                       <span class="mono hl-url" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px"
-                            x-html="highlightUrl(`ws://127.0.0.1:${status.ws_port}/cdp/<token>`)"></span>
-                      <button class="sm" @click="copyText(`ws://127.0.0.1:${status.ws_port}/cdp/<token>`, t('toast.tpl_dynamic_copied'), 'ov-tpl')">
-                        <svg class="ic-sm" x-show="copiedKey !== 'ov-tpl'"><use href="#i-copy"/></svg>
-                        <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-tpl'"><use href="#i-check"/></svg>
-                        <span x-text="t('ov.copy_template')"></span>
+                            x-html="highlightUrl(`http://127.0.0.1:${status.ws_port}`)"></span>
+                      <button class="sm" @click="copyText(`http://127.0.0.1:${status.ws_port}`, t('ov.base_url_copied'), 'ov-base')">
+                        <svg class="ic-sm" x-show="copiedKey !== 'ov-base'"><use href="#i-copy"/></svg>
+                        <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-base'"><use href="#i-check"/></svg>
+                        <span x-text="t('ov.copy_base_url')"></span>
                       </button>
                     </div>
                   </div>
@@ -1035,10 +1042,10 @@
                   <div class="card-head">
                     <h2>
                       <span x-text="t('src.ep_title')"></span>
-                      <span class="bdg plain mono hl-url" x-html="highlightUrl(`ws://127.0.0.1:${status.ws_port}/<path>/<token>`)"></span>
+                      <span class="bdg plain mono hl-url" x-html="highlightUrl(`http://127.0.0.1:${status.ws_port}/<token>`)"></span>
                       <span class="dirty-dot" x-show="epDirty()" x-text="t('common.dirty')"></span>
                     </h2>
-                    <button class="sm" @click="epForm.push({path: '', source: 'extension', session: '', token: '', _show: false})">
+                    <button class="sm" @click="epForm.push({path: '', source: '', session: '', token: '', _show: false})">
                       <svg class="ic-sm"><use href="#i-plus"/></svg>
                       <span x-text="t('src.ep_add')"></span>
                     </button>
@@ -1050,14 +1057,27 @@
                       <template x-for="(ep, i) in epForm" :key="i">
                         <tbody>
                           <tr>
-                            <td class="mono"><input x-model="ep.path" :placeholder="t('src.ep_path_ph')" class="mono"></td>
-                            <td>
-                              <select x-model="ep.source">
-                                <option value="standalone">standalone</option>
-                                <option value="extension">extension</option>
-                              </select>
+                            <td class="mono">
+                              <template x-if="isBuiltinEndpoint(ep)">
+                                <span class="bdg" :class="ep.path === 'extension' ? 'ext' : (ep.path === 'standalone' ? 'sa' : 'ok')" x-text="endpointDisplayLabel(ep)"></span>
+                              </template>
+                              <template x-if="!isBuiltinEndpoint(ep)">
+                                <input x-model="ep.path" :placeholder="t('src.ep_path_ph')" class="mono">
+                              </template>
                             </td>
-                            <td class="mono fold-col"><input x-model="ep.session" :placeholder="ep.path || t('src.ep_session_ph')" class="mono"></td>
+                            <td>
+                              <template x-if="isBuiltinEndpoint(ep)">
+                                <span class="hint mono" x-text="ep.source || t('ep.source_default')"></span>
+                              </template>
+                              <template x-if="!isBuiltinEndpoint(ep)">
+                                <select x-model="ep.source">
+                                  <option value="" x-text="t('ep.source_default')"></option>
+                                  <option value="standalone">standalone</option>
+                                  <option value="extension">extension</option>
+                                </select>
+                              </template>
+                            </td>
+                            <td class="mono fold-col"><input x-model="ep.session" :placeholder="isBuiltinEndpoint(ep) ? t('ep.auto_session_ph') : (ep.path || t('src.ep_session_ph'))" class="mono"></td>
                             <td class="mono">
                               <div class="secret" style="flex-wrap:nowrap">
                                 <span class="val" style="min-width:0;flex:1" :class="ep._show ? '' : 'masked'"
@@ -1080,7 +1100,12 @@
                                   <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ep-url-' + i"><use href="#i-check"/></svg>
                                   <span>URL</span>
                                 </button>
-                                <button class="icon-btn danger" @click="epForm.splice(i, 1)" :title="t('src.ep_remove_title')">
+                                <button class="sm" @click="copyEndpointHeader(ep, 'ep-hdr-' + i)" :disabled="!ep.token" :title="t('ep.copy_header_title')">
+                                  <svg class="ic-sm" x-show="copiedKey !== 'ep-hdr-' + i"><use href="#i-copy"/></svg>
+                                  <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ep-hdr-' + i"><use href="#i-check"/></svg>
+                                  <span x-text="t('ov.copy_header')"></span>
+                                </button>
+                                <button class="icon-btn danger" x-show="!isBuiltinEndpoint(ep)" @click="epForm.splice(i, 1)" :title="t('src.ep_remove_title')">
                                   <svg class="ic-sm"><use href="#i-trash"/></svg>
                                 </button>
                               </div>
@@ -1088,7 +1113,7 @@
                           </tr>
                           <tr class="fold-detail">
                             <td colspan="5">
-                              <div class="fold-grid"><label><span x-text="t('src.ep_th_session')"></span> <input x-model="ep.session" :placeholder="ep.path || t('src.ep_session_ph')" class="mono"></label></div>
+                              <div class="fold-grid"><label><span x-text="t('src.ep_th_session')"></span> <input x-model="ep.session" :placeholder="isBuiltinEndpoint(ep) ? t('ep.auto_session_ph') : (ep.path || t('src.ep_session_ph'))" class="mono"></label></div>
                             </td>
                           </tr>
                         </tbody>

@@ -171,18 +171,43 @@ type Sources struct {
 	AllocToken string `json:"alloc_token"`
 }
 
-// Endpoint 常驻 CDP 接入点：URL 路径即源选择器，独立 token 即凭证。
-// 连接 ws://host:<ws_port>/<path>/<token>（或同路径 + Bearer 头）= 以
-// session 名（默认=path）分配/复用会话并接管连接——连接即会话。
+// Endpoint CDP 访问凭证与接入点：
+//
+// 内置三条常驻入口：
+//   - default    (Source="")          跟随全局 routing.default_source（可热切）
+//   - standalone (Source="standalone") 仅允许独立托管 Chrome
+//   - extension  (Source="extension")  仅允许日常 Chrome（Cdproxy Connector）
+//
+// 三条内置入口默认 Session=""，表示每条匿名 WS 连接自动分配独立会话（1 WS = 1 Session），
+// 也可在 URL 中显式带 /session/<id> 绑定/续接指定会话。
+// 自定义入口（非内置 path）默认钉死为固定会话/分组令牌（Session 空时回落为 Path），
+// 实现最小权限隔离——只能访问该指定源与会话。
 type Endpoint struct {
-	// Path URL 路径段（[a-z0-9-]，不可用保留字 cdp/ext）。
+	// Path 入口标识（内置 default/standalone/extension，或自定义 [a-z0-9-]）。
 	Path string `json:"path"`
-	// Source 目标源（standalone | extension）。
+	// Source 目标源（"" = 跟随默认源 | standalone | extension）。
 	Source string `json:"source"`
 	// Token 准入令牌（首建自动生成；PUT 更新时忽略此字段，重置走专用动作）。
 	Token string `json:"token"`
-	// Session 会话名（决定组名 ab: <session> 与认领身份；空 = path）。
+	// Session 固定会话名（内置入口空 = 动态 1 WS = 1 Session；自定义入口空 = Path）。
 	Session string `json:"session"`
+}
+
+// IsBuiltin 是否为三条内置基础入口之一（default / standalone / extension）。
+func (ep Endpoint) IsBuiltin() bool {
+	return ep.Path == "default" || ep.Path == SourceStandalone || ep.Path == SourceExtension
+}
+
+// EffectiveSession 返回令牌绑定的固定会话名（空串 = 不钉死会话，按连接动态分配或接受 URL /session/<id>）。
+func (ep Endpoint) EffectiveSession() string {
+	s := strings.TrimSpace(ep.Session)
+	if ep.IsBuiltin() {
+		return s
+	}
+	if s != "" {
+		return s
+	}
+	return ep.Path
 }
 
 // Routing 会话 → 源 的路由策略。
@@ -240,9 +265,45 @@ func newSecretToken() string {
 var endpointPathRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,31}$`)
 
 // wsReservedPaths WS mux 上的保留路径（字面路由优先，接入点不可占用）。
-var wsReservedPaths = map[string]bool{"cdp": true, "ext": true}
+var wsReservedPaths = map[string]bool{
+	"cdp":      true,
+	"ext":      true,
+	"session":  true,
+	"json":     true,
+	"devtools": true,
+}
 
-// validEndpoints 接入点表校验（含 session 名规范化：空 → path）。
+// reservedSessionNames 会话名不可使用的路由关键字（防与源/控制路径混淆）。
+var reservedSessionNames = map[string]bool{
+	"standalone": true,
+	"extension":  true,
+	"default":    true,
+	"session":    true,
+	"json":       true,
+	"cdp":        true,
+	"ext":        true,
+	"devtools":   true,
+}
+
+// ValidSessionName 校验会话名合法性（供 settings 与 proxy 路由解析共用）。
+func ValidSessionName(name string) error {
+	s := strings.TrimSpace(name)
+	if s == "" {
+		return errors.New("session 不能为空")
+	}
+	if len([]rune(s)) > 64 {
+		return fmt.Errorf("session 过长（≤64 字符）: %q", s)
+	}
+	if strings.ContainsAny(s, "/\\?#") {
+		return fmt.Errorf("session 不能包含路径或查询符号（/ \\ ? #）: %q", s)
+	}
+	if reservedSessionNames[strings.ToLower(s)] {
+		return fmt.Errorf("session 不能使用保留关键字: %q", s)
+	}
+	return nil
+}
+
+// validEndpoints 接入点表校验。
 func validEndpoints(eps []Endpoint) error {
 	seen := map[string]bool{}
 	for i, ep := range eps {
@@ -256,23 +317,42 @@ func validEndpoints(eps []Endpoint) error {
 			return fmt.Errorf("endpoints[%d].path %q 重复", i, ep.Path)
 		}
 		seen[ep.Path] = true
-		if !validSource(ep.Source) {
-			return fmt.Errorf("endpoints[%d].source 必须是 standalone|extension", i)
+		if ep.Source != "" && !validSource(ep.Source) {
+			return fmt.Errorf("endpoints[%d].source 必须是空（跟随默认）或 standalone|extension", i)
+		}
+		switch ep.Path {
+		case "default":
+			if ep.Source != "" {
+				return fmt.Errorf("内置 default 接入点的 source 必须为空（跟随全局默认源）")
+			}
+		case SourceStandalone:
+			if ep.Source != SourceStandalone {
+				return fmt.Errorf("内置 standalone 接入点的 source 必须为 standalone")
+			}
+		case SourceExtension:
+			if ep.Source != SourceExtension {
+				return fmt.Errorf("内置 extension 接入点的 source 必须为 extension")
+			}
 		}
 		s := strings.TrimSpace(ep.Session)
-		if s == "" {
-			s = ep.Path
-		}
-		if len(s) > 64 {
-			return fmt.Errorf("endpoints[%d].session 过长（≤64）", i)
+		if s != "" {
+			if err := ValidSessionName(s); err != nil {
+				return fmt.Errorf("endpoints[%d].%v", i, err)
+			}
+		} else if !ep.IsBuiltin() {
+			if err := ValidSessionName(ep.Path); err != nil {
+				return fmt.Errorf("endpoints[%d].%v", i, err)
+			}
 		}
 	}
 	return nil
 }
 
-// ensureSecrets 补齐/强化凭证（首启与弱默认废除）：返回是否发生变更
+// ensureSecrets 补齐/强化凭证（首启、旧版升级迁移与弱默认废除）：返回是否发生变更
 // （调用方负责持久化）。规则：ext/alloc 令牌空或 "dev" → 生成强随机；
-// endpoints 缺失 → 生成内置两条；单条 token 空 → 生成。
+// endpoints 缺失 → 生成内置三条（default/standalone/extension）；
+// 已有旧版 standalone/extension 但缺 default → 自动前置补齐 default（保留旧令牌不动）；
+// 单条 token 空 → 生成。
 func ensureSecrets(s *Settings, warns *[]string) bool {
 	changed := false
 	weak := func(t string) bool { return strings.TrimSpace(t) == "" || t == "dev" }
@@ -292,10 +372,26 @@ func ensureSecrets(s *Settings, warns *[]string) bool {
 	}
 	if s.Endpoints == nil {
 		s.Endpoints = []Endpoint{
-			{Path: "standalone", Source: SourceStandalone},
-			{Path: "extension", Source: SourceExtension},
+			{Path: "default", Source: ""},
+			{Path: SourceStandalone, Source: SourceStandalone},
+			{Path: SourceExtension, Source: SourceExtension},
 		}
 		changed = true
+	} else if len(s.Endpoints) > 0 {
+		hasDefault := false
+		hasLegacyBuiltin := false
+		for _, ep := range s.Endpoints {
+			if ep.Path == "default" {
+				hasDefault = true
+			}
+			if ep.Path == SourceStandalone || ep.Path == SourceExtension {
+				hasLegacyBuiltin = true
+			}
+		}
+		if !hasDefault && hasLegacyBuiltin {
+			s.Endpoints = append([]Endpoint{{Path: "default", Source: ""}}, s.Endpoints...)
+			changed = true
+		}
 	}
 	for i := range s.Endpoints {
 		if strings.TrimSpace(s.Endpoints[i].Token) == "" {
@@ -329,6 +425,9 @@ func NewStore(path string) *Store {
 		if err := save(path, s.settings); err != nil {
 			slog.Error("settings 初始存盘失败", "path", path, "err", err)
 		}
+	} else {
+		// 收紧既有配置文件权限为仅属主可读写（含全部访问令牌）
+		_ = os.Chmod(path, 0o600)
 	}
 	return s
 }
@@ -373,6 +472,9 @@ func load(path string) Settings {
 			}
 			if t, ok := src["token"].(string); ok && strings.TrimSpace(t) != "" {
 				out.Sources.ExtensionToken = strings.TrimSpace(t)
+			}
+			if at, ok := src["alloc_token"].(string); ok && strings.TrimSpace(at) != "" {
+				out.Sources.AllocToken = strings.TrimSpace(at)
 			}
 			if gp, ok := src["group_prefix"].(string); ok && strings.TrimSpace(gp) != "" {
 				if trimmed := strings.TrimSpace(gp); len([]rune(trimmed)) <= 32 {
@@ -657,11 +759,18 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 		slog.Error("settings 存盘失败", "path", s.path, "err", err)
 		return current, err
 	}
-	slog.Info("设置已更新", "settings", current)
+	slog.Info("设置已更新",
+		"control_port", current.ControlPort,
+		"ws_port", current.WsPort,
+		"ports_enabled", current.PortsEnabled,
+		"admin_web_enabled", current.AdminWebEnabled,
+		"default_source", current.Routing.DefaultSource,
+		"endpoints", len(current.Endpoints),
+	)
 	return current, nil
 }
 
-// save 原子写盘（临时文件 + rename）。
+// save 原子写盘（临时文件 + 0600 仅属主可读 + rename）。
 func save(path string, s Settings) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -671,9 +780,10 @@ func save(path string, s Settings) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
+	_ = os.Chmod(tmp, 0o600)
 	return os.Rename(tmp, path)
 }
 

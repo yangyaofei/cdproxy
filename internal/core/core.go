@@ -114,8 +114,8 @@ func (c *Core) Store() *settings.Store { return c.store }
 // Proxy 暴露代理（App 绑定层查询状态/操作会话）。
 func (c *Core) Proxy() *proxy.Proxy { return c.proxy }
 
-// ControlHandler 暴露控制面路由（桌面 App 的 DoRequest 在进程内执行
-// 同一套 handler——与 REST 行为逐字节一致，端口关闭也可用）。
+// ControlHandler 暴露进程内可信控制面路由（桌面 App 的 DoRequest 在进程内执行
+// 同一套 handler——不受外部 TCP 鉴权限制，外部端口关闭也可用）。
 func (c *Core) ControlHandler() http.Handler {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -123,7 +123,7 @@ func (c *Core) ControlHandler() http.Handler {
 		return nil
 	}
 	if c.ctlHandler == nil {
-		c.ctlHandler = c.ctl.Handler()
+		c.ctlHandler = c.ctl.InternalHandler()
 	}
 	return c.ctlHandler
 }

@@ -125,16 +125,30 @@ Both modes can stay enabled side by side, and you can switch the default mode an
 
 ### 3. Copy the Connection URL into Your Tool
 
-In **Overview** or **Sources & Endpoints**, click **Copy** on the direct endpoint URL (`ws://127.0.0.1:9225/...`) and paste it into any AI agent or automation tool that supports connecting to Chrome over CDP.
+In **Overview** or **Sources & Endpoints**, click **Copy URL** (or **Header**) to grab a standard CDP address and paste it into any AI agent or automation tool (works with both `http://` and `ws://`, and with either URL tokens or `Authorization: Bearer` headers):
+
+- **Default entry** (`http://127.0.0.1:9225/<token>`): follows the active default browser mode in the app — switch modes anytime without editing client configs;
+- **Direct source** (`/standalone/<token>` or `/extension/<token>`): explicitly targets either the dedicated Chrome or your everyday Chrome;
+- **Automatic per-connection isolation**: multiple AI windows or scripts sharing the same URL each get their own isolated session and Tab Group; append `/session/<name>` whenever you want to claim or resume a specific group.
 
 For example, in Playwright:
 
 ```js
 import { chromium } from "playwright-core";
 
-const browser = await chromium.connectOverCDP("ws://127.0.0.1:9225/extension/<token-copied-from-app>");
+// URL token (follows the default browser mode selected in the app)
+const browser = await chromium.connectOverCDP("http://127.0.0.1:9225/<token-copied-from-app>");
 const page = await browser.newPage();
 await page.goto("https://example.com");
+```
+
+Or pass the token via `Authorization: Bearer` against the root CDP URL — `cdproxy` automatically routes to the browser source or pinned session bound to that token:
+
+```js
+const browser = await puppeteer.connect({
+  browserURL: "http://127.0.0.1:9225",
+  headers: { Authorization: "Bearer <token-copied-from-app>" },
+});
 ```
 
 ## What You Can Configure in the App
