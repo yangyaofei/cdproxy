@@ -27,7 +27,7 @@ builds:
 archives:
   - id: default
     name_template: >-
-      cdproxy-cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+      cdproxy-cli-{{ .Version }}-{{ .Os }}-{{ .Arch }}
     formats:
       - tar.gz
     format_overrides:
