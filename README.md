@@ -9,17 +9,17 @@ Run multiple AI agents, browser skills, or Playwright/Puppeteer scripts concurre
 Ships as a **single cross-platform Go binary** (`cdproxy`, CLI + built-in `agent-browser` stdio plugin), a **Wails v3 desktop app** (`cdproxy-desktop` for macOS & Windows), and a **Chrome MV3 extension** (`cdp-ext`) for bridging your everyday Chrome via native Tab Groups.
 
 <p align="center">
-  <img src="docs/assets/overview-dark.png" alt="cdproxy Admin Overview (Dark)" width="960" />
+  <img src="docs/assets/overview-dark-en.png" alt="cdproxy Admin Overview (Dark)" width="960" />
 </p>
 
 ## Live Demos
 
 ### Admin UI & Dual-Source Walkthrough
 
-Browse dual sources (`standalone` + `extension`), isolated sessions, per-session owned tabs & CDP interaction traces, command rewrite rules, direct endpoints, and dark/light themes:
+Browse dual sources (`standalone` + `extension`), isolated sessions, per-session owned tabs & CDP interaction traces, command rewrite rules, direct endpoints, bilingual UI (`中 / EN`), and dark/light themes:
 
 <p align="center">
-  <img src="docs/assets/walkthrough.gif" alt="cdproxy UI Walkthrough" width="900" />
+  <img src="docs/assets/walkthrough-en.gif" alt="cdproxy UI Walkthrough" width="900" />
 </p>
 
 ### Multi-Agent Session Isolation Lifecycle
@@ -27,18 +27,18 @@ Browse dual sources (`standalone` + `extension`), isolated sessions, per-session
 Concurrent agents allocate isolated sessions across `extension` and `standalone`, run CDP commands independently with background focus-guard and base-browser protection, and release cleanly without affecting other sessions:
 
 <p align="center">
-  <img src="docs/assets/session-lifecycle.gif" alt="Multi-Agent Session Isolation Lifecycle" width="900" />
+  <img src="docs/assets/session-lifecycle-en.gif" alt="Multi-Agent Session Isolation Lifecycle" width="900" />
 </p>
 
 <details>
 <summary>More screenshots (Sessions + CDP Trace · Light Theme Sources &amp; Endpoints)</summary>
 
 <p align="center">
-  <img src="docs/assets/sessions-dark.png" alt="Sessions and CDP Interaction Trace" width="900" />
+  <img src="docs/assets/sessions-dark-en.png" alt="Sessions and CDP Interaction Trace" width="900" />
 </p>
 
 <p align="center">
-  <img src="docs/assets/sources-light.png" alt="Sources, Routing Rules, and Direct Endpoints (Light)" width="900" />
+  <img src="docs/assets/sources-light-en.png" alt="Sources, Routing Rules, and Direct Endpoints (Light)" width="900" />
 </p>
 
 </details>
@@ -104,7 +104,7 @@ CGO_ENABLED=0 go build -ldflags="-s -w" -o var/cdproxy ./cmd/cdproxy
 codesign --force --sign - var/cdproxy          # required on macOS after stripping symbols
 
 # Desktop App (macOS, requires Wails v3 CLI)
-cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task package:embedded VERSION=0.9.0
+cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task package:embedded VERSION=0.10.0
 ```
 
 ## Quickstart

@@ -1,7 +1,9 @@
 # 发布管线：push tag v*（或手动 workflow_dispatch 指定 tag）
 #   1. release（ubuntu-latest）：CLI 质量门禁 + GoReleaser 全平台 CLI（darwin/linux/windows × amd64/arm64）
-#   2. desktop（macos-15）：Wails macOS .app（内嵌 agent-browser）+ p12 签名 + Ed25519 manifest.json
-#   3. desktop-windows（windows-latest）：Wails Windows cdproxy-desktop.exe + zip + SHA256SUMS
+#   2. desktop（macos-15）：Wails macOS .app（内嵌 agent-browser）+ p12 签名 + zip/SHA256 上传
+#   3. desktop-windows（windows-latest）：Wails Windows cdproxy-desktop.exe + zip/SHA256 上传
+#   4. manifest（ubuntu-latest）：合并 macOS + Windows 产物统一签发 Ed25519 manifest.json 并验签上传
+#   5. homebrew（ubuntu-latest）：可选自动回写 yangyaofei/homebrew-tap（未配置 HOMEBREW_TAP_TOKEN 时提示并跳过）
 name: Release
 
 on:
@@ -11,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (例如 v0.9.0；手动运行需该 tag 已存在或仅用于补传桌面资产)"
+        description: "Release tag (例如 v0.10.0；手动运行需该 tag 已存在或仅用于补传桌面资产)"
         required: true
         type: string
 
@@ -49,7 +51,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # macOS 桌面 App（Wails v3）：同一 tag 附加 .app 签名产物 + Ed25519 更新清单
+  # macOS 桌面 App（Wails v3）：构建、内嵌 agent-browser、p12 签名并上传产物
   desktop:
     runs-on: macos-15
     needs: [release]
@@ -119,27 +121,20 @@ jobs:
           mkdir -p ../dist
           ditto -c -k --keepParent "bin/cdproxy-desktop.app" "../dist/cdproxy-desktop_${VERSION#v}_darwin_arm64.zip"
 
-      - name: Generate signed update manifest (key shared with denpa-jack)
-        run: |
-          if [ -z "${{ secrets.UPDATER_SIGNING_KEY }}" ]; then
-            echo "::error::缺少 UPDATER_SIGNING_KEY Secret"
-            exit 1
-          fi
-          echo "${{ secrets.UPDATER_SIGNING_KEY }}" | base64 -d > ../certs/updater.key
-          wails3 updater manifest -version "${VERSION#v}" -key ../certs/updater.key \
-            -output ../dist/manifest.json \
-            -url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}" ../dist/
-
-      - name: Guard — verify manifest as the client would
-        run: wails3 updater verify -manifest ../dist/manifest.json -publickey build/updater.key.pub
-
       - name: Checksums
-        run: cd ../dist && shasum -a 256 *.zip > SHA256SUMS_darwin.txt
+        run: cd ../dist && shasum -a 256 -- *.zip > SHA256SUMS_darwin.txt
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$VERSION" ../dist/cdproxy-desktop_*_darwin_arm64.zip ../dist/manifest.json ../dist/SHA256SUMS_darwin.txt --clobber
+        run: gh release upload "$VERSION" ../dist/cdproxy-desktop_*_darwin_arm64.zip ../dist/SHA256SUMS_darwin.txt --clobber
+
+      - name: Stage artifact for unified updater manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-darwin
+          path: dist/cdproxy-desktop_*_darwin_arm64.zip
+          retention-days: 1
 
   # Windows 桌面 App（Wails v3）：构建 cdproxy-desktop.exe 并打包 zip 上传同一 Release
   desktop-windows:
@@ -178,11 +173,11 @@ jobs:
       - name: Restore updater public key (from Secret; never in repo)
         run: |
           New-Item -ItemType Directory -Force -Path ../certs, frontend/dist | Out-Null
-          if ("${{ secrets.UPDATER_PUBLIC_KEY }}" -ne "") {
-            [IO.File]::WriteAllBytes("build/updater.key.pub", [Convert]::FromBase64String("${{ secrets.UPDATER_PUBLIC_KEY }}"))
-          } else {
-            Set-Content -Path "build/updater.key.pub" -Value "-----BEGIN PLACEHOLDER PUBLIC KEY-----`nwindows build placeholder`n-----END PLACEHOLDER PUBLIC KEY-----"
+          if ("${{ secrets.UPDATER_PUBLIC_KEY }}" -eq "") {
+            Write-Error "缺少 UPDATER_PUBLIC_KEY Secret"
+            exit 1
           }
+          [IO.File]::WriteAllBytes("build/updater.key.pub", [Convert]::FromBase64String("${{ secrets.UPDATER_PUBLIC_KEY }}"))
 
       - name: Build Windows desktop binary (version injected)
         run: |
@@ -202,3 +197,146 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$env:VERSION" ../dist/cdproxy-desktop_*_windows_amd64.zip ../dist/SHA256SUMS_windows.txt --clobber
+
+      - name: Stage artifact for unified updater manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: dist/cdproxy-desktop_*_windows_amd64.zip
+          retention-days: 1
+
+  # 统一更新清单：合并 macOS + Windows 桌面产物签发 Ed25519 manifest.json 并验签上传
+  manifest:
+    runs-on: ubuntu-latest
+    needs: [desktop, desktop-windows]
+    env:
+      VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install wails3 CLI (purego)
+        run: CGO_ENABLED=0 go install -tags purego github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
+
+      - name: Download macOS desktop artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-darwin
+          path: dist
+
+      - name: Download Windows desktop artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-windows
+          path: dist
+
+      - name: Generate & verify unified Ed25519 manifest.json (macOS + Windows)
+        run: |
+          if [ -z "${{ secrets.UPDATER_SIGNING_KEY }}" ] || [ -z "${{ secrets.UPDATER_PUBLIC_KEY }}" ]; then
+            echo "::error::缺少 UPDATER_SIGNING_KEY / UPDATER_PUBLIC_KEY Secret"
+            exit 1
+          fi
+          mkdir -p certs
+          echo "${{ secrets.UPDATER_SIGNING_KEY }}" | base64 -d > certs/updater.key
+          echo "${{ secrets.UPDATER_PUBLIC_KEY }}"  | base64 -d > certs/updater.key.pub
+          ls -lh dist/
+          wails3 updater manifest \
+            -version "${VERSION#v}" \
+            -key certs/updater.key \
+            -output dist/manifest.json \
+            -url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}" \
+            dist/
+          wails3 updater verify -manifest dist/manifest.json -publickey certs/updater.key.pub
+          jq -e '[.artifacts[] | "\(.platform)/\(.arch)"] | (index("darwin/arm64") != null) and (index("windows/amd64") != null)' dist/manifest.json >/dev/null
+          cat dist/manifest.json
+
+      - name: Upload manifest.json to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$VERSION" dist/manifest.json --clobber
+
+  # 可选：自动回写 yangyaofei/homebrew-tap 的 Formula/cdproxy.rb 与 Casks/cdproxy-desktop.rb
+  homebrew:
+    runs-on: ubuntu-latest
+    needs: [release, desktop, manifest]
+    if: always() && needs.manifest.result == 'success' && (needs.release.result == 'success' || needs.release.result == 'skipped')
+    env:
+      VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - name: Update yangyaofei/homebrew-tap (optional via HOMEBREW_TAP_TOKEN)
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::notice::未配置 HOMEBREW_TAP_TOKEN Secret，跳过自动更新 yangyaofei/homebrew-tap（配置具备 contents:write 权限的 PAT 后启用）"
+            exit 0
+          fi
+          V="${VERSION#v}"
+          mkdir -p tap-work/sums
+          gh release download "$VERSION" -R "$GITHUB_REPOSITORY" -p "SHA256SUMS_darwin.txt" -D tap-work/sums --clobber
+          gh release download "$VERSION" -R "$GITHUB_REPOSITORY" -p "checksums.txt" -D tap-work/sums --clobber || true
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/yangyaofei/homebrew-tap.git" tap-work/repo
+          python3 - "$V" tap-work/sums tap-work/repo << 'PY'
+          import re, sys
+          from pathlib import Path
+
+          ver, sums_dir, repo = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+
+          def parse_sums(path: Path) -> dict[str, str]:
+              out = {}
+              if not path.exists():
+                  return out
+              for line in path.read_text(encoding="utf-8").splitlines():
+                  parts = line.strip().split()
+                  if len(parts) >= 2:
+                      out[Path(parts[1]).name] = parts[0]
+              return out
+
+          cli_sums = parse_sums(sums_dir / "checksums.txt")
+          if cli_sums:
+              fp = repo / "Formula" / "cdproxy.rb"
+              txt = fp.read_text(encoding="utf-8")
+              for plat in ("darwin_arm64", "darwin_amd64", "linux_arm64", "linux_amd64"):
+                  fname = f"cdproxy_{ver}_{plat}.tar.gz"
+                  sha = cli_sums.get(fname)
+                  if not sha:
+                      raise SystemExit(f"checksums.txt 缺少 {fname}")
+                  pat = re.compile(
+                      rf'(url "https://github\.com/yangyaofei/cdproxy/releases/download/)v[^/]+/cdproxy_[^_]+_{plat}\.tar\.gz("\n\s+sha256 ")[0-9a-f]{{64}}(")'
+                  )
+                  txt, n = pat.subn(rf'\g<1>v{ver}/{fname}\g<2>{sha}\g<3>', txt, count=1)
+                  if n != 1:
+                      raise SystemExit(f"Formula/cdproxy.rb 未匹配到 {plat}")
+              fp.write_text(txt, encoding="utf-8")
+              print(f"Updated Formula/cdproxy.rb -> {ver}")
+
+          desk_sums = parse_sums(sums_dir / "SHA256SUMS_darwin.txt")
+          desk_fname = f"cdproxy-desktop_{ver}_darwin_arm64.zip"
+          desk_sha = desk_sums.get(desk_fname)
+          if not desk_sha:
+              raise SystemExit(f"SHA256SUMS_darwin.txt 缺少 {desk_fname}")
+          cp = repo / "Casks" / "cdproxy-desktop.rb"
+          ctxt = cp.read_text(encoding="utf-8")
+          ctxt, n1 = re.subn(r'version "[^"]+"', f'version "{ver}"', ctxt, count=1)
+          ctxt, n2 = re.subn(r'sha256 "[0-9a-f]{64}"', f'sha256 "{desk_sha}"', ctxt, count=1)
+          if n1 != 1 or n2 != 1:
+              raise SystemExit("Casks/cdproxy-desktop.rb 替换失败")
+          cp.write_text(ctxt, encoding="utf-8")
+          print(f"Updated Casks/cdproxy-desktop.rb -> {ver} ({desk_sha[:12]}...)")
+          PY
+
+          cd tap-work/repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/cdproxy.rb Casks/cdproxy-desktop.rb
+          if git diff --cached --quiet; then
+            echo "homebrew-tap 已是最新版本，无需提交"
+          else
+            git commit -m "cdproxy: bump to v${V}"
+            git push origin HEAD:main
+          fi

@@ -12,6 +12,7 @@
 | p12 密码 | `denpa-jack/certs/denpa-jack-dev-10y.pw` | 解 p12 | `CDPROXY_CERT_PASSWORD` |
 | Ed25519 更新私钥（PKCS#8） | `certs/updater.key` | 签发 `manifest.json`（Wails `pkg/updater` 信任根） | `UPDATER_SIGNING_KEY`（base64） |
 | Ed25519 更新公钥 | `certs/updater.key.pub` | 构建期拷入 `desktop/build/updater.key.pub` 经 `go:embed` 钉进二进制 | `UPDATER_PUBLIC_KEY`（base64） |
+| Homebrew Tap PAT（可选） | — | 发版后自动回写 `yangyaofei/homebrew-tap` Formula/Cask 版本与 SHA-256（未配置时提示并跳过，不阻断发版） | `HOMEBREW_TAP_TOKEN` |
 
 > 所有四项必须存为 GitHub **Secrets**（严禁放明文 Variables；转 Public 后 Variables 对所有人可见）。
 
@@ -29,7 +30,7 @@ base64 -i certs/updater.key.pub | gh secret set UPDATER_PUBLIC_KEY
 | 工作流 | 触发 | 作业与检查 |
 |---|---|---|
 | `ci.yml` | push `master` / PR / 手动 | `core`（`ubuntu-latest`）：tracked-file 密钥守卫 → 前端语法/同步/构建 → `go vet`/`go test` → Windows 桌面交叉编译；`desktop-macos`（`macos-15`）：Wails macOS CGO 桌面宿主 vet + 编译 |
-| `release.yml` | push `v*` tag / 手动 `workflow_dispatch` | `release`（GoReleaser 全平台 CLI）→ `desktop`（`macos-15`：内嵌 `agent-browser` `.app` + p12 签名 + `Authority` 断言 + `manifest.json` 验签）+ `desktop-windows`（`windows-latest`：`cdproxy-desktop.exe` zip）→ 统一上传 GitHub Release |
+| `release.yml` | push `v*` tag / 手动 `workflow_dispatch` | `release`（GoReleaser 全平台 CLI）→ `desktop`（`macos-15`：内嵌 `agent-browser` `.app` + p12 签名 + `Authority` 断言）+ `desktop-windows`（`windows-latest`：`cdproxy-desktop.exe` zip）→ `manifest`（合并双端产物签发 Ed25519 `manifest.json` 并验签上传）→ `homebrew`（可选自动回写 `yangyaofei/homebrew-tap`） |
 
 ## 3. 发版与本地演练
 

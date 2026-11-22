@@ -55,6 +55,7 @@ jobs:
 
       - name: JS syntax, Wails bindings, admin sync & frontend build
         run: |
+          node --check static/admin/i18n.js
           node --check static/admin/app.js
           node --check ext/cdp-ext/sw.js
           node --check ext/cdp-ext/options.js

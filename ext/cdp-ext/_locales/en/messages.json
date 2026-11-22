@@ -1,0 +1,50 @@
+{
+  "extName": {
+    "message": "cdp-ext reverse bridge",
+    "description": "Extension display name"
+  },
+  "extDescription": {
+    "message": "Reverse-dial cdproxy and bridge your Chrome browser as a Tab-Group-isolated CDP endpoint via chrome.debugger.",
+    "description": "Extension description"
+  },
+  "actionTitle": {
+    "message": "cdp-ext: Click to wake or reconnect cdproxy",
+    "description": "Toolbar icon tooltip"
+  },
+  "optionsPageTitle": {
+    "message": "cdp-ext Settings"
+  },
+  "optionsHeading": {
+    "message": "cdp-ext Reverse Bridge Settings"
+  },
+  "optionsIntroPrefix": {
+    "message": "Connects outbound to cdproxy ("
+  },
+  "optionsIntroSuffix": {
+    "message": " source) and bridges your everyday Chrome as a Tab-Group-isolated CDP downstream."
+  },
+  "labelRelayUrl": {
+    "message": "Proxy Reverse Endpoint (WebSocket URL)"
+  },
+  "labelToken": {
+    "message": "Access Token (matches cdproxy Sources & Endpoints)"
+  },
+  "labelReleasePolicy": {
+    "message": "When a session is released, what happens to its tabs?"
+  },
+  "policyClose": {
+    "message": "Close all tabs and remove the group (default)"
+  },
+  "policyMark": {
+    "message": "Keep tabs, mark group as released (grey · released)"
+  },
+  "policyKeep": {
+    "message": "Keep tabs and group untouched"
+  },
+  "saveButton": {
+    "message": "Save"
+  },
+  "savedNotice": {
+    "message": "Saved"
+  }
+}

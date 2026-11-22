@@ -1,0 +1,50 @@
+{
+  "extName": {
+    "message": "cdp-ext 反向桥",
+    "description": "扩展显示名称"
+  },
+  "extDescription": {
+    "message": "反向回连 cdproxy，通过 chrome.debugger 与标签组将当前 Chrome 桥接为会话隔离的 CDP 下游源。",
+    "description": "扩展简介"
+  },
+  "actionTitle": {
+    "message": "cdp-ext：点按唤醒/重连 cdproxy",
+    "description": "工具栏图标悬停提示"
+  },
+  "optionsPageTitle": {
+    "message": "cdp-ext 设置"
+  },
+  "optionsHeading": {
+    "message": "cdp-ext 反向桥设置"
+  },
+  "optionsIntroPrefix": {
+    "message": "扩展会反向拨出到 cdproxy（"
+  },
+  "optionsIntroSuffix": {
+    "message": " 下游源），把当前浏览器桥接为代理的标签组隔离下游。"
+  },
+  "labelRelayUrl": {
+    "message": "Proxy 反向入口（WebSocket URL）"
+  },
+  "labelToken": {
+    "message": "连接令牌（与 cdproxy「源与接入点」令牌一致）"
+  },
+  "labelReleasePolicy": {
+    "message": "会话释放时组内标签页怎么办"
+  },
+  "policyClose": {
+    "message": "全部关闭并删除组（默认）"
+  },
+  "policyMark": {
+    "message": "保留标签页，组标记为已释放（灰色 · released）"
+  },
+  "policyKeep": {
+    "message": "完全保留，不做任何改动"
+  },
+  "saveButton": {
+    "message": "保存"
+  },
+  "savedNotice": {
+    "message": "已保存"
+  }
+}

@@ -26,8 +26,8 @@ Go 主实现模块（生产 CLI 与桌面 App 共用内核；旧 Python `src/` �
 | `internal/interlog` | per-session CDP 交互日志（落盘 + 内存环形） | — |
 | `cmd/cdproxy` | CLI 入口（serve/status/stop/plugin，无子命令+管道隐式进 plugin） | 端口 flags 为启动覆盖，启动后 settings 是事实源 |
 | `desktop/` | Wails v3 桌面宿主（`cdproxy-desktop`）：Dock/托盘+管理窗口；EngineService.DoRequest 进程内执行 control 路由；内嵌 agent-browser（pin+校验+staging+解析链） | App 与 daemon 二选一（同数据目录同端口）；窗口操作勿用 app.Show()（非主线程 SIGTRAP） |
-| `static/admin/` | Admin 前端单一源（零构建 Alpine + vendored Tabulator）；`scripts/sync_admin_frontend.py` 同步到 `desktop/frontend/` | 改完必须跑 `--check` 验证一致 |
-| `ext/cdp-ext/` | Chrome MV3 扩展（反向回连 `/ext` + 标签组归属映射），`assets.go` 编译期嵌入二进制 | 同步更新 `manifest.json` 版本号 |
+| `static/admin/` | Admin 前端单一源（零构建 Alpine + vendored Tabulator + `i18n.js` 中/英双语）；`scripts/sync_admin_frontend.py` 同步到 `desktop/frontend/` | 改完必须跑 `--check` 验证一致 |
+| `ext/cdp-ext/` | Chrome MV3 扩展（反向回连 `/ext` + 标签组归属映射 + `_locales/{en,zh_CN}` 双语），`assets.go` 经 `all:ext/cdp-ext` 编译期嵌入二进制 | 同步更新 `manifest.json` 版本号 |
 
 ## 2. 架构全景
 

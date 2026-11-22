@@ -328,6 +328,29 @@ html.is-windows .top-right-bar { padding-right: 0; }
   height: 28px;
   padding: 0;
 }
+.top-tools > .lang-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--tx3);
+  cursor: pointer;
+}
+.top-tools > .lang-btn .lang-opt {
+  color: var(--tx3);
+  transition: color .15s;
+}
+.top-tools > .lang-btn .lang-opt.on {
+  color: var(--tx);
+  font-weight: 600;
+}
+.top-tools > .lang-btn .lang-sep {
+  color: var(--border-strong);
+  font-weight: 400;
+}
 
 /* Windows 无边框窗口标题栏控制按钮 */
 .win-ctrls { display: none; }

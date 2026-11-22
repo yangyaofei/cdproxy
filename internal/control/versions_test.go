@@ -115,9 +115,11 @@ func TestVersionsExportZipAndReloadEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /sources/extension/export status = %d: %s", rec.Code, rec.Body.String())
 	}
-	exportedManifest := filepath.Join(dir, "ext", "cdp-ext", "manifest.json")
-	if _, err := os.Stat(exportedManifest); err != nil {
-		t.Fatalf("expected exported manifest at %s: %v", exportedManifest, err)
+	for _, rel := range []string{"manifest.json", "_locales/en/messages.json", "_locales/zh_CN/messages.json"} {
+		p := filepath.Join(dir, "ext", "cdp-ext", filepath.FromSlash(rel))
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("expected exported %s at %s: %v", rel, p, err)
+		}
 	}
 
 	// 3) GET /versions after export reflects exported_version
@@ -139,14 +141,14 @@ func TestVersionsExportZipAndReloadEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("invalid zip archive: %v", err)
 	}
-	hasManifest := false
+	zipFiles := map[string]bool{}
 	for _, f := range zr.File {
-		if f.Name == "cdp-ext/manifest.json" {
-			hasManifest = true
-		}
+		zipFiles[f.Name] = true
 	}
-	if !hasManifest {
-		t.Fatal("zip missing cdp-ext/manifest.json")
+	for _, want := range []string{"cdp-ext/manifest.json", "cdp-ext/_locales/en/messages.json", "cdp-ext/_locales/zh_CN/messages.json"} {
+		if !zipFiles[want] {
+			t.Fatalf("zip missing %s", want)
+		}
 	}
 
 	// 5) POST /sources/extension/reload when disconnected returns 409

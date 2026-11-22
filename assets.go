@@ -8,7 +8,7 @@ package assets
 
 import "embed"
 
-// FS 内嵌 static/（Admin 静态页）与 ext/cdp-ext/（随包浏览器扩展）。
+// FS 内嵌 static/（Admin 静态页）与 ext/cdp-ext/（随包浏览器扩展，含 _locales/ 双语目录）。
 //
-//go:embed static ext/cdp-ext
+//go:embed static all:ext/cdp-ext
 var FS embed.FS

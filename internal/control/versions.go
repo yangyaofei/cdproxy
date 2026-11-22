@@ -400,6 +400,12 @@ func (c *Control) exportBundledExtension() (map[string]any, error) {
 		if rel == "." {
 			return nil
 		}
+		if strings.HasPrefix(d.Name(), ".") {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		target := filepath.Join(destRoot, filepath.FromSlash(rel))
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
@@ -439,7 +445,16 @@ func buildExtensionZip() ([]byte, string, error) {
 		if walkErr != nil {
 			return walkErr
 		}
-		if rel == "." || d.IsDir() {
+		if rel == "." {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".") {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
 			return nil
 		}
 		data, err := fs.ReadFile(sub, rel)

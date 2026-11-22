@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/vendor/tabulator.min.css?v=0.10.0">
   <link rel="stylesheet" href="/static/app.css?v=0.10.0">
   <script src="/static/vendor/tabulator.min.js?v=0.10.0" defer></script>
+  <script src="/static/i18n.js?v=0.10.0" defer></script>
   <script src="/static/app.js?v=0.10.0" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
 </head>
@@ -70,7 +71,7 @@
           <span class="brand-mark"><svg><use href="#i-brand"/></svg></span>
           <span class="brand-name">cdproxy</span>
         </div>
-        <button class="side-toggle" @click="toggleSide()" :title="sideCollapsed ? '展开导航栏' : '收起导航栏'">
+        <button class="side-toggle" @click="toggleSide()" :title="sideCollapsed ? t('topbar.expand_sidebar') : t('topbar.collapse_sidebar')">
           <svg class="ic-sm"><use href="#i-sidebar"/></svg>
         </button>
       </div>
@@ -80,45 +81,50 @@
 
         <!-- 全局状态条：引擎状态 + 双源通道 -->
         <div class="status-strip">
-          <button class="st-item" @click="go('logs')" title="点击查看服务运行日志">
+          <button class="st-item" @click="go('logs')" :title="t('topbar.logs_title')">
             <span class="st-dot" :class="healthy === true ? 'ok' : (healthy === false ? 'bad' : '')"></span>
-            <span class="st-label" x-text="healthy === true ? '引擎运行中' : (healthy === false ? '引擎未运行' : '连接中…')"></span>
-            <span class="st-meta mono" x-show="status" x-text="status?.settings?.ports_enabled ? `:${status.settings.control_port} · :${status.ws_port}` : '仅内嵌'"></span>
+            <span class="st-label" x-text="healthy === true ? t('topbar.engine_running') : (healthy === false ? t('topbar.engine_stopped') : t('topbar.engine_connecting'))"></span>
+            <span class="st-meta mono" x-show="status" x-text="status?.settings?.ports_enabled ? `:${status.settings.control_port} · :${status.ws_port}` : t('topbar.embedded_only')"></span>
           </button>
           <span class="st-sep"></span>
-          <button class="st-item" @click="go('sources')" :title="'standalone 独立基座 · ' + (keeperIdleText() || '按需拉起') + ' · 点击前往配置'">
+          <button class="st-item" @click="go('sources')" :title="t('topbar.standalone_title', { idle: keeperIdleText() || t('topbar.standalone_on_demand') })">
             <svg class="st-ic sa"><use href="#i-chrome"/></svg>
             <span class="st-src mono">standalone</span>
             <span class="st-state"
                   :class="healthy === true ? (status?.sources?.standalone?.connected ? 'ok' : '') : (healthy === false ? 'bad' : '')"
-                  x-text="healthy === true ? (status?.sources?.standalone?.enabled === false ? '已禁用' : (status?.sources?.standalone?.connected ? '已连接' : '待命')) : (healthy === false ? '离线' : '…')"></span>
+                  x-text="healthy === true ? (status?.sources?.standalone?.enabled === false ? t('topbar.state_disabled') : (status?.sources?.standalone?.connected ? t('topbar.state_connected') : t('topbar.state_standby'))) : (healthy === false ? t('topbar.state_offline') : '…')"></span>
           </button>
           <span class="st-sep"></span>
-          <button class="st-item" @click="go('sources')" title="extension 宿主扩展 · 点击前往配置">
+          <button class="st-item" @click="go('sources')" :title="t('topbar.extension_title')">
             <svg class="st-ic ext"><use href="#i-puzzle"/></svg>
             <span class="st-src mono">extension</span>
             <span class="st-state"
                   :class="healthy === true ? (status?.sources?.extension?.connected ? 'ok' : 'warn') : (healthy === false ? 'bad' : '')"
-                  x-text="healthy === true ? (status?.sources?.extension?.enabled === false ? '已禁用' : (status?.sources?.extension?.connected ? '已回连' : '未回连')) : (healthy === false ? '离线' : '…')"></span>
+                  x-text="healthy === true ? (status?.sources?.extension?.enabled === false ? t('topbar.state_disabled') : (status?.sources?.extension?.connected ? t('topbar.state_ext_connected') : t('topbar.state_ext_disconnected'))) : (healthy === false ? t('topbar.state_offline') : '…')"></span>
           </button>
         </div>
 
         <div class="top-tools">
-          <button class="sm" @click="checkUpdate()" x-show="canUpdate" x-cloak title="检查 cdproxy 新版本" :disabled="updateBusy">
+          <button class="sm" @click="checkUpdate()" x-show="canUpdate" x-cloak :title="t('topbar.check_update_title')" :disabled="updateBusy">
             <svg class="ic-sm" :class="updateBusy ? 'spin' : ''"><use href="#i-refresh"/></svg>
-            <span x-text="updateBusy ? '检查中…' : '更新'"></span>
+            <span x-text="updateBusy ? t('topbar.checking') : t('topbar.update')"></span>
           </button>
-          <button class="icon-btn" @click="toggleTheme()" :title="theme === 'dark' ? '切换为亮色外观' : '切换为暗色外观'">
+          <button class="lang-btn" @click="toggleLang()" :title="t('topbar.switch_lang_title')" aria-label="Switch language">
+            <span class="lang-opt" :class="lang === 'zh' ? 'on' : ''">中</span>
+            <span class="lang-sep">/</span>
+            <span class="lang-opt" :class="lang === 'en' ? 'on' : ''">EN</span>
+          </button>
+          <button class="icon-btn" @click="toggleTheme()" :title="theme === 'dark' ? t('topbar.theme_to_light') : t('topbar.theme_to_dark')">
             <svg class="ic-sm" x-show="theme === 'dark'"><use href="#i-sun"/></svg>
             <svg class="ic-sm" x-show="theme === 'light'"><use href="#i-moon"/></svg>
           </button>
           <div class="win-ctrls" x-show="isWindows" x-cloak>
-            <button @click="winMin()" title="最小化"><svg><use href="#i-win-min"/></svg></button>
-            <button @click="winToggleMax()" :title="winMaximized ? '向下还原' : '最大化'">
+            <button @click="winMin()" :title="t('topbar.win_min')"><svg><use href="#i-win-min"/></svg></button>
+            <button @click="winToggleMax()" :title="winMaximized ? t('topbar.win_restore') : t('topbar.win_max')">
               <svg x-show="!winMaximized"><use href="#i-win-max"/></svg>
               <svg x-show="winMaximized"><use href="#i-win-restore"/></svg>
             </button>
-            <button class="win-close" @click="winClose()" title="关闭到托盘"><svg><use href="#i-close"/></svg></button>
+            <button class="win-close" @click="winClose()" :title="t('topbar.win_close')"><svg><use href="#i-close"/></svg></button>
           </div>
         </div>
       </div>
@@ -130,59 +136,59 @@
       <!-- 左侧导航栏（严格左对齐，无多余状态卡片） -->
       <aside class="sidebar" :class="sideCollapsed ? 'collapsed' : ''">
         <div class="side-group">
-          <div class="side-sec" x-show="!sideCollapsed">工作台</div>
+          <div class="side-sec" x-show="!sideCollapsed" x-text="t('nav.group_work')"></div>
           <nav class="side-menu">
             <button :class="tab === 'overview' ? 'cur' : ''" @click="go('overview')">
               <svg class="ic"><use href="#i-home"/></svg>
-              <span class="t" x-show="!sideCollapsed">概览</span>
-              <span class="sbtip" x-show="sideCollapsed">概览</span>
+              <span class="t" x-show="!sideCollapsed" x-text="t('nav.overview')"></span>
+              <span class="sbtip" x-show="sideCollapsed" x-text="t('nav.overview')"></span>
             </button>
             <button :class="tab === 'sessions' ? 'cur' : ''" @click="go('sessions')">
               <svg class="ic"><use href="#i-sess"/></svg>
-              <span class="t" x-show="!sideCollapsed">会话</span>
+              <span class="t" x-show="!sideCollapsed" x-text="t('nav.sessions')"></span>
               <span class="count" x-show="!sideCollapsed && sessionStats().totalActive" x-text="sessionStats().totalActive"></span>
               <span class="count-dot" x-show="sideCollapsed && sessionStats().totalActive"></span>
-              <span class="sbtip" x-show="sideCollapsed">会话</span>
+              <span class="sbtip" x-show="sideCollapsed" x-text="t('nav.sessions')"></span>
             </button>
             <button :class="tab === 'rules' ? 'cur' : ''" @click="go('rules')">
               <svg class="ic"><use href="#i-rules"/></svg>
-              <span class="t" x-show="!sideCollapsed">改写规则</span>
-              <span class="sbtip" x-show="sideCollapsed">改写规则</span>
+              <span class="t" x-show="!sideCollapsed" x-text="t('nav.rules')"></span>
+              <span class="sbtip" x-show="sideCollapsed" x-text="t('nav.rules')"></span>
             </button>
             <button :class="tab === 'sources' ? 'cur' : ''" @click="go('sources')">
               <svg class="ic"><use href="#i-cable"/></svg>
-              <span class="t" x-show="!sideCollapsed">源与接入点</span>
-              <span class="sbtip" x-show="sideCollapsed">源与接入点</span>
+              <span class="t" x-show="!sideCollapsed" x-text="t('nav.sources')"></span>
+              <span class="sbtip" x-show="sideCollapsed" x-text="t('nav.sources')"></span>
             </button>
           </nav>
         </div>
 
         <div class="side-group">
-          <div class="side-sec" x-show="!sideCollapsed">运维</div>
+          <div class="side-sec" x-show="!sideCollapsed" x-text="t('nav.group_ops')"></div>
           <nav class="side-menu">
             <button :class="tab === 'settings' ? 'cur' : ''" @click="go('settings')">
               <svg class="ic"><use href="#i-gear"/></svg>
-              <span class="t" x-show="!sideCollapsed">设置</span>
-              <span class="sbtip" x-show="sideCollapsed">设置</span>
+              <span class="t" x-show="!sideCollapsed" x-text="t('nav.settings')"></span>
+              <span class="sbtip" x-show="sideCollapsed" x-text="t('nav.settings')"></span>
             </button>
             <button :class="tab === 'logs' ? 'cur' : ''" @click="go('logs')">
               <svg class="ic"><use href="#i-term"/></svg>
-              <span class="t" x-show="!sideCollapsed">运行日志</span>
-              <span class="sbtip" x-show="sideCollapsed">运行日志</span>
+              <span class="t" x-show="!sideCollapsed" x-text="t('nav.logs')"></span>
+              <span class="sbtip" x-show="sideCollapsed" x-text="t('nav.logs')"></span>
             </button>
             <button :class="tab === 'about' ? 'cur' : ''" @click="go('about')">
               <svg class="ic"><use href="#i-info"/></svg>
-              <span class="t" x-show="!sideCollapsed">版本与关于</span>
+              <span class="t" x-show="!sideCollapsed" x-text="t('nav.about')"></span>
               <span class="count-dot" x-show="hasAnyUpgrade()" style="background:var(--warn-fg)"></span>
-              <span class="sbtip" x-show="sideCollapsed">版本与关于</span>
+              <span class="sbtip" x-show="sideCollapsed" x-text="t('nav.about')"></span>
             </button>
           </nav>
         </div>
 
         <div class="side-spacer"></div>
 
-        <div class="side-footer" @click="go('sources')" title="当前版本与新会话默认源，点击修改">
-          <span x-show="!sideCollapsed" class="truncate mono" x-text="(status ? 'v' + (status.version || 'dev') : 'v…') + ' · 默认 ' + (status?.routing?.default_source || 'standalone')"></span>
+        <div class="side-footer" @click="go('sources')" :title="t('nav.footer_title')">
+          <span x-show="!sideCollapsed" class="truncate mono" x-text="t('nav.footer_default', { ver: status ? 'v' + (status.version || 'dev') : 'v…', src: status?.routing?.default_source || 'standalone' })"></span>
           <span class="side-footer-dot" :class="(status?.routing?.default_source || 'standalone') === 'extension' ? 'ext' : 'sa'"></span>
         </div>
       </aside>
@@ -193,22 +199,22 @@
         <div class="update-banner" x-show="updateMsg" x-cloak :class="updateKind">
           <span x-text="updateMsg"></span>
           <span class="spacer"></span>
-          <button class="primary sm" x-show="updateKind === 'ready'" @click="installUpdate()">重启并更新</button>
-          <button class="icon-btn ghost" @click="updateMsg = ''" title="关闭"><svg class="ic-sm"><use href="#i-close"/></svg></button>
+          <button class="primary sm" x-show="updateKind === 'ready'" @click="installUpdate()" x-text="t('banner.restart_update')"></button>
+          <button class="icon-btn ghost" @click="updateMsg = ''; _updateEvent = null" :title="t('banner.close')"><svg class="ic-sm"><use href="#i-close"/></svg></button>
         </div>
 
         <!-- 离线提示条 -->
         <div class="offline-banner" x-show="healthy === false" x-cloak>
           <span class="dot"></span>
-          <span>代理引擎未运行，当前页面数据可能已过期</span>
+          <span x-text="t('banner.offline')"></span>
           <span class="spacer"></span>
           <button class="primary sm" x-show="isDesktop" @click="startEngine()" :disabled="actionKey === 'start'">
             <svg class="ic-sm"><use href="#i-play"/></svg>
-            <span x-text="actionKey === 'start' ? '启动中…' : '启动引擎'"></span>
+            <span x-text="actionKey === 'start' ? t('banner.starting') : t('banner.start_engine')"></span>
           </button>
           <button class="sm" @click="refresh()">
             <svg class="ic-sm"><use href="#i-refresh"/></svg>
-            <span>重试</span>
+            <span x-text="t('banner.retry')"></span>
           </button>
         </div>
 
@@ -219,22 +225,20 @@
             <div class="page-bar">
               <div class="page-lead">
                 <div class="page-lead-title">
-                  <span>双源通道与常用接入概览</span>
+                  <span x-text="t('ov.title')"></span>
                   <span class="bdg" x-show="status" :class="(status?.routing?.default_source || 'standalone') === 'extension' ? 'ext' : 'sa'"
-                        x-text="'默认源 · ' + (status?.routing?.default_source || 'standalone')"></span>
+                        x-text="t('ov.default_badge', { src: status?.routing?.default_source || 'standalone' })"></span>
                 </div>
-                <div class="page-lead-sub">
-                  支持在这里直接启停数据源、切换默认路由、复制接入点 URL、重启基座 Chrome 或快速释放会话
-                </div>
+                <div class="page-lead-sub" x-text="t('ov.sub')"></div>
               </div>
               <div class="page-actions">
                 <button class="sm" @click="go('sources')">
                   <svg class="ic-sm"><use href="#i-cable"/></svg>
-                  <span>管理源与路由规则</span>
+                  <span x-text="t('ov.manage_sources')"></span>
                 </button>
                 <button class="sm" @click="refresh()">
                   <svg class="ic-sm"><use href="#i-refresh"/></svg>
-                  <span>刷新</span>
+                  <span x-text="t('common.refresh')"></span>
                 </button>
               </div>
             </div>
@@ -250,10 +254,10 @@
                         <span class="src-ic lg sa"><svg><use href="#i-chrome"/></svg></span>
                         <span class="mono">standalone</span>
                         <span class="bdg" :class="status.sources.standalone.connected ? 'ok' : 'idle'"
-                              x-text="status.sources.standalone.connected ? '已连接' : '待命'"></span>
-                        <span class="bdg plain mono" x-text="sourceSessionCount('standalone') + ' 会话'"></span>
+                              x-text="status.sources.standalone.connected ? t('topbar.state_connected') : t('topbar.state_standby')"></span>
+                        <span class="bdg plain mono" x-text="sourceSessionCount('standalone') === 1 ? t('ov.session_one') : t('ov.sessions_count', { n: sourceSessionCount('standalone') })"></span>
                       </h2>
-                      <label class="switch" :title="status.sources.standalone.enabled ? '禁用 standalone 源' : '启用 standalone 源'">
+                      <label class="switch" :title="status.sources.standalone.enabled ? t('ov.toggle_src_disable', { src: 'standalone' }) : t('ov.toggle_src_enable', { src: 'standalone' })">
                         <input type="checkbox" :checked="status.sources.standalone.enabled"
                                @change="toggleSource('standalone', $event.target.checked)">
                         <span class="track"></span>
@@ -261,40 +265,40 @@
                     </div>
 
                     <div class="ov-meta-row">
-                      <span class="ov-meta-k">基座 Chrome</span>
+                      <span class="ov-meta-k" x-text="t('ov.keeper_chrome')"></span>
                       <span class="ov-meta-v">
-                        <span class="bdg" :class="status.keeper.alive ? 'ok' : 'idle'" x-text="status.keeper.alive ? '运行中' : '休眠待命'"></span>
-                        <span class="hint mono" x-text="'空闲回收 ' + (status.settings.keeper_idle_shutdown_seconds === 0 ? '关闭' : status.settings.keeper_idle_shutdown_seconds + 's')"></span>
+                        <span class="bdg" :class="status.keeper.alive ? 'ok' : 'idle'" x-text="status.keeper.alive ? t('ov.keeper_running') : t('ov.keeper_sleeping')"></span>
+                        <span class="hint mono" x-text="t('ov.keeper_idle_reap', { val: status.settings.keeper_idle_shutdown_seconds === 0 ? t('ov.keeper_idle_off') : status.settings.keeper_idle_shutdown_seconds + 's' })"></span>
                       </span>
                     </div>
                     <div class="ov-meta-row">
-                      <span class="ov-meta-k">执行器版本</span>
+                      <span class="ov-meta-k" x-text="t('ov.executor_ver')"></span>
                       <span class="ov-meta-v">
                         <template x-if="abInfo">
                           <span class="rowflex" style="justify-content:flex-end">
-                            <span class="bdg" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? fmtAbVersion(abInfo.version) : '未检测到'"></span>
+                            <span class="bdg" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? fmtAbVersion(abInfo.version) : t('common.not_detected')"></span>
                             <span class="hint" x-text="abSourceText(abInfo.source)"></span>
                           </span>
                         </template>
-                        <span class="hint" x-show="!abInfo">加载中…</span>
+                        <span class="hint" x-show="!abInfo" x-text="t('common.loading')"></span>
                       </span>
                     </div>
                     <div class="ov-meta-row">
-                      <span class="ov-meta-k">默认路由权重</span>
+                      <span class="ov-meta-k" x-text="t('ov.default_weight')"></span>
                       <span class="ov-meta-v">
-                        <span class="bdg sa" x-show="status.routing.default_source === 'standalone'">当前默认分配源</span>
+                        <span class="bdg sa" x-show="status.routing.default_source === 'standalone'" x-text="t('ov.current_default')"></span>
                         <button class="sm" x-show="status.routing.default_source !== 'standalone'"
-                                @click="setDefaultSource('standalone')" :disabled="saving.routing">设为默认源</button>
+                                @click="setDefaultSource('standalone')" :disabled="saving.routing" x-text="t('ov.set_default')"></button>
                       </span>
                     </div>
 
                     <div class="save-bar">
                       <button class="sm" @click="restartKeeper()" :disabled="actionKey === 'restartKeeper'">
                         <svg class="ic-sm" :class="actionKey === 'restartKeeper' ? 'spin' : ''"><use href="#i-refresh"/></svg>
-                        <span x-text="actionKey === 'restartKeeper' ? '重启中…' : '重启基座 Chrome'"></span>
+                        <span x-text="actionKey === 'restartKeeper' ? t('ov.restarting') : t('ov.restart_keeper')"></span>
                       </button>
                       <span class="spacer" style="flex:1"></span>
-                      <button class="link-btn" @click="go('sources')">详细配置 →</button>
+                      <button class="link-btn" @click="go('sources')" x-text="t('ov.detail_config')"></button>
                     </div>
                   </div>
 
@@ -305,10 +309,10 @@
                         <span class="src-ic lg ext"><svg><use href="#i-puzzle"/></svg></span>
                         <span class="mono">extension</span>
                         <span class="bdg" :class="status.sources.extension.connected ? 'ok' : 'warn'"
-                              x-text="status.sources.extension.connected ? '已回连' : '未回连'"></span>
-                        <span class="bdg plain mono" x-text="sourceSessionCount('extension') + ' 会话'"></span>
+                              x-text="status.sources.extension.connected ? t('topbar.state_ext_connected') : t('topbar.state_ext_disconnected')"></span>
+                        <span class="bdg plain mono" x-text="sourceSessionCount('extension') === 1 ? t('ov.session_one') : t('ov.sessions_count', { n: sourceSessionCount('extension') })"></span>
                       </h2>
-                      <label class="switch" :title="status.sources.extension.enabled ? '禁用 extension 源' : '启用 extension 源'">
+                      <label class="switch" :title="status.sources.extension.enabled ? t('ov.toggle_src_disable', { src: 'extension' }) : t('ov.toggle_src_enable', { src: 'extension' })">
                         <input type="checkbox" :checked="status.sources.extension.enabled"
                                @change="toggleSource('extension', $event.target.checked)">
                         <span class="track"></span>
@@ -316,47 +320,47 @@
                     </div>
 
                     <div class="ov-meta-row">
-                      <span class="ov-meta-k">Relay 地址</span>
+                      <span class="ov-meta-k" x-text="t('ov.relay_addr')"></span>
                       <span class="ov-meta-v">
                         <span class="mono hl-url" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px" x-html="highlightUrl(extRelayUrl())"></span>
-                        <button class="icon-btn ghost" @click="copyText(extRelayUrl(), 'Relay 地址已复制', 'ov-relay')" title="复制 Relay URL">
+                        <button class="icon-btn ghost" @click="copyText(extRelayUrl(), t('toast.relay_copied'), 'ov-relay')" :title="t('ov.copy_relay_title')">
                           <svg class="ic-sm" x-show="copiedKey !== 'ov-relay'"><use href="#i-copy"/></svg>
                           <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-relay'"><use href="#i-check"/></svg>
                         </button>
                       </span>
                     </div>
                     <div class="ov-meta-row">
-                      <span class="ov-meta-k">扩展准入令牌</span>
+                      <span class="ov-meta-k" x-text="t('ov.ext_token')"></span>
                       <span class="ov-meta-v">
                         <span class="mono" style="font-size:12px;color:var(--tx2)"
                               x-text="showExtToken ? status.sources.extension.token : '••••••••••••'"></span>
-                        <button class="icon-btn ghost" @click="showExtToken = !showExtToken" :title="showExtToken ? '隐藏令牌' : '显示令牌'">
+                        <button class="icon-btn ghost" @click="showExtToken = !showExtToken" :title="showExtToken ? t('common.hide_token') : t('common.show_token')">
                           <svg class="ic-sm" x-show="!showExtToken"><use href="#i-eye"/></svg>
                           <svg class="ic-sm" x-show="showExtToken"><use href="#i-eye-off"/></svg>
                         </button>
-                        <button class="icon-btn ghost" @click="copyText(status.sources.extension.token, '扩展令牌已复制', 'ov-ext-tok')" title="复制扩展令牌">
+                        <button class="icon-btn ghost" @click="copyText(status.sources.extension.token, t('toast.ext_token_copied'), 'ov-ext-tok')" :title="t('ov.copy_ext_token_title')">
                           <svg class="ic-sm" x-show="copiedKey !== 'ov-ext-tok'"><use href="#i-copy"/></svg>
                           <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-ext-tok'"><use href="#i-check"/></svg>
                         </button>
                       </span>
                     </div>
                     <div class="ov-meta-row">
-                      <span class="ov-meta-k">默认路由权重</span>
+                      <span class="ov-meta-k" x-text="t('ov.default_weight')"></span>
                       <span class="ov-meta-v">
-                        <span class="bdg ext" x-show="status.routing.default_source === 'extension'">当前默认分配源</span>
+                        <span class="bdg ext" x-show="status.routing.default_source === 'extension'" x-text="t('ov.current_default')"></span>
                         <button class="sm" x-show="status.routing.default_source !== 'extension'"
-                                @click="setDefaultSource('extension')" :disabled="saving.routing">设为默认源</button>
+                                @click="setDefaultSource('extension')" :disabled="saving.routing" x-text="t('ov.set_default')"></button>
                       </span>
                     </div>
 
                     <div class="save-bar">
-                      <button class="sm" @click="copyText('Authorization: Bearer ' + status.sources.alloc_token, 'Bearer 请求头已复制', 'ov-bearer')">
+                      <button class="sm" @click="copyText('Authorization: Bearer ' + status.sources.alloc_token, t('toast.bearer_copied'), 'ov-bearer')">
                         <svg class="ic-sm" x-show="copiedKey !== 'ov-bearer'"><use href="#i-copy"/></svg>
                         <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-bearer'"><use href="#i-check"/></svg>
-                        <span>复制分配 Bearer 头</span>
+                        <span x-text="t('ov.copy_bearer')"></span>
                       </button>
                       <span class="spacer" style="flex:1"></span>
-                      <button class="link-btn" @click="go('sources')">管理令牌与前缀 →</button>
+                      <button class="link-btn" @click="go('sources')" x-text="t('ov.manage_tokens')"></button>
                     </div>
                   </div>
                 </div>
@@ -367,10 +371,10 @@
                   <div class="card ov-card">
                     <div class="card-head">
                       <h2>
-                        <span>快捷接入点</span>
-                        <span class="bdg plain mono" x-text="(status.endpoints || []).length + ' 个可用'"></span>
+                        <span x-text="t('ov.quick_endpoints')"></span>
+                        <span class="bdg plain mono" x-text="t('ov.endpoints_avail', { n: (status.endpoints || []).length })"></span>
                       </h2>
-                      <button class="link-btn" @click="go('sources')">编辑接入点 →</button>
+                      <button class="link-btn" @click="go('sources')" x-text="t('ov.edit_endpoints')"></button>
                     </div>
 
                     <div class="ov-list" x-show="(status.endpoints || []).length">
@@ -383,25 +387,23 @@
                             <span class="mono" style="font-weight:550;color:var(--tx)" x-text="'/' + ep.path"></span>
                             <span class="hint mono" x-text="'→ ' + (ep.session || ep.path)"></span>
                           </div>
-                          <button class="sm" @click="copyText(endpointURL(ep), `已复制 ${ep.path} 连接 URL`, 'ov-ep-' + idx)">
+                          <button class="sm" @click="copyText(endpointURL(ep), t('toast.ep_url_copied', { path: ep.path }), 'ov-ep-' + idx)">
                             <svg class="ic-sm" x-show="copiedKey !== 'ov-ep-' + idx"><use href="#i-copy"/></svg>
                             <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-ep-' + idx"><use href="#i-check"/></svg>
-                            <span>复制 URL</span>
+                            <span x-text="t('ov.copy_url')"></span>
                           </button>
                         </div>
                       </template>
                     </div>
-                    <div class="ov-empty-inline" x-show="!(status.endpoints || []).length">
-                      尚未配置固定接入点，可在「源与接入点」中添加直连入口。
-                    </div>
+                    <div class="ov-empty-inline" x-show="!(status.endpoints || []).length" x-text="t('ov.endpoints_empty')"></div>
 
                     <div class="save-bar" style="justify-content:space-between">
                       <span class="mono hl-url" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px"
                             x-html="highlightUrl(`ws://127.0.0.1:${status.ws_port}/cdp/<token>`)"></span>
-                      <button class="sm" @click="copyText(`ws://127.0.0.1:${status.ws_port}/cdp/<token>`, '动态模板已复制', 'ov-tpl')">
+                      <button class="sm" @click="copyText(`ws://127.0.0.1:${status.ws_port}/cdp/<token>`, t('toast.tpl_dynamic_copied'), 'ov-tpl')">
                         <svg class="ic-sm" x-show="copiedKey !== 'ov-tpl'"><use href="#i-copy"/></svg>
                         <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-tpl'"><use href="#i-check"/></svg>
-                        <span>复制模板</span>
+                        <span x-text="t('ov.copy_template')"></span>
                       </button>
                     </div>
                   </div>
@@ -410,12 +412,12 @@
                   <div class="card ov-card">
                     <div class="card-head">
                       <h2>
-                        <span>实时会话动态</span>
+                        <span x-text="t('ov.live_sessions')"></span>
                         <span class="bdg" :class="sessionStats().totalActive ? 'ok' : 'plain'"
-                              x-text="sessionStats().totalActive ? `${sessionStats().totalActive} 活跃` : '当前空闲'"></span>
+                              x-text="sessionStats().totalActive ? t('ov.active_count', { n: sessionStats().totalActive }) : t('ov.currently_idle')"></span>
                       </h2>
-                      <span class="hint mono" x-text="`已连 ${sessionStats().connected} · 已释放 ${sessionStats().released}`"></span>
-                      <button class="link-btn" @click="go('sessions')">全部会话 →</button>
+                      <span class="hint mono" x-text="t('ov.sessions_summary', { connected: sessionStats().connected, released: sessionStats().released })"></span>
+                      <button class="link-btn" @click="go('sessions')" x-text="t('ov.all_sessions')"></button>
                     </div>
 
                     <div class="ov-list" x-show="overviewSessions().length">
@@ -430,17 +432,17 @@
                           </div>
                           <div class="rowflex" style="flex:none" @click.stop>
                             <span class="bdg" :class="s.state === 'connected' ? 'ok' : (s.state === 'idle' ? 'idle' : 'warn')"
-                                  x-text="s.state === 'connected' ? '已连接' : (s.state === 'idle' ? '空闲' : '已释放')"></span>
-                            <button class="sm danger" x-show="s.state !== 'released'" @click="release(s.name)" :disabled="actionKey === 'release'">释放</button>
-                            <button class="sm" @click="openSession(s.name)">详情</button>
+                                  x-text="s.state === 'connected' ? t('common.state_connected') : (s.state === 'idle' ? t('common.state_idle') : t('common.state_released'))"></span>
+                            <button class="sm danger" x-show="s.state !== 'released'" @click="release(s.name)" :disabled="actionKey === 'release'" x-text="t('ov.release')"></button>
+                            <button class="sm" @click="openSession(s.name)" x-text="t('ov.details')"></button>
                           </div>
                         </div>
                       </template>
                     </div>
 
                     <div class="ov-empty-inline" x-show="!overviewSessions().length">
-                      <div>当前暂无活跃会话</div>
-                      <div style="margin-top:4px">使用左侧接入 URL 或通过 <code>agent-browser</code> 发起连接后，这里会实时显示会话并支持一键查看 Tab 与释放。</div>
+                      <div x-text="t('ov.no_sessions_title')"></div>
+                      <div style="margin-top:4px" x-html="t('ov.no_sessions_desc')"></div>
                     </div>
                   </div>
                 </div>
@@ -452,29 +454,29 @@
           <section x-show="tab === 'sessions'" x-cloak>
             <div class="page-bar">
               <div class="stat-inline" x-show="status">
-                <span class="stat-kv"><span>活跃</span><strong x-text="sessionStats().totalActive"></strong></span>
-                <span class="stat-kv ok"><span>已连接</span><strong x-text="sessionStats().connected"></strong></span>
-                <span class="stat-kv"><span>空闲</span><strong x-text="sessionStats().idle"></strong></span>
-                <span class="stat-kv"><span>已释放</span><strong x-text="sessionStats().released"></strong></span>
+                <span class="stat-kv"><span x-text="t('sess.stat_active')"></span><strong x-text="sessionStats().totalActive"></strong></span>
+                <span class="stat-kv ok"><span x-text="t('sess.stat_connected')"></span><strong x-text="sessionStats().connected"></strong></span>
+                <span class="stat-kv"><span x-text="t('sess.stat_idle')"></span><strong x-text="sessionStats().idle"></strong></span>
+                <span class="stat-kv"><span x-text="t('sess.stat_released')"></span><strong x-text="sessionStats().released"></strong></span>
                 <span class="stat-kv sa" x-show="status?.keeper?.alive">
-                  <span>基座空闲关闭</span><strong x-text="keeperIdleText()"></strong>
+                  <span x-text="t('sess.stat_keeper_idle')"></span><strong x-text="keeperIdleText()"></strong>
                 </span>
               </div>
               <div class="page-actions">
                 <div class="search-box">
                   <svg class="ic-sm ic-search"><use href="#i-search"/></svg>
-                  <input x-model="sessionQuery" placeholder="筛选名称、组名或入口…" style="width:220px">
-                  <button class="search-clear" x-show="sessionQuery" @click="sessionQuery = ''" title="清空"><svg class="ic-sm"><use href="#i-close"/></svg></button>
+                  <input x-model="sessionQuery" :placeholder="t('sess.search_placeholder')" style="width:220px">
+                  <button class="search-clear" x-show="sessionQuery" @click="sessionQuery = ''" :title="t('common.clear')"><svg class="ic-sm"><use href="#i-close"/></svg></button>
                 </div>
                 <div class="seg">
-                  <button :class="sessionStateFilter === 'all' ? 'on' : ''" @click="sessionStateFilter = 'all'">全部</button>
-                  <button :class="sessionStateFilter === 'connected' ? 'on' : ''" @click="sessionStateFilter = 'connected'">已连接</button>
-                  <button :class="sessionStateFilter === 'idle' ? 'on' : ''" @click="sessionStateFilter = 'idle'">空闲</button>
-                  <button :class="sessionStateFilter === 'released' ? 'on' : ''" @click="sessionStateFilter = 'released'">已释放</button>
+                  <button :class="sessionStateFilter === 'all' ? 'on' : ''" @click="sessionStateFilter = 'all'" x-text="t('sess.filter_all')"></button>
+                  <button :class="sessionStateFilter === 'connected' ? 'on' : ''" @click="sessionStateFilter = 'connected'" x-text="t('common.state_connected')"></button>
+                  <button :class="sessionStateFilter === 'idle' ? 'on' : ''" @click="sessionStateFilter = 'idle'" x-text="t('common.state_idle')"></button>
+                  <button :class="sessionStateFilter === 'released' ? 'on' : ''" @click="sessionStateFilter = 'released'" x-text="t('common.state_released')"></button>
                 </div>
                 <button class="sm" @click="refresh()">
                   <svg class="ic-sm"><use href="#i-refresh"/></svg>
-                  <span>刷新</span>
+                  <span x-text="t('common.refresh')"></span>
                 </button>
               </div>
             </div>
@@ -483,9 +485,9 @@
               <div id="sessions-grid"></div>
             </div>
             <div class="card log-empty" x-show="!filteredSessions().length">
-              <div>（无匹配会话）</div>
+              <div x-text="t('sess.empty')"></div>
               <div class="hint" style="margin-top:4px" x-show="sessionQuery || sessionStateFilter !== 'all'">
-                <button class="sm" style="margin-top:6px" @click="sessionQuery = ''; sessionStateFilter = 'all'">清除筛选条件</button>
+                <button class="sm" style="margin-top:6px" @click="sessionQuery = ''; sessionStateFilter = 'all'" x-text="t('sess.clear_filters')"></button>
               </div>
             </div>
 
@@ -495,64 +497,64 @@
                 <div class="card-head">
                   <h2 style="gap:10px">
                     <span class="mono" x-text="selSession().name"></span>
-                    <button class="icon-btn ghost" @click="copyText(selSession().name, '会话名已复制', 'sess-name')" title="复制会话名">
+                    <button class="icon-btn ghost" @click="copyText(selSession().name, t('toast.sess_name_copied'), 'sess-name')" :title="t('sess.copy_name_title')">
                       <svg class="ic-sm" x-show="copiedKey !== 'sess-name'"><use href="#i-copy"/></svg>
                       <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'sess-name'"><use href="#i-check"/></svg>
                     </button>
                     <span class="bdg" x-show="selSession().type" :class="selSession().type === 'extension' ? 'ext' : 'sa'" x-text="selSession().type"></span>
                     <span class="bdg" :class="selSession().state === 'connected' ? 'ok' : (selSession().state === 'idle' ? 'idle' : 'warn')"
-                          x-text="selSession().state === 'connected' ? '已连接' : (selSession().state === 'idle' ? '空闲' : '已释放')"></span>
+                          x-text="selSession().state === 'connected' ? t('common.state_connected') : (selSession().state === 'idle' ? t('common.state_idle') : t('common.state_released'))"></span>
                   </h2>
                   <div class="seg">
                     <button :class="detailTab === 'tabs' ? 'on' : ''" @click="switchDetailTab('tabs')">
-                      可见 Tabs (<span class="mono" x-text="sessionTabs.length"></span>)
+                      <span x-text="t('sess.tab_visible_tabs')"></span> (<span class="mono" x-text="sessionTabs.length"></span>)
                     </button>
                     <button :class="detailTab === 'logs' ? 'on' : ''" @click="switchDetailTab('logs')">
-                      CDP 交互流水 (<span class="mono" x-text="sessionLogs.length"></span>)
+                      <span x-text="t('sess.tab_cdp_logs')"></span> (<span class="mono" x-text="sessionLogs.length"></span>)
                     </button>
                   </div>
                   <button class="sm" x-show="detailTab === 'tabs'" @click="loadTabs(selSession().name)" :disabled="loadingTabs">
                     <svg class="ic-sm" :class="loadingTabs ? 'spin' : ''"><use href="#i-refresh"/></svg>
-                    <span>刷新</span>
+                    <span x-text="t('common.refresh')"></span>
                   </button>
                   <button class="sm" x-show="detailTab === 'logs'" @click="loadSessionLogs(selSession().name)" :disabled="loadingSessLogs">
                     <svg class="ic-sm" :class="loadingSessLogs ? 'spin' : ''"><use href="#i-refresh"/></svg>
-                    <span>刷新</span>
+                    <span x-text="t('common.refresh')"></span>
                   </button>
                   <button class="danger sm" x-show="selSession().state !== 'released'" @click="release(selSession().name)" :disabled="actionKey === 'release'">
                     <svg class="ic-sm"><use href="#i-trash"/></svg>
-                    <span>释放会话</span>
+                    <span x-text="t('sess.release_btn')"></span>
                   </button>
-                  <button class="icon-btn ghost" @click="selectSession(selSession().name)" title="关闭详情">
+                  <button class="icon-btn ghost" @click="selectSession(selSession().name)" :title="t('sess.close_detail')">
                     <svg class="ic-sm"><use href="#i-close"/></svg>
                   </button>
                 </div>
 
                 <!-- 子页签 1：可见 Tabs -->
                 <div x-show="detailTab === 'tabs'">
-                  <div class="err-text" x-show="tabsError" style="margin-bottom:8px" x-text="`读取标签页失败：${tabsError}`"></div>
-                  <div class="log-empty" x-show="loadingTabs && !sessionTabs.length">正在查询可见标签页…</div>
+                  <div class="err-text" x-show="tabsError" style="margin-bottom:8px" x-text="t('sess.tabs_error', { err: tabsError })"></div>
+                  <div class="log-empty" x-show="loadingTabs && !sessionTabs.length" x-text="t('sess.tabs_loading')"></div>
                   <table class="logt" x-show="sessionTabs.length">
-                    <thead><tr><th>页面标题</th><th>URL</th><th>targetId</th></tr></thead>
-                    <template x-for="t in sessionTabs" :key="t.targetId">
+                    <thead><tr><th x-text="t('sess.th_page_title')"></th><th x-text="t('sess.th_url')"></th><th x-text="t('sess.th_target_id')"></th></tr></thead>
+                    <template x-for="tItem in sessionTabs" :key="tItem.targetId">
                       <tbody>
                         <tr>
-                          <td x-text="t.title || '（无标题）'"></td>
-                          <td class="wrap mono" x-text="t.url"></td>
-                          <td class="mono" style="color:var(--tx3)" x-text="t.targetId"></td>
+                          <td x-text="tItem.title || t('sess.untitled')"></td>
+                          <td class="wrap mono" x-text="tItem.url"></td>
+                          <td class="mono" style="color:var(--tx3)" x-text="tItem.targetId"></td>
                         </tr>
                       </tbody>
                     </template>
                   </table>
-                  <div class="log-empty" x-show="!loadingTabs && !tabsError && !sessionTabs.length">（无可见标签页）</div>
+                  <div class="log-empty" x-show="!loadingTabs && !tabsError && !sessionTabs.length" x-text="t('sess.tabs_empty')"></div>
                 </div>
 
                 <!-- 子页签 2：CDP 交互流水 -->
                 <div x-show="detailTab === 'logs'">
-                  <div class="err-text" x-show="sessLogsError" style="margin-bottom:8px" x-text="`读取交互流水失败：${sessLogsError}`"></div>
-                  <div class="log-empty" x-show="loadingSessLogs && !sessionLogs.length">正在加载 CDP 交互流水…</div>
+                  <div class="err-text" x-show="sessLogsError" style="margin-bottom:8px" x-text="t('sess.logs_error', { err: sessLogsError })"></div>
+                  <div class="log-empty" x-show="loadingSessLogs && !sessionLogs.length" x-text="t('sess.logs_loading')"></div>
                   <table class="logt" x-show="sessionLogs.length">
-                    <thead><tr><th>时间</th><th>向</th><th>Method</th><th>ID</th><th>Action</th><th>参数摘要</th></tr></thead>
+                    <thead><tr><th x-text="t('sess.th_time')"></th><th x-text="t('sess.th_dir')"></th><th x-text="t('sess.th_method')"></th><th x-text="t('sess.th_id')"></th><th x-text="t('sess.th_action')"></th><th x-text="t('sess.th_params')"></th></tr></thead>
                     <template x-for="(e, i) in sessionLogs" :key="i">
                       <tbody>
                         <tr :class="selLog === i ? 'sel' : ''" @click="selLog = (selLog === i ? -1 : i)">
@@ -576,17 +578,17 @@
                             <div class="detail-pane">
                               <div class="kvline" x-show="e.delta"><b>Δ</b> <span x-text="e.delta"></span></div>
                               <div class="kvline" x-show="e.target_id"><b>target</b> <span x-text="e.target_id"></span></div>
-                              <div x-show="e.in !== undefined"><h3>in · 客户端原始参数</h3><div class="jt" x-html="pretty(e.in) ? jsonTree(e.in, null, 0) : ''"></div></div>
-                              <div x-show="e.out !== undefined"><h3>out · 代理改写后转发</h3><div class="jt" x-html="pretty(e.out) ? jsonTree(e.out, null, 0) : ''"></div></div>
-                              <div x-show="e.result !== undefined"><h3 x-text="e.status === 'error' ? 'error' : 'result'"></h3><div class="jt" x-html="pretty(e.result) ? jsonTree(e.result, null, 0) : ''"></div></div>
-                              <div x-show="e.detail"><h3>说明</h3><div class="kvline" x-text="e.detail"></div></div>
+                              <div x-show="e.in !== undefined"><h3 x-text="t('sess.detail_in')"></h3><div class="jt" x-html="pretty(e.in) ? jsonTree(e.in, null, 0, lang) : ''"></div></div>
+                              <div x-show="e.out !== undefined"><h3 x-text="t('sess.detail_out')"></h3><div class="jt" x-html="pretty(e.out) ? jsonTree(e.out, null, 0, lang) : ''"></div></div>
+                              <div x-show="e.result !== undefined"><h3 x-text="e.status === 'error' ? 'error' : 'result'"></h3><div class="jt" x-html="pretty(e.result) ? jsonTree(e.result, null, 0, lang) : ''"></div></div>
+                              <div x-show="e.detail"><h3 x-text="t('sess.detail_note')"></h3><div class="kvline" x-text="e.detail"></div></div>
                             </div>
                           </td>
                         </tr>
                       </tbody>
                     </template>
                   </table>
-                  <div class="log-empty" x-show="!loadingSessLogs && !sessLogsError && !sessionLogs.length">（暂无 CDP 交互记录）</div>
+                  <div class="log-empty" x-show="!loadingSessLogs && !sessLogsError && !sessionLogs.length" x-text="t('sess.logs_empty')"></div>
                 </div>
               </div>
             </template>
@@ -597,21 +599,19 @@
             <div class="page-bar">
               <div class="page-lead">
                 <div class="page-lead-title">
-                  <span>按列表顺序匹配并改写发往浏览器的 CDP 指令</span>
-                  <span class="dirty-dot" x-show="rulesDirty()">有未保存改动</span>
+                  <span x-text="t('rules.title')"></span>
+                  <span class="dirty-dot" x-show="rulesDirty()" x-text="t('common.dirty')"></span>
                 </div>
-                <div class="page-lead-sub">
-                  支持尾部 <code>*</code> 通配 · <code>rewrite</code> 修改参数后转发，<code>fake</code> 拦截并直接返回伪成功；点击任意行展开参数详情
-                </div>
+                <div class="page-lead-sub" x-html="t('rules.sub')"></div>
               </div>
               <div class="page-actions">
                 <div class="seg">
-                  <button :class="isPresetActive('focus') ? 'on' : ''" @click="applyPreset('focus')">预设：不抢焦点</button>
-                  <button :class="isPresetActive('passthrough') ? 'on' : ''" @click="applyPreset('passthrough')">预设：原生透传</button>
+                  <button :class="isPresetActive('focus') ? 'on' : ''" @click="applyPreset('focus')" x-text="t('rules.preset_focus')"></button>
+                  <button :class="isPresetActive('passthrough') ? 'on' : ''" @click="applyPreset('passthrough')" x-text="t('rules.preset_passthrough')"></button>
                 </div>
                 <button class="sm" @click="addRule()">
                   <svg class="ic-sm"><use href="#i-plus"/></svg>
-                  <span>添加规则</span>
+                  <span x-text="t('rules.add')"></span>
                 </button>
               </div>
             </div>
@@ -619,12 +619,12 @@
             <div class="rules-editor">
               <table class="rules-table">
                 <thead>
-                  <tr><th>方法匹配</th><th>处理动作</th><th>参数与效果摘要</th><th>顺序与操作</th></tr>
+                  <tr><th x-text="t('rules.th_match')"></th><th x-text="t('rules.th_action')"></th><th x-text="t('rules.th_summary')"></th><th x-text="t('rules.th_order')"></th></tr>
                 </thead>
                 <template x-for="(r, i) in rules" :key="i">
                   <tbody :class="expandedRules[i] ? 'is-open' : ''">
                     <tr class="main-line">
-                      <td class="mono"><input x-model="r.match" @input="rulesError = ''" placeholder="如 Target.createTarget" class="mono"></td>
+                      <td class="mono"><input x-model="r.match" @input="rulesError = ''" :placeholder="t('rules.match_placeholder')" class="mono"></td>
                       <td>
                         <select x-model="r.action" :class="'action-' + r.action">
                           <option value="rewrite">rewrite</option>
@@ -636,13 +636,13 @@
                       </td>
                       <td>
                         <div class="row-acts">
-                          <button class="icon-btn ghost" @click="moveRule(i, -1)" :disabled="i === 0" title="上移"><svg class="ic-sm"><use href="#i-up"/></svg></button>
-                          <button class="icon-btn ghost" @click="moveRule(i, 1)" :disabled="i === rules.length - 1" title="下移"><svg class="ic-sm"><use href="#i-down"/></svg></button>
-                          <button class="icon-btn ghost" @click="toggleRule(i)" :title="expandedRules[i] ? '收起参数详情' : '展开编辑参数'">
+                          <button class="icon-btn ghost" @click="moveRule(i, -1)" :disabled="i === 0" :title="t('common.move_up')"><svg class="ic-sm"><use href="#i-up"/></svg></button>
+                          <button class="icon-btn ghost" @click="moveRule(i, 1)" :disabled="i === rules.length - 1" :title="t('common.move_down')"><svg class="ic-sm"><use href="#i-down"/></svg></button>
+                          <button class="icon-btn ghost" @click="toggleRule(i)" :title="expandedRules[i] ? t('rules.collapse_params') : t('rules.expand_params')">
                             <svg class="ic-sm" x-show="!expandedRules[i]"><use href="#i-down"/></svg>
                             <svg class="ic-sm" style="color:var(--accent-h)" x-show="expandedRules[i]"><use href="#i-up"/></svg>
                           </button>
-                          <button class="icon-btn danger" @click="delRule(i)" title="删除规则"><svg class="ic-sm"><use href="#i-trash"/></svg></button>
+                          <button class="icon-btn danger" @click="delRule(i)" :title="t('rules.delete_rule')"><svg class="ic-sm"><use href="#i-trash"/></svg></button>
                         </div>
                       </td>
                     </tr>
@@ -651,24 +651,24 @@
                         <div class="rule-drawer-grid">
                           <div>
                             <div class="rule-field">
-                              <label><span>方法名匹配</span><span class="label-sub">支持尾部 * 通配</span></label>
-                              <input x-model="r.match" @input="rulesError = ''" placeholder="如 Target.createTarget" class="mono">
+                              <label><span x-text="t('rules.field_match')"></span><span class="label-sub" x-text="t('rules.field_match_sub')"></span></label>
+                              <input x-model="r.match" @input="rulesError = ''" :placeholder="t('rules.match_placeholder')" class="mono">
                             </div>
                             <div class="rule-field">
-                              <label>执行动作</label>
+                              <label x-text="t('rules.field_action')"></label>
                               <div class="seg">
-                                <button :class="r.action === 'rewrite' ? 'on' : ''" @click="r.action = 'rewrite'">rewrite · 改写转发</button>
-                                <button :class="r.action === 'fake' ? 'on' : ''" @click="r.action = 'fake'">fake · 拦截并返回成功</button>
+                                <button :class="r.action === 'rewrite' ? 'on' : ''" @click="r.action = 'rewrite'" x-text="t('rules.action_rewrite')"></button>
+                                <button :class="r.action === 'fake' ? 'on' : ''" @click="r.action = 'fake'" x-text="t('rules.action_fake')"></button>
                               </div>
                             </div>
                             <div style="display:grid;grid-template-columns:120px 1fr;gap:10px">
                               <div class="rule-field" style="margin:0">
-                                <label>分组标识</label>
+                                <label x-text="t('rules.field_group')"></label>
                                 <input x-model="r.group" placeholder="focus / base" class="mono">
                               </div>
                               <div class="rule-field" style="margin:0">
-                                <label>规则说明</label>
-                                <input x-model="r.note" placeholder="简述规则用途">
+                                <label x-text="t('rules.field_note')"></label>
+                                <input x-model="r.note" :placeholder="t('rules.note_placeholder')">
                               </div>
                             </div>
                           </div>
@@ -676,7 +676,7 @@
                             <template x-if="r.action === 'rewrite'">
                               <div>
                                 <div class="rule-field">
-                                  <label><span>覆盖参数（set · JSON 对象）</span><span class="label-sub">失焦自动格式化</span></label>
+                                  <label><span x-text="t('rules.field_set')"></span><span class="label-sub" x-text="t('rules.field_set_sub')"></span></label>
                                   <div class="code-editor-box" :class="ruleSetErrors[i] ? 'is-invalid' : ''">
                                     <div class="code-editor-stage">
                                       <pre class="code-highlight mono" aria-hidden="true" x-html="highlightJson(ruleSetText(i))"></pre>
@@ -692,17 +692,15 @@
                                   <span class="err-text" x-show="ruleSetErrors[i]" x-text="ruleSetErrors[i]"></span>
                                 </div>
                                 <div class="rule-field">
-                                  <label><span>移除字段（remove）</span><span class="label-sub">点路径，逗号分隔</span></label>
+                                  <label><span x-text="t('rules.field_remove')"></span><span class="label-sub" x-text="t('rules.field_remove_sub')"></span></label>
                                   <input :value="(r.remove || []).join(', ')"
                                          @change="r.remove = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)"
-                                         placeholder="如 bounds.focused" class="mono">
+                                         :placeholder="t('rules.remove_placeholder')" class="mono">
                                 </div>
                               </div>
                             </template>
                             <template x-if="r.action === 'fake'">
-                              <div class="fake-note-box">
-                                <strong>fake 拦截模式</strong>：命中后直接向调用方返回空成功 <code>{}</code>，指令不再发往真实浏览器，无需配置参数覆盖。
-                              </div>
+                              <div class="fake-note-box" x-html="t('rules.fake_note')"></div>
                             </template>
                           </div>
                         </div>
@@ -711,19 +709,19 @@
                   </tbody>
                 </template>
               </table>
-              <div class="log-empty" x-show="!rules.length">（暂无规则，可点击右上角「添加规则」或选用预设）</div>
+              <div class="log-empty" x-show="!rules.length" x-text="t('rules.empty')"></div>
             </div>
 
             <div class="save-bar" style="margin-top:14px;padding-top:14px">
               <button class="primary sm" @click="saveRules()" :disabled="saving.rules || !rulesDirty()">
-                <span x-text="saving.rules ? '保存中…' : '保存规则'"></span>
+                <span x-text="saving.rules ? t('common.saving') : t('rules.save')"></span>
               </button>
               <button class="sm" @click="resetRules()" :disabled="!rulesDirty()">
                 <svg class="ic-sm"><use href="#i-undo"/></svg>
-                <span>还原</span>
+                <span x-text="t('common.restore')"></span>
               </button>
-              <span class="hint">保存后立即生效并写入 <code>settings.json</code></span>
-              <span class="ok-text" x-show="rulesSavedAt" x-text="'已保存 · ' + rulesSavedAt"></span>
+              <span class="hint" x-html="t('rules.save_hint')"></span>
+              <span class="ok-text" x-show="rulesSavedAt" x-text="t('common.saved_at', { time: rulesSavedAt })"></span>
               <span class="err-text" x-show="rulesError" x-text="rulesError"></span>
             </div>
           </section>
@@ -734,8 +732,8 @@
               <div>
                 <div class="page-bar">
                   <div class="page-lead">
-                    <div class="page-lead-title">双浏览器源常开并存；修改默认源仅影响新分配会话</div>
-                    <div class="page-lead-sub">分流优先级：显式指定 <code>source</code> 参数 → 前缀规则 → 默认源</div>
+                    <div class="page-lead-title" x-text="t('src.title')"></div>
+                    <div class="page-lead-sub" x-html="t('src.sub')"></div>
                   </div>
                 </div>
 
@@ -746,11 +744,11 @@
                       <h2>
                         <span class="src-ic lg sa"><svg><use href="#i-chrome"/></svg></span>
                         <span class="mono">standalone</span>
-                        <span class="hint" style="font-weight:400">独立托管基座</span>
+                        <span class="hint" style="font-weight:400" x-text="t('src.sa_sub')"></span>
                         <span class="bdg" :class="status.sources.standalone.connected ? 'ok' : 'idle'"
-                              x-text="status.sources.standalone.connected ? '已连接' : '待命'"></span>
+                              x-text="status.sources.standalone.connected ? t('topbar.state_connected') : t('topbar.state_standby')"></span>
                       </h2>
-                      <label class="switch" :title="status.sources.standalone.enabled ? '点击禁用 standalone' : '点击启用 standalone'">
+                      <label class="switch" :title="status.sources.standalone.enabled ? t('src.toggle_disable', { src: 'standalone' }) : t('src.toggle_enable', { src: 'standalone' })">
                         <input type="checkbox" :checked="status.sources.standalone.enabled"
                                @change="toggleSource('standalone', $event.target.checked)">
                         <span class="track"></span>
@@ -758,15 +756,15 @@
                     </div>
                     <table class="kv">
                       <tr>
-                        <td>基座状态</td>
+                        <td x-text="t('src.keeper_status')"></td>
                         <td>
                           <div class="rowflex">
-                            <span class="bdg" :class="status.keeper.alive ? 'ok' : 'idle'" x-text="status.keeper.alive ? 'Chrome 就绪' : '休眠待命'"></span>
-                            <span class="hint">基座会话 <code x-text="status.keeper.base_session"></code></span>
+                            <span class="bdg" :class="status.keeper.alive ? 'ok' : 'idle'" x-text="status.keeper.alive ? t('src.chrome_ready') : t('ov.keeper_sleeping')"></span>
+                            <span class="hint"><span x-text="t('src.keeper_session')"></span> <code x-text="status.keeper.base_session"></code></span>
                           </div>
                           <div class="copyable" style="margin-top:8px">
                             <span class="val mono" :title="status.keeper.profile" x-text="status.keeper.profile"></span>
-                            <button class="icon-btn" @click="copyText(status.keeper.profile, 'Profile 路径已复制', 'profile')" title="复制路径">
+                            <button class="icon-btn" @click="copyText(status.keeper.profile, t('toast.profile_copied'), 'profile')" :title="t('common.copy_path')">
                               <svg class="ic-sm" x-show="copiedKey !== 'profile'"><use href="#i-copy"/></svg>
                               <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'profile'"><use href="#i-check"/></svg>
                             </button>
@@ -774,10 +772,10 @@
                         </td>
                       </tr>
                       <tr>
-                        <td>空闲回收</td>
+                        <td x-text="t('src.idle_reap')"></td>
                         <td>
-                          <span class="mono" style="color:var(--js-n);font-weight:550" x-text="status.settings.keeper_idle_shutdown_seconds === 0 ? '禁用' : status.settings.keeper_idle_shutdown_seconds + ' 秒'"></span>
-                          <div class="field-help">连续无活跃会话与人工标签页达到阈值后自动退出基座，磁盘登录态保留。</div>
+                          <span class="mono" style="color:var(--js-n);font-weight:550" x-text="status.settings.keeper_idle_shutdown_seconds === 0 ? t('common.disabled') : t('common.sec_val', { n: status.settings.keeper_idle_shutdown_seconds })"></span>
+                          <div class="field-help" x-text="t('src.idle_reap_help')"></div>
                         </td>
                       </tr>
                       <tr>
@@ -786,12 +784,12 @@
                           <template x-if="abInfo">
                             <div>
                               <div class="rowflex">
-                                <span class="bdg" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? fmtAbVersion(abInfo.version) : '未检测到'"></span>
+                                <span class="bdg" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? fmtAbVersion(abInfo.version) : t('common.not_detected')"></span>
                                 <span class="bdg plain" :class="abInfo.source === 'bundled' ? 'ext' : ''" x-text="abSourceText(abInfo.source)"></span>
                               </div>
                               <div class="copyable" style="margin-top:8px" x-show="abInfo.path">
                                 <span class="val mono" :title="abInfo.path || ''" x-text="abInfo.path || ''"></span>
-                                <button class="icon-btn" @click="copyText(abInfo.path || '', '二进制路径已复制', 'ab-path')" title="复制路径">
+                                <button class="icon-btn" @click="copyText(abInfo.path || '', t('toast.bin_path_copied'), 'ab-path')" :title="t('common.copy_path')">
                                   <svg class="ic-sm" x-show="copiedKey !== 'ab-path'"><use href="#i-copy"/></svg>
                                   <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ab-path'"><use href="#i-check"/></svg>
                                 </button>
@@ -804,9 +802,9 @@
                     <div class="save-bar">
                       <button class="sm" @click="restartKeeper()" :disabled="actionKey === 'restartKeeper'">
                         <svg class="ic-sm" :class="actionKey === 'restartKeeper' ? 'spin' : ''"><use href="#i-refresh"/></svg>
-                        <span x-text="actionKey === 'restartKeeper' ? '重启中…' : '重启基座 Chrome'"></span>
+                        <span x-text="actionKey === 'restartKeeper' ? t('ov.restarting') : t('ov.restart_keeper')"></span>
                       </button>
-                      <span class="hint">仅重启基座进程，不影响 extension 会话</span>
+                      <span class="hint" x-text="t('src.restart_hint')"></span>
                     </div>
                   </div>
 
@@ -815,11 +813,11 @@
                       <h2>
                         <span class="src-ic lg ext"><svg><use href="#i-puzzle"/></svg></span>
                         <span class="mono">extension</span>
-                        <span class="hint" style="font-weight:400">宿主扩展直连</span>
+                        <span class="hint" style="font-weight:400" x-text="t('src.ext_sub')"></span>
                         <span class="bdg" :class="status.sources.extension.connected ? 'ok' : 'warn'"
-                              x-text="status.sources.extension.connected ? '已回连' : '未回连'"></span>
+                              x-text="status.sources.extension.connected ? t('topbar.state_ext_connected') : t('topbar.state_ext_disconnected')"></span>
                       </h2>
-                      <label class="switch" :title="status.sources.extension.enabled ? '点击禁用 extension' : '点击启用 extension'">
+                      <label class="switch" :title="status.sources.extension.enabled ? t('src.toggle_disable', { src: 'extension' }) : t('src.toggle_enable', { src: 'extension' })">
                         <input type="checkbox" :checked="status.sources.extension.enabled"
                                @change="toggleSource('extension', $event.target.checked)">
                         <span class="track"></span>
@@ -827,60 +825,60 @@
                     </div>
                     <table class="kv">
                       <tr>
-                        <td>回连地址</td>
+                        <td x-text="t('src.relay_addr')"></td>
                         <td>
                           <div class="copyable">
                             <span class="val mono hl-url" x-html="highlightUrl(extRelayUrl())"></span>
-                            <button class="icon-btn" @click="copyText(extRelayUrl(), 'Relay 地址已复制', 'relay')" title="复制 Relay URL">
+                            <button class="icon-btn" @click="copyText(extRelayUrl(), t('toast.relay_copied'), 'relay')" :title="t('ov.copy_relay_title')">
                               <svg class="ic-sm" x-show="copiedKey !== 'relay'"><use href="#i-copy"/></svg>
                               <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'relay'"><use href="#i-check"/></svg>
                             </button>
                           </div>
-                          <div class="field-help">填入浏览器 cdp-ext 扩展 Options 页的 Relay 地址。</div>
+                          <div class="field-help" x-text="t('src.relay_help')"></div>
                         </td>
                       </tr>
                       <tr>
-                        <td>扩展准入令牌</td>
+                        <td x-text="t('src.ext_token')"></td>
                         <td>
                           <div class="secret">
                             <span class="val" :class="showExtToken ? '' : 'masked'"
                                   x-text="showExtToken ? status.sources.extension.token : '••••••••••••••••••••••'"></span>
-                            <button class="icon-btn" @click="showExtToken = !showExtToken" :title="showExtToken ? '隐藏' : '显示'">
+                            <button class="icon-btn" @click="showExtToken = !showExtToken" :title="showExtToken ? t('common.hide') : t('common.show')">
                               <svg class="ic-sm" x-show="!showExtToken"><use href="#i-eye"/></svg>
                               <svg class="ic-sm" x-show="showExtToken"><use href="#i-eye-off"/></svg>
                             </button>
-                            <button class="icon-btn" @click="copyText(status.sources.extension.token, '扩展令牌已复制', 'ext-tok')" title="复制令牌">
+                            <button class="icon-btn" @click="copyText(status.sources.extension.token, t('toast.ext_token_copied'), 'ext-tok')" :title="t('common.copy_token')">
                               <svg class="ic-sm" x-show="copiedKey !== 'ext-tok'"><use href="#i-copy"/></svg>
                               <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ext-tok'"><use href="#i-check"/></svg>
                             </button>
-                            <button class="sm warn" @click="resetToken('ext')" :disabled="actionKey === 'reset-ext'">重置</button>
+                            <button class="sm warn" @click="resetToken('ext')" :disabled="actionKey === 'reset-ext'" x-text="t('common.reset')"></button>
                           </div>
-                          <div class="field-help">重置会立即吊销旧令牌，需同步更新扩展配置。</div>
+                          <div class="field-help" x-text="t('src.ext_token_help')"></div>
                         </td>
                       </tr>
                     </table>
 
-                    <div class="subhead"><h3>会话分配凭证 · Bearer 令牌</h3></div>
+                    <div class="subhead"><h3 x-text="t('src.alloc_title')"></h3></div>
                     <table class="kv">
                       <tr>
-                        <td>Bearer 令牌</td>
+                        <td x-text="t('src.bearer_token')"></td>
                         <td>
                           <div class="secret">
                             <span class="val" :class="showAllocToken ? '' : 'masked'"
                                   x-text="showAllocToken ? status.sources.alloc_token : '••••••••••••••••••••••'"></span>
-                            <button class="icon-btn" @click="showAllocToken = !showAllocToken" :title="showAllocToken ? '隐藏' : '显示'">
+                            <button class="icon-btn" @click="showAllocToken = !showAllocToken" :title="showAllocToken ? t('common.hide') : t('common.show')">
                               <svg class="ic-sm" x-show="!showAllocToken"><use href="#i-eye"/></svg>
                               <svg class="ic-sm" x-show="showAllocToken"><use href="#i-eye-off"/></svg>
                             </button>
-                            <button class="icon-btn" @click="copyText(status.sources.alloc_token, '分配令牌已复制', 'alloc-tok')" title="复制令牌">
+                            <button class="icon-btn" @click="copyText(status.sources.alloc_token, t('toast.alloc_token_copied'), 'alloc-tok')" :title="t('common.copy_token')">
                               <svg class="ic-sm" x-show="copiedKey !== 'alloc-tok'"><use href="#i-copy"/></svg>
                               <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'alloc-tok'"><use href="#i-check"/></svg>
                             </button>
-                            <button class="sm warn" @click="resetToken('alloc')" :disabled="actionKey === 'reset-alloc'">重置</button>
+                            <button class="sm warn" @click="resetToken('alloc')" :disabled="actionKey === 'reset-alloc'" x-text="t('common.reset')"></button>
                           </div>
                           <div class="copyable" style="margin-top:8px">
-                            <span class="val mono" style="font-size:11.5px" x-html="highlightUrl('POST /sessions · Authorization: Bearer <令牌>')"></span>
-                            <button class="icon-btn" @click="copyText('Authorization: Bearer ' + status.sources.alloc_token, 'Bearer 请求头已复制', 'bearer')" title="复制 Authorization 头">
+                            <span class="val mono" style="font-size:11.5px" x-html="highlightUrl(t('src.bearer_template'))"></span>
+                            <button class="icon-btn" @click="copyText('Authorization: Bearer ' + status.sources.alloc_token, t('toast.bearer_copied'), 'bearer')" :title="t('src.copy_auth_header')">
                               <svg class="ic-sm" x-show="copiedKey !== 'bearer'"><use href="#i-copy"/></svg>
                               <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'bearer'"><use href="#i-check"/></svg>
                             </button>
@@ -895,53 +893,53 @@
                 <div class="card" id="ep-card">
                   <div class="card-head">
                     <h2>
-                      <span>固定接入点</span>
+                      <span x-text="t('src.ep_title')"></span>
                       <span class="bdg plain mono hl-url" x-html="highlightUrl(`ws://127.0.0.1:${status.ws_port}/<path>/<token>`)"></span>
-                      <span class="dirty-dot" x-show="epDirty()">有未保存改动</span>
+                      <span class="dirty-dot" x-show="epDirty()" x-text="t('common.dirty')"></span>
                     </h2>
                     <button class="sm" @click="epForm.push({path: '', source: 'extension', session: '', token: '', _show: false})">
                       <svg class="ic-sm"><use href="#i-plus"/></svg>
-                      <span>添加接入点</span>
+                      <span x-text="t('src.ep_add')"></span>
                     </button>
                   </div>
-                  <p class="sub">免预申请直连地址，连入后按会话名自动分配（默认等于 path）；同一接入点新连接会自动顶替旧连接。</p>
+                  <p class="sub" x-text="t('src.ep_sub')"></p>
                   <div class="rules-editor">
                     <table class="ep-table">
-                      <thead><tr><th>路径 (path)</th><th>目标源</th><th class="fold-col">绑定会话名</th><th>连接令牌</th><th>操作</th></tr></thead>
+                      <thead><tr><th x-text="t('src.ep_th_path')"></th><th x-text="t('src.ep_th_source')"></th><th class="fold-col" x-text="t('src.ep_th_session')"></th><th x-text="t('src.ep_th_token')"></th><th x-text="t('src.ep_th_actions')"></th></tr></thead>
                       <template x-for="(ep, i) in epForm" :key="i">
                         <tbody>
                           <tr>
-                            <td class="mono"><input x-model="ep.path" placeholder="如 dev" class="mono"></td>
+                            <td class="mono"><input x-model="ep.path" :placeholder="t('src.ep_path_ph')" class="mono"></td>
                             <td>
                               <select x-model="ep.source">
                                 <option value="standalone">standalone</option>
                                 <option value="extension">extension</option>
                               </select>
                             </td>
-                            <td class="mono fold-col"><input x-model="ep.session" :placeholder="ep.path || '默认同 path'" class="mono"></td>
+                            <td class="mono fold-col"><input x-model="ep.session" :placeholder="ep.path || t('src.ep_session_ph')" class="mono"></td>
                             <td class="mono">
                               <div class="secret" style="flex-wrap:nowrap">
                                 <span class="val" style="min-width:0;flex:1" :class="ep._show ? '' : 'masked'"
-                                      x-text="ep._show ? ep.token : (ep.token ? '•••••• ' + epTokenPreview(ep) : '保存后生成')"></span>
-                                <button class="icon-btn" x-show="ep.token" @click="ep._show = !ep._show" :title="ep._show ? '隐藏' : '显示'">
+                                      x-text="ep._show ? ep.token : (ep.token ? '•••••• ' + epTokenPreview(ep) : t('src.ep_gen_after_save'))"></span>
+                                <button class="icon-btn" x-show="ep.token" @click="ep._show = !ep._show" :title="ep._show ? t('common.hide') : t('common.show')">
                                   <svg class="ic-sm" x-show="!ep._show"><use href="#i-eye"/></svg>
                                   <svg class="ic-sm" x-show="ep._show"><use href="#i-eye-off"/></svg>
                                 </button>
-                                <button class="icon-btn" x-show="ep.token" @click="copyText(ep.token, '接入点令牌已复制', 'ep-tok-' + i)" title="复制令牌">
+                                <button class="icon-btn" x-show="ep.token" @click="copyText(ep.token, t('toast.ep_token_copied'), 'ep-tok-' + i)" :title="t('common.copy_token')">
                                   <svg class="ic-sm" x-show="copiedKey !== 'ep-tok-' + i"><use href="#i-copy"/></svg>
                                   <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ep-tok-' + i"><use href="#i-check"/></svg>
                                 </button>
-                                <button class="sm warn" x-show="ep.token" @click="resetEndpointToken(ep)" :disabled="actionKey === 'ep-reset-' + ep.path">重置</button>
+                                <button class="sm warn" x-show="ep.token" @click="resetEndpointToken(ep)" :disabled="actionKey === 'ep-reset-' + ep.path" x-text="t('common.reset')"></button>
                               </div>
                             </td>
                             <td>
                               <div class="row-acts">
-                                <button class="sm" @click="copyEndpoint(ep, i)" :disabled="!ep.path || !ep.token" title="复制完整 WS 连接 URL">
+                                <button class="sm" @click="copyEndpoint(ep, i)" :disabled="!ep.path || !ep.token" :title="t('src.ep_copy_url_title')">
                                   <svg class="ic-sm" x-show="copiedKey !== 'ep-url-' + i"><use href="#i-copy"/></svg>
                                   <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ep-url-' + i"><use href="#i-check"/></svg>
                                   <span>URL</span>
                                 </button>
-                                <button class="icon-btn danger" @click="epForm.splice(i, 1)" title="移除接入点">
+                                <button class="icon-btn danger" @click="epForm.splice(i, 1)" :title="t('src.ep_remove_title')">
                                   <svg class="ic-sm"><use href="#i-trash"/></svg>
                                 </button>
                               </div>
@@ -949,24 +947,24 @@
                           </tr>
                           <tr class="fold-detail">
                             <td colspan="5">
-                              <div class="fold-grid"><label>绑定会话名 <input x-model="ep.session" :placeholder="ep.path || '默认同 path'" class="mono"></label></div>
+                              <div class="fold-grid"><label><span x-text="t('src.ep_th_session')"></span> <input x-model="ep.session" :placeholder="ep.path || t('src.ep_session_ph')" class="mono"></label></div>
                             </td>
                           </tr>
                         </tbody>
                       </template>
                     </table>
-                    <div class="log-empty" x-show="!epForm.length">（暂无接入点）</div>
+                    <div class="log-empty" x-show="!epForm.length" x-text="t('src.ep_empty')"></div>
                   </div>
                   <div class="save-bar">
                     <button class="primary sm" @click="saveEndpoints()" :disabled="saving.endpoints || !epDirty()">
-                      <span x-text="saving.endpoints ? '保存中…' : '保存接入点'"></span>
+                      <span x-text="saving.endpoints ? t('common.saving') : t('src.ep_save')"></span>
                     </button>
                     <button class="sm" @click="resetEndpoints()" :disabled="!epDirty()">
                       <svg class="ic-sm"><use href="#i-undo"/></svg>
-                      <span>还原</span>
+                      <span x-text="t('common.restore')"></span>
                     </button>
-                    <span class="hint">保存不改变现有令牌，新增项自动生成</span>
-                    <span class="ok-text" x-show="epSavedAt" x-text="epSavedAt"></span>
+                    <span class="hint" x-text="t('src.ep_save_hint')"></span>
+                    <span class="ok-text" x-show="epSavedAt" x-text="t('common.saved_prefix', { time: epSavedAt })"></span>
                     <span class="err-text" x-show="epError" x-text="epError"></span>
                   </div>
                 </div>
@@ -975,32 +973,32 @@
                 <div class="card" id="route-card">
                   <div class="card-head">
                     <h2>
-                      <span>会话前缀路由</span>
-                      <span class="dirty-dot" x-show="routeDirty()">有未保存改动</span>
+                      <span x-text="t('src.route_title')"></span>
+                      <span class="dirty-dot" x-show="routeDirty()" x-text="t('common.dirty')"></span>
                     </h2>
                     <button class="sm" @click="routeForm.rules.push({prefix: '', source: 'extension'})">
                       <svg class="ic-sm"><use href="#i-plus"/></svg>
-                      <span>添加前缀规则</span>
+                      <span x-text="t('src.route_add')"></span>
                     </button>
                   </div>
                   <table class="kv" style="margin-bottom:12px">
                     <tr>
-                      <td>新会话默认源</td>
+                      <td x-text="t('src.route_default')"></td>
                       <td>
                         <select x-model="routeForm.default_source" style="min-width:250px">
-                          <option value="standalone">standalone（独立基座 Chrome）</option>
-                          <option value="extension">extension（宿主浏览器扩展）</option>
+                          <option value="standalone" x-text="t('src.route_opt_sa')"></option>
+                          <option value="extension" x-text="t('src.route_opt_ext')"></option>
                         </select>
                       </td>
                     </tr>
                   </table>
                   <div class="rules-editor" style="max-width:760px">
                     <table class="route-table">
-                      <thead><tr><th>会话名前缀</th><th>路由目标源</th><th>顺序与操作</th></tr></thead>
+                      <thead><tr><th x-text="t('src.route_th_prefix')"></th><th x-text="t('src.route_th_target')"></th><th x-text="t('src.route_th_order')"></th></tr></thead>
                       <template x-for="(r, i) in routeForm.rules" :key="i">
                         <tbody>
                           <tr>
-                            <td class="mono"><input x-model="r.prefix" placeholder="如 ext-" class="mono"></td>
+                            <td class="mono"><input x-model="r.prefix" :placeholder="t('src.route_prefix_ph')" class="mono"></td>
                             <td>
                               <select x-model="r.source">
                                 <option value="standalone">standalone</option>
@@ -1009,41 +1007,41 @@
                             </td>
                             <td>
                               <div class="row-acts">
-                                <button class="icon-btn ghost" @click="moveRoute(i, -1)" :disabled="i === 0" title="上移"><svg class="ic-sm"><use href="#i-up"/></svg></button>
-                                <button class="icon-btn ghost" @click="moveRoute(i, 1)" :disabled="i === routeForm.rules.length - 1" title="下移"><svg class="ic-sm"><use href="#i-down"/></svg></button>
-                                <button class="icon-btn danger" @click="routeForm.rules.splice(i, 1)" title="删除"><svg class="ic-sm"><use href="#i-trash"/></svg></button>
+                                <button class="icon-btn ghost" @click="moveRoute(i, -1)" :disabled="i === 0" :title="t('common.move_up')"><svg class="ic-sm"><use href="#i-up"/></svg></button>
+                                <button class="icon-btn ghost" @click="moveRoute(i, 1)" :disabled="i === routeForm.rules.length - 1" :title="t('common.move_down')"><svg class="ic-sm"><use href="#i-down"/></svg></button>
+                                <button class="icon-btn danger" @click="routeForm.rules.splice(i, 1)" :title="t('common.delete')"><svg class="ic-sm"><use href="#i-trash"/></svg></button>
                               </div>
                             </td>
                           </tr>
                         </tbody>
                       </template>
                     </table>
-                    <div class="log-empty" x-show="!routeForm.rules.length">（无前缀规则，所有未显式指定 source 的会话均走默认源）</div>
+                    <div class="log-empty" x-show="!routeForm.rules.length" x-text="t('src.route_empty')"></div>
                   </div>
                   <div class="save-bar">
                     <button class="primary sm" @click="saveRouting()" :disabled="saving.routing || !routeDirty()">
-                      <span x-text="saving.routing ? '保存中…' : '保存路由'"></span>
+                      <span x-text="saving.routing ? t('common.saving') : t('src.route_save')"></span>
                     </button>
                     <button class="sm" @click="resetRoutes()" :disabled="!routeDirty()">
                       <svg class="ic-sm"><use href="#i-undo"/></svg>
-                      <span>还原</span>
+                      <span x-text="t('common.restore')"></span>
                     </button>
-                    <span class="ok-text" x-show="routeSavedAt" x-text="'已保存 · ' + routeSavedAt"></span>
+                    <span class="ok-text" x-show="routeSavedAt" x-text="t('common.saved_at', { time: routeSavedAt })"></span>
                     <span class="err-text" x-show="routeError" x-text="routeError"></span>
                   </div>
                 </div>
 
                 <!-- 开发者参考 -->
                 <details class="drawer" id="devref">
-                  <summary>开发者参考 · CDP 接入模板速查</summary>
+                  <summary x-text="t('src.devref_summary')"></summary>
                   <div class="drawer-body">
                     <table class="kv">
                       <tr>
-                        <td>接入点直连</td>
+                        <td x-text="t('src.devref_ep')"></td>
                         <td>
                           <div class="copyable">
                             <span class="val mono hl-url" x-html="highlightUrl(`ws://127.0.0.1:${status.ws_port}/<path>/<token>`)"></span>
-                            <button class="icon-btn" @click="copyText(`ws://127.0.0.1:${status.ws_port}/<path>/<token>`, 'URL 模板已复制', 'tpl-ep')">
+                            <button class="icon-btn" @click="copyText(`ws://127.0.0.1:${status.ws_port}/<path>/<token>`, t('toast.tpl_url_copied'), 'tpl-ep')">
                               <svg class="ic-sm" x-show="copiedKey !== 'tpl-ep'"><use href="#i-copy"/></svg>
                               <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'tpl-ep'"><use href="#i-check"/></svg>
                             </button>
@@ -1051,19 +1049,19 @@
                         </td>
                       </tr>
                       <tr>
-                        <td>动态分配接口</td>
+                        <td x-text="t('src.devref_alloc')"></td>
                         <td>
                           <div class="copyable">
-                            <span class="val mono hl-url" x-html="highlightUrl('POST /sessions · Authorization: Bearer <令牌> · {&quot;name&quot;:&quot;foo&quot;, &quot;source?&quot;:&quot;extension|standalone&quot;}')"></span>
+                            <span class="val mono hl-url" x-html="highlightUrl(t('src.devref_alloc_tpl'))"></span>
                           </div>
                         </td>
                       </tr>
                       <tr>
-                        <td>动态连接地址</td>
+                        <td x-text="t('src.devref_cdp')"></td>
                         <td>
                           <div class="copyable">
                             <span class="val mono hl-url" x-html="highlightUrl(`ws://127.0.0.1:${status.ws_port}/cdp/<token>`)"></span>
-                            <button class="icon-btn" @click="copyText(`ws://127.0.0.1:${status.ws_port}/cdp/<token>`, '连接模板已复制', 'tpl-cdp')">
+                            <button class="icon-btn" @click="copyText(`ws://127.0.0.1:${status.ws_port}/cdp/<token>`, t('toast.tpl_conn_copied'), 'tpl-cdp')">
                               <svg class="ic-sm" x-show="copiedKey !== 'tpl-cdp'"><use href="#i-copy"/></svg>
                               <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'tpl-cdp'"><use href="#i-check"/></svg>
                             </button>
@@ -1084,48 +1082,48 @@
                 <div class="card">
                   <div class="card-head">
                     <h2>
-                      <span>组件版本与更新</span>
-                      <span class="bdg warn" x-show="hasAnyUpgrade()">有可用更新</span>
+                      <span x-text="t('set.versions_title')"></span>
+                      <span class="bdg warn" x-show="hasAnyUpgrade()" x-text="t('set.upgrade_avail')"></span>
                     </h2>
                     <button class="sm" @click="checkAllUpdates()" :disabled="loadingVersions || checkingAbLatest || updateBusy">
                       <svg class="ic-sm" :class="(loadingVersions || checkingAbLatest || updateBusy) ? 'spin' : ''"><use href="#i-refresh"/></svg>
-                      <span>检查全部</span>
+                      <span x-text="t('set.check_all')"></span>
                     </button>
-                    <button class="link-btn" @click="go('about')">完整关于与升级 →</button>
+                    <button class="link-btn" @click="go('about')" x-text="t('set.full_about')"></button>
                   </div>
                   <div class="ov-meta-row">
-                    <span class="ov-meta-k">cdproxy 主程序</span>
+                    <span class="ov-meta-k" x-text="t('set.cdproxy_core')"></span>
                     <span class="ov-meta-v">
                       <span class="bdg plain mono" x-text="'v' + (versions?.cdproxy?.version || status?.version || 'dev')"></span>
                       <button class="sm" x-show="isDesktop && updateKind !== 'ready'" @click="checkUpdate()" :disabled="updateBusy">
-                        <span x-text="updateBusy ? '检查中…' : '检查更新'"></span>
+                        <span x-text="updateBusy ? t('topbar.checking') : t('set.check_update')"></span>
                       </button>
-                      <button class="primary sm" x-show="updateKind === 'ready'" @click="installUpdate()">重启并升级</button>
+                      <button class="primary sm" x-show="updateKind === 'ready'" @click="installUpdate()" x-text="t('set.restart_upgrade')"></button>
                     </span>
                   </div>
                   <div class="ov-meta-row">
                     <span class="ov-meta-k">agent-browser</span>
                     <span class="ov-meta-v">
                       <span class="bdg" :class="versions?.agent_browser?.found ? 'ok' : 'bad'"
-                            x-text="versions?.agent_browser?.clean_version ? 'v' + versions.agent_browser.clean_version : '未检测到'"></span>
-                      <span class="bdg warn" x-show="abLatest?.update_available" x-text="'新版 v' + abLatest?.latest_version"></span>
+                            x-text="versions?.agent_browser?.clean_version ? 'v' + versions.agent_browser.clean_version : t('common.not_detected')"></span>
+                      <span class="bdg warn" x-show="abLatest?.update_available" x-text="t('set.new_ver', { ver: abLatest?.latest_version })"></span>
                       <button class="sm" x-show="!abLatest?.update_available" @click="checkAbLatest()" :disabled="checkingAbLatest">
-                        <span x-text="checkingAbLatest ? '检查中…' : '查新版'"></span>
+                        <span x-text="checkingAbLatest ? t('topbar.checking') : t('set.check_new')"></span>
                       </button>
                       <button class="primary sm" x-show="abLatest?.update_available" @click="upgradeAgentBrowser()" :disabled="upgradingAb">
-                        <span x-text="upgradingAb ? '升级中…' : '升级'"></span>
+                        <span x-text="upgradingAb ? t('set.upgrading') : t('set.upgrade')"></span>
                       </button>
                     </span>
                   </div>
                   <div class="ov-meta-row">
-                    <span class="ov-meta-k">cdp-ext 扩展</span>
+                    <span class="ov-meta-k" x-text="t('set.cdp_ext')"></span>
                     <span class="ov-meta-v">
-                      <span class="bdg plain mono" x-text="'内置 v' + (versions?.extension?.bundled_version || '—')"></span>
+                      <span class="bdg plain mono" x-text="t('set.builtin_ver', { ver: versions?.extension?.bundled_version || '—' })"></span>
                       <span class="bdg" x-show="versions?.extension?.connected"
                             :class="versions?.extension?.needs_reload ? 'warn' : 'ok'"
-                            x-text="versions?.extension?.connected_version ? '已连 v' + versions.extension.connected_version : '已连 · 旧版'"></span>
-                      <span class="bdg idle" x-show="!versions?.extension?.connected">未连接</span>
-                      <button class="sm" @click="go('about')">升级 / 导出</button>
+                            x-text="versions?.extension?.connected_version ? t('set.connected_ver', { ver: versions.extension.connected_version }) : t('set.connected_old')"></span>
+                      <span class="bdg idle" x-show="!versions?.extension?.connected" x-text="t('set.not_connected')"></span>
+                      <button class="sm" @click="go('about')" x-text="t('set.upgrade_export')"></button>
                     </span>
                   </div>
                 </div>
@@ -1133,114 +1131,114 @@
                 <div class="card">
                   <div class="card-head">
                     <h2>
-                      <span>引擎与网络参数</span>
-                      <span class="dirty-dot" x-show="dirty()">存在未保存变更</span>
+                      <span x-text="t('set.engine_title')"></span>
+                      <span class="dirty-dot" x-show="dirty()" x-text="t('set.unsaved_changes')"></span>
                     </h2>
                   </div>
                   <table class="kv">
                     <tr :class="isSettingDirty('disconnect_reap_seconds') ? 'is-dirty' : ''">
-                      <td><label for="s-disconnect">断连回收宽限</label><span class="dirty-pill" x-show="isSettingDirty('disconnect_reap_seconds')">已改</span></td>
+                      <td><label for="s-disconnect" x-text="t('set.disconnect_reap')"></label><span class="dirty-pill" x-show="isSettingDirty('disconnect_reap_seconds')" x-text="t('set.modified')"></span></td>
                       <td>
                         <div class="rowflex">
                           <div class="unit-input">
                             <input id="s-disconnect" type="number" min="5" step="1" x-model="form.disconnect_reap_seconds" class="mono">
-                            <span class="unit-tag">秒</span>
+                            <span class="unit-tag" x-text="t('common.sec_unit')"></span>
                           </div>
-                          <span class="hint">下限 ≥ 5</span>
+                          <span class="hint" x-text="t('set.min_5')"></span>
                         </div>
-                        <div class="field-help">客户端断连后保留会话与标签页的宽限，容忍 daemon 短暂重启。</div>
+                        <div class="field-help" x-text="t('set.disconnect_reap_help')"></div>
                       </td>
                     </tr>
                     <tr :class="isSettingDirty('alloc_reap_seconds') ? 'is-dirty' : ''">
-                      <td><label for="s-alloc">未连接回收</label><span class="dirty-pill" x-show="isSettingDirty('alloc_reap_seconds')">已改</span></td>
+                      <td><label for="s-alloc" x-text="t('set.alloc_reap')"></label><span class="dirty-pill" x-show="isSettingDirty('alloc_reap_seconds')" x-text="t('set.modified')"></span></td>
                       <td>
                         <div class="rowflex">
                           <div class="unit-input">
                             <input id="s-alloc" type="number" min="5" step="1" x-model="form.alloc_reap_seconds" class="mono">
-                            <span class="unit-tag">秒</span>
+                            <span class="unit-tag" x-text="t('common.sec_unit')"></span>
                           </div>
-                          <span class="hint">下限 ≥ 5</span>
+                          <span class="hint" x-text="t('set.min_5')"></span>
                         </div>
-                        <div class="field-help">分配会话后一直未建立 WS 连接的超时回收时间。</div>
+                        <div class="field-help" x-text="t('set.alloc_reap_help')"></div>
                       </td>
                     </tr>
                     <tr :class="isSettingDirty('keeper_idle_shutdown_seconds') ? 'is-dirty' : ''">
-                      <td><label for="s-idle">基座空闲关闭</label><span class="dirty-pill" x-show="isSettingDirty('keeper_idle_shutdown_seconds')">已改</span></td>
+                      <td><label for="s-idle" x-text="t('set.keeper_idle')"></label><span class="dirty-pill" x-show="isSettingDirty('keeper_idle_shutdown_seconds')" x-text="t('set.modified')"></span></td>
                       <td>
                         <div class="rowflex">
                           <div class="unit-input">
                             <input id="s-idle" type="number" min="0" step="1" x-model="form.keeper_idle_shutdown_seconds" class="mono">
-                            <span class="unit-tag">秒</span>
+                            <span class="unit-tag" x-text="t('common.sec_unit')"></span>
                           </div>
-                          <span class="hint">0 = 禁用</span>
+                          <span class="hint" x-text="t('set.zero_disable')"></span>
                         </div>
-                        <div class="field-help">连续无会话与人工页面达到阈值后退出基座 Chrome，登录态保留。</div>
+                        <div class="field-help" x-text="t('set.keeper_idle_help')"></div>
                       </td>
                     </tr>
                     <tr :class="isSettingDirty('control_port') ? 'is-dirty' : ''">
-                      <td><label for="s-cport">控制面端口</label><span class="dirty-pill" x-show="isSettingDirty('control_port')">已改</span></td>
+                      <td><label for="s-cport" x-text="t('set.control_port')"></label><span class="dirty-pill" x-show="isSettingDirty('control_port')" x-text="t('set.modified')"></span></td>
                       <td>
                         <div class="unit-input">
                           <span class="unit-tag" style="border-left:0;border-right:1px solid var(--border)">HTTP</span>
                           <input id="s-cport" type="number" min="1" max="65535" step="1" x-model="form.control_port" class="mono">
                         </div>
-                        <div class="field-help">REST API 与 Admin 网页端口；保存后自动无缝重绑。</div>
+                        <div class="field-help" x-text="t('set.control_port_help')"></div>
                       </td>
                     </tr>
                     <tr :class="isSettingDirty('ws_port') ? 'is-dirty' : ''">
-                      <td><label for="s-wport">代理 WS 端口</label><span class="dirty-pill" x-show="isSettingDirty('ws_port')">已改</span></td>
+                      <td><label for="s-wport" x-text="t('set.ws_port')"></label><span class="dirty-pill" x-show="isSettingDirty('ws_port')" x-text="t('set.modified')"></span></td>
                       <td>
                         <div class="unit-input">
                           <span class="unit-tag" style="border-left:0;border-right:1px solid var(--border)">WS</span>
                           <input id="s-wport" type="number" min="1" max="65535" step="1" x-model="form.ws_port" class="mono">
                         </div>
-                        <div class="field-help"><code>/cdp/&lt;token&gt;</code>、<code>/ext</code> 与接入点共用监听端口。</div>
+                        <div class="field-help" x-html="t('set.ws_port_help')"></div>
                       </td>
                     </tr>
                     <tr :class="isSettingDirty('ports_enabled') ? 'is-dirty' : ''">
-                      <td><label for="s-ports">外部端口总开关</label><span class="dirty-pill" x-show="isSettingDirty('ports_enabled')">已改</span></td>
+                      <td><label for="s-ports" x-text="t('set.ports_enabled')"></label><span class="dirty-pill" x-show="isSettingDirty('ports_enabled')" x-text="t('set.modified')"></span></td>
                       <td>
                         <div class="rowflex">
                           <label class="switch"><input id="s-ports" type="checkbox" x-model="form.ports_enabled"><span class="track"></span></label>
-                          <span class="bdg" :class="form.ports_enabled ? 'ok' : 'warn'" x-text="form.ports_enabled ? '端口监听已开启' : '仅 App 内嵌通道'"></span>
+                          <span class="bdg" :class="form.ports_enabled ? 'ok' : 'warn'" x-text="form.ports_enabled ? t('set.ports_on') : t('set.ports_off')"></span>
                         </div>
-                        <div class="field-help">关闭后停止本机 TCP 端口监听，仅桌面 App 进程内可访问。</div>
+                        <div class="field-help" x-text="t('set.ports_help')"></div>
                       </td>
                     </tr>
                     <tr :class="isSettingDirty('admin_web_enabled') ? 'is-dirty' : ''">
-                      <td><label for="s-adminweb">Admin 网页</label><span class="dirty-pill" x-show="isSettingDirty('admin_web_enabled')">已改</span></td>
+                      <td><label for="s-adminweb" x-text="t('set.admin_web')"></label><span class="dirty-pill" x-show="isSettingDirty('admin_web_enabled')" x-text="t('set.modified')"></span></td>
                       <td>
                         <div class="rowflex">
                           <label class="switch"><input id="s-adminweb" type="checkbox" x-model="form.admin_web_enabled"><span class="track"></span></label>
-                          <span class="bdg" :class="form.admin_web_enabled ? 'ok' : 'idle'" x-text="form.admin_web_enabled ? '网页已开放' : '仅 REST API'"></span>
+                          <span class="bdg" :class="form.admin_web_enabled ? 'ok' : 'idle'" x-text="form.admin_web_enabled ? t('set.admin_web_on') : t('set.admin_web_off')"></span>
                         </div>
-                        <div class="field-help">允许浏览器打开 <code>http://127.0.0.1:&lt;控制端口&gt;/</code> 管理面板。</div>
+                        <div class="field-help" x-html="t('set.admin_web_help')"></div>
                       </td>
                     </tr>
                   </table>
                   <div class="save-bar">
                     <button class="primary sm" @click="saveSettings()" :disabled="saving.settings || !dirty()">
-                      <span x-text="saving.settings ? '保存中…' : '保存设置'"></span>
+                      <span x-text="saving.settings ? t('common.saving') : t('set.save_settings')"></span>
                     </button>
                     <button class="sm" @click="resetSettingsForm()" :disabled="!dirty()">
                       <svg class="ic-sm"><use href="#i-undo"/></svg>
-                      <span>还原</span>
+                      <span x-text="t('common.restore')"></span>
                     </button>
-                    <span class="ok-text" x-show="savedAt" x-text="'已保存 · ' + savedAt"></span>
+                    <span class="ok-text" x-show="savedAt" x-text="t('common.saved_at', { time: savedAt })"></span>
                   </div>
                 </div>
 
                 <div class="card">
-                  <h2>agent-browser 二进制</h2>
-                  <p class="sub">决定 standalone 源基座 Chrome 由哪个可执行文件拉起与管理。</p>
+                  <h2 x-text="t('set.ab_title')"></h2>
+                  <p class="sub" x-text="t('set.ab_sub')"></p>
                   <table class="kv">
                     <tr>
-                      <td>当前解析结果</td>
+                      <td x-text="t('set.ab_current')"></td>
                       <td>
                         <template x-if="abInfo">
                           <div>
                             <div class="rowflex">
-                              <span class="bdg" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? fmtAbVersion(abInfo.version) : '未检测到'"></span>
+                              <span class="bdg" :class="abInfo.found ? 'ok' : 'bad'" x-text="abInfo.found ? fmtAbVersion(abInfo.version) : t('common.not_detected')"></span>
                               <span class="bdg plain" :class="abInfo.source === 'bundled' ? 'ext' : ''" x-text="abSourceText(abInfo.source)"></span>
                             </div>
                             <div class="copyable" style="margin-top:8px" x-show="abInfo.path">
@@ -1251,24 +1249,24 @@
                       </td>
                     </tr>
                     <tr>
-                      <td>解析模式</td>
+                      <td x-text="t('set.ab_mode')"></td>
                       <td>
                         <div class="seg">
-                          <button :class="abMode === 'auto' ? 'on' : ''" @click="switchAbMode('auto')">内嵌（推荐）</button>
-                          <button :class="abMode === 'external' ? 'on' : ''" @click="switchAbMode('external')">外部可执行文件</button>
+                          <button :class="abMode === 'auto' ? 'on' : ''" @click="switchAbMode('auto')" x-text="t('set.ab_mode_auto')"></button>
+                          <button :class="abMode === 'external' ? 'on' : ''" @click="switchAbMode('external')" x-text="t('set.ab_mode_ext')"></button>
                         </div>
-                        <div class="field-help">内嵌 = 使用 App 自带版本；外部 = 优先探测 PATH 或手工指定路径。</div>
+                        <div class="field-help" x-text="t('set.ab_mode_help')"></div>
                       </td>
                     </tr>
                     <template x-if="abMode === 'external'">
                       <tr>
-                        <td>外部路径</td>
+                        <td x-text="t('set.ab_ext_path')"></td>
                         <td>
                           <template x-if="abLookupPath">
                             <div>
                               <div class="rowflex" style="margin-bottom:6px">
-                                <span class="bdg ok">PATH 已探测</span>
-                                <span class="hint">保存后立即启用</span>
+                                <span class="bdg ok" x-text="t('set.ab_path_found')"></span>
+                                <span class="hint" x-text="t('set.ab_path_ready')"></span>
                               </div>
                               <div class="copyable">
                                 <span class="val mono" :title="abLookupPath" x-text="abLookupPath"></span>
@@ -1277,8 +1275,8 @@
                           </template>
                           <template x-if="!abLookupPath">
                             <div>
-                              <input x-model="abPath" placeholder="PATH 未命中，请填绝对路径" class="mono" style="width:100%">
-                              <div class="field-help">未从系统 PATH 找到 <code>agent-browser</code>，请填写完整绝对路径。</div>
+                              <input x-model="abPath" :placeholder="t('set.ab_path_ph')" class="mono" style="width:100%">
+                              <div class="field-help" x-html="t('set.ab_path_help')"></div>
                             </div>
                           </template>
                         </td>
@@ -1287,28 +1285,28 @@
                   </table>
                   <div class="save-bar">
                     <button class="primary sm" @click="saveAgentBrowser()" :disabled="saving.ab">
-                      <span x-text="saving.ab ? '保存中…' : '保存二进制设置'"></span>
+                      <span x-text="saving.ab ? t('common.saving') : t('set.ab_save')"></span>
                     </button>
                     <button class="sm" @click="checkAbLatest()" :disabled="checkingAbLatest">
-                      <span x-text="checkingAbLatest ? '检查中…' : '检查最新版'"></span>
+                      <span x-text="checkingAbLatest ? t('topbar.checking') : t('set.ab_check_latest')"></span>
                     </button>
                     <button class="primary sm" x-show="abLatest?.update_available" @click="upgradeAgentBrowser()" :disabled="upgradingAb">
-                      <span x-text="upgradingAb ? '升级中…' : '升级到 v' + abLatest?.latest_version"></span>
+                      <span x-text="upgradingAb ? t('set.upgrading') : t('set.ab_upgrade_to', { ver: abLatest?.latest_version })"></span>
                     </button>
-                    <button class="sm" x-show="versions?.agent_browser?.source === 'setting'" @click="useBundledAgentBrowser()">恢复内置版本</button>
-                    <span class="ok-text" x-show="abSavedAt" x-text="abSavedAt"></span>
+                    <button class="sm" x-show="versions?.agent_browser?.source === 'setting'" @click="useBundledAgentBrowser()" x-text="t('set.ab_restore_bundled')"></button>
+                    <span class="ok-text" x-show="abSavedAt" x-text="t('common.saved_prefix', { time: abSavedAt })"></span>
                     <span class="err-text" x-show="abError || abUpgradeErr" x-text="abError || abUpgradeErr"></span>
                   </div>
                 </div>
 
                 <div class="card">
-                  <h2>数据目录</h2>
-                  <p class="sub">运行设置、会话交互流水与服务日志存放位置；更改目录指针重启后生效，不会迁移旧文件。</p>
+                  <h2 x-text="t('set.datadir_title')"></h2>
+                  <p class="sub" x-text="t('set.datadir_sub')"></p>
                   <template x-if="layout">
                     <div>
                       <div class="copyable">
                         <span class="val mono" :title="layout.data_dir" x-text="layout.data_dir"></span>
-                        <button class="icon-btn" @click="copyText(layout.data_dir, '数据目录路径已复制', 'datadir')" title="复制路径">
+                        <button class="icon-btn" @click="copyText(layout.data_dir, t('toast.datadir_copied'), 'datadir')" :title="t('common.copy_path')">
                           <svg class="ic-sm" x-show="copiedKey !== 'datadir'"><use href="#i-copy"/></svg>
                           <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'datadir'"><use href="#i-check"/></svg>
                         </button>
@@ -1318,21 +1316,21 @@
                           <div class="row">
                             <span class="p mono" x-text="e.title"></span>
                             <span :class="e.exists ? 'exists' : 'missing'" x-text="e.exists ? '●' : '○'"></span>
-                            <span class="hint" style="flex:1" x-text="e.desc"></span>
+                            <span class="hint" style="flex:1" x-text="layoutDesc(e)"></span>
                           </div>
                         </template>
                       </div>
                       <table class="kv">
                         <tr>
-                          <td>新目录路径</td>
+                          <td x-text="t('set.datadir_new')"></td>
                           <td><input x-model="newDataDir" :placeholder="isWindows ? 'D:\\cdproxy' : '/Volumes/Data/cdproxy'" class="mono" style="width:100%"></td>
                         </tr>
                       </table>
                       <div class="save-bar">
                         <button class="sm warn" @click="applyDataDir()" :disabled="saving.datadir || !newDataDir.trim()">
-                          <span x-text="saving.datadir ? '写入中…' : '应用新目录'"></span>
+                          <span x-text="saving.datadir ? t('set.datadir_writing') : t('set.datadir_apply')"></span>
                         </button>
-                        <span class="ok-text" x-show="ddSavedAt" x-text="ddSavedAt"></span>
+                        <span class="ok-text" x-show="ddSaved" x-text="t('set.datadir_saved')"></span>
                         <span class="err-text" x-show="ddError" x-text="ddError"></span>
                       </div>
                     </div>
@@ -1341,29 +1339,29 @@
 
                 <div class="card danger-zone">
                   <div class="card-head">
-                    <h2 style="color:var(--bad-fg)">服务停止控制</h2>
+                    <h2 style="color:var(--bad-fg)" x-text="t('set.danger_title')"></h2>
                     <button class="danger sm" @click="shutdown()" :disabled="actionKey === 'shutdown'">
                       <svg class="ic-sm"><use href="#i-power"/></svg>
-                      <span x-text="actionKey === 'shutdown' ? '停止中…' : '停止代理引擎'"></span>
+                      <span x-text="actionKey === 'shutdown' ? t('set.stopping') : t('set.stop_engine')"></span>
                     </button>
                   </div>
-                  <p class="sub" style="margin:0">停止代理转发与控制面端口；正在运行的独立基座 Chrome 不受影响。</p>
+                  <p class="sub" style="margin:0" x-text="t('set.danger_sub')"></p>
                 </div>
               </div>
 
               <div><!-- 右栏：语法高亮 JSON 编辑与只读配置 -->
                 <div class="card">
                   <div class="card-head">
-                    <h2><code>settings.json</code> 全文编辑</h2>
+                    <h2 x-html="t('set.json_title')"></h2>
                     <button class="sm" @click="reloadJsonDraft()">
                       <svg class="ic-sm"><use href="#i-refresh"/></svg>
-                      <span>重新加载</span>
+                      <span x-text="t('set.reload')"></span>
                     </button>
                     <button class="primary sm" @click="saveJson()" :disabled="saving.json">
-                      <span x-text="saving.json ? '保存中…' : '保存 JSON'"></span>
+                      <span x-text="saving.json ? t('common.saving') : t('set.save_json')"></span>
                     </button>
                   </div>
-                  <p class="sub">与左侧表单、规则页及路由配置双向同步；保存时后端校验并立即生效。</p>
+                  <p class="sub" x-text="t('set.json_sub')"></p>
                   <div class="code-editor-box tall" :class="jsonError ? 'is-invalid' : ''">
                     <div class="code-editor-stage">
                       <pre class="code-highlight mono" aria-hidden="true" x-html="highlightJson(jsonDraft)"></pre>
@@ -1371,20 +1369,20 @@
                     </div>
                   </div>
                   <div class="save-bar" x-show="jsonSavedAt || jsonError">
-                    <span class="ok-text" x-show="jsonSavedAt" x-text="'已保存 · ' + jsonSavedAt"></span>
+                    <span class="ok-text" x-show="jsonSavedAt" x-text="t('common.saved_at', { time: jsonSavedAt })"></span>
                     <span class="err-text" x-show="jsonError" x-text="jsonError"></span>
                   </div>
                 </div>
 
                 <div class="card">
-                  <h2>关联配置文件（只读）</h2>
+                  <h2 x-text="t('set.cfg_readonly')"></h2>
                   <div class="seg" style="margin:10px 0">
                     <template x-for="f in configFiles" :key="f.key">
-                      <button :class="configView === f.key ? 'on' : ''" @click="loadConfigFile(f.key)" x-text="f.title"></button>
+                      <button :class="configView === f.key ? 'on' : ''" @click="loadConfigFile(f.key)" x-text="configFileTitle(f)"></button>
                     </template>
                   </div>
                   <pre class="config-view code-highlight mono" x-show="configContent !== null" x-html="configContentHtml()"></pre>
-                  <p class="hint" x-show="configContent === null">选择上方文件名以高亮查看配置内容</p>
+                  <p class="hint" x-show="configContent === null" x-text="t('set.cfg_pick_hint')"></p>
                 </div>
               </div>
             </div>
@@ -1394,36 +1392,36 @@
           <section x-show="tab === 'logs'" x-cloak>
             <div class="toolbar">
               <div class="seg">
-                <button :class="slogLevel === 'all' ? 'on' : ''" @click="slogLevel = 'all'">全部级别</button>
+                <button :class="slogLevel === 'all' ? 'on' : ''" @click="slogLevel = 'all'" x-text="t('logs.all_levels')"></button>
                 <button :class="slogLevel === 'INFO' ? 'on' : ''" @click="slogLevel = 'INFO'">INFO</button>
                 <button :class="slogLevel === 'WARN' ? 'on' : ''" @click="slogLevel = 'WARN'">WARN</button>
                 <button :class="slogLevel === 'ERROR' ? 'on' : ''" @click="slogLevel = 'ERROR'">ERROR</button>
               </div>
               <div class="seg">
-                <button :class="slogSrc === 'all' ? 'on' : ''" @click="slogSrc = 'all'">全部源</button>
+                <button :class="slogSrc === 'all' ? 'on' : ''" @click="slogSrc = 'all'" x-text="t('logs.all_sources')"></button>
                 <button :class="slogSrc === 'extension' ? 'on' : ''" @click="slogSrc = 'extension'">extension</button>
                 <button :class="slogSrc === 'standalone' ? 'on' : ''" @click="slogSrc = 'standalone'">standalone</button>
               </div>
               <div class="search-box">
                 <svg class="ic-sm ic-search"><use href="#i-search"/></svg>
-                <input x-model="slogQuery" placeholder="搜索消息或属性…" style="width:210px" class="mono">
-                <button class="search-clear" x-show="slogQuery" @click="slogQuery = ''" title="清空"><svg class="ic-sm"><use href="#i-close"/></svg></button>
+                <input x-model="slogQuery" :placeholder="t('logs.search_ph')" style="width:210px" class="mono">
+                <button class="search-clear" x-show="slogQuery" @click="slogQuery = ''" :title="t('common.clear')"><svg class="ic-sm"><use href="#i-close"/></svg></button>
               </div>
               <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--tx2);cursor:pointer">
-                <input type="checkbox" x-model="slogAutoFollow" @change="toggleAutoFollow()"> 实时跟随
+                <input type="checkbox" x-model="slogAutoFollow" @change="toggleAutoFollow()"> <span x-text="t('logs.auto_follow')"></span>
               </label>
               <button class="sm" @click="loadLogs()" :disabled="loadingSlogs">
                 <svg class="ic-sm" :class="loadingSlogs ? 'spin' : ''"><use href="#i-refresh"/></svg>
-                <span>刷新</span>
+                <span x-text="t('common.refresh')"></span>
               </button>
-              <button class="sm" @click="clearSlogView()">清空</button>
+              <button class="sm" @click="clearSlogView()" x-text="t('common.clear')"></button>
               <span class="grow"></span>
-              <span class="hint mono">共 <span x-text="slogTotal"></span> 条</span>
+              <span class="hint mono" x-text="t('logs.total_count', { n: slogTotal })"></span>
             </div>
 
             <div class="log-scroll" id="slogScroll">
               <table class="slogt" x-show="filteredSlog().length">
-                <thead><tr><th>时间</th><th>级别</th><th>事件消息</th><th>结构化属性</th></tr></thead>
+                <thead><tr><th x-text="t('logs.th_time')"></th><th x-text="t('logs.th_level')"></th><th x-text="t('logs.th_msg')"></th><th x-text="t('logs.th_attrs')"></th></tr></thead>
                 <template x-for="(e, i) in filteredSlog()" :key="i">
                   <tbody>
                     <tr>
@@ -1436,12 +1434,12 @@
                 </template>
               </table>
               <div class="log-empty" x-show="!filteredSlog().length">
-                <span x-text="slogCleared ? '已清空当前日志视图' : (loadingSlogs ? '正在加载运行日志…' : '（无匹配日志）')"></span>
+                <span x-text="slogCleared ? t('logs.empty_cleared') : (loadingSlogs ? t('logs.empty_loading') : t('logs.empty_none'))"></span>
                 <div x-show="slogCleared" style="margin-top:8px">
-                  <button class="sm" @click="loadLogs()">重新加载最新日志</button>
+                  <button class="sm" @click="loadLogs()" x-text="t('logs.reload_latest')"></button>
                 </div>
               </div>
-              <div id="slogSentinel" class="log-empty" x-show="slogHasMore" x-text="slogLoadingOlder ? '加载更早日志中…' : '向下滚动加载更早记录'"></div>
+              <div id="slogSentinel" class="log-empty" x-show="slogHasMore" x-text="slogLoadingOlder ? t('logs.loading_older') : t('logs.scroll_older')"></div>
             </div>
           </section>
 
@@ -1450,17 +1448,15 @@
             <div class="page-bar">
               <div class="page-lead">
                 <div class="page-lead-title">
-                  <span>组件版本、自检与在线升级</span>
-                  <span class="bdg warn" x-show="hasAnyUpgrade()">存在可更新项</span>
+                  <span x-text="t('about.title')"></span>
+                  <span class="bdg warn" x-show="hasAnyUpgrade()" x-text="t('about.has_updates')"></span>
                 </div>
-                <div class="page-lead-sub">
-                  统一查看并升级 <code>cdproxy</code> 主程序、<code>agent-browser</code> 执行器及 <code>cdp-ext</code> 浏览器扩展
-                </div>
+                <div class="page-lead-sub" x-html="t('about.sub')"></div>
               </div>
               <div class="page-actions">
                 <button class="sm" @click="checkAllUpdates()" :disabled="loadingVersions || checkingAbLatest || updateBusy">
                   <svg class="ic-sm" :class="(loadingVersions || checkingAbLatest || updateBusy) ? 'spin' : ''"><use href="#i-refresh"/></svg>
-                  <span>检查全部更新</span>
+                  <span x-text="t('about.check_all')"></span>
                 </button>
               </div>
             </div>
@@ -1477,48 +1473,48 @@
                     <span class="bdg ok mono" x-text="'v' + (versions?.cdproxy?.version || status?.version || 'dev')"></span>
                     <span class="bdg plain mono" x-show="versions?.cdproxy" x-text="versions?.cdproxy ? `${versions.cdproxy.os} / ${versions.cdproxy.arch}` : ''"></span>
                   </div>
-                  <div class="about-hero-sub" x-text="isDesktop ? '桌面端（内置 Go 引擎 + 控制面 + 管理界面）· Chrome CDP 多会话隔离代理' : '独立服务模式（CLI / 守护进程）· Chrome CDP 多会话隔离代理'"></div>
+                  <div class="about-hero-sub" x-text="isDesktop ? t('about.hero_desktop') : t('about.hero_cli')"></div>
                 </div>
               </div>
               <table class="kv">
                 <tr>
-                  <td>当前版本</td>
+                  <td x-text="t('about.current_ver')"></td>
                   <td>
                     <div class="rowflex">
                       <span class="mono" style="font-weight:600" x-text="'v' + (versions?.cdproxy?.version || status?.version || 'dev')"></span>
-                      <span class="hint" x-show="isDesktop">桌面端（内置 Go 引擎 + 控制面 + 管理界面）</span>
-                      <span class="hint" x-show="!isDesktop">独立服务模式（CLI / 守护进程）</span>
+                      <span class="hint" x-show="isDesktop" x-text="t('about.mode_desktop')"></span>
+                      <span class="hint" x-show="!isDesktop" x-text="t('about.mode_cli')"></span>
                     </div>
                   </td>
                 </tr>
                 <tr>
-                  <td>签名升级通道</td>
+                  <td x-text="t('about.update_channel')"></td>
                   <td>
                     <template x-if="isDesktop && updaterInfo">
                       <div>
                         <div class="rowflex">
                           <span class="bdg" :class="updaterInfo.configured ? 'ok' : 'idle'"
-                                x-text="updaterInfo.configured ? 'GitHub Releases 在线验签更新已就绪' : '开发构建（未注入发布公钥）'"></span>
+                                x-text="updaterInfo.configured ? t('about.channel_ready') : t('about.channel_dev')"></span>
                         </div>
-                        <div class="field-help" x-show="!updaterInfo.configured && updaterInfo.reason" x-text="'通道状态：' + updaterInfo.reason + '；可点击右侧前往 Releases 下载新版安装包。'"></div>
-                        <div class="field-help" x-show="updateMsg" x-text="'最近状态：' + updateMsg"></div>
+                        <div class="field-help" x-show="!updaterInfo.configured && updaterInfo.reason" x-text="t('about.channel_reason', { reason: updaterInfo.reason })"></div>
+                        <div class="field-help" x-show="updateMsg" x-text="t('about.recent_status', { msg: updateMsg })"></div>
                       </div>
                     </template>
-                    <div class="hint" x-show="!isDesktop">CLI 形态请通过 GoReleaser 发布包或重新编译覆盖升级。</div>
+                    <div class="hint" x-show="!isDesktop" x-text="t('about.cli_upgrade_hint')"></div>
                   </td>
                 </tr>
                 <tr>
-                  <td>运行数据目录</td>
+                  <td x-text="t('about.data_dir')"></td>
                   <td>
                     <div class="copyable" x-show="versions?.cdproxy?.data_dir">
                       <span class="val mono" x-text="versions?.cdproxy?.data_dir || ''"></span>
-                      <button class="icon-btn" @click="copyText(versions?.cdproxy?.data_dir || '', '数据目录已复制', 'about-dd')" title="复制路径">
+                      <button class="icon-btn" @click="copyText(versions?.cdproxy?.data_dir || '', t('toast.datadir_copied'), 'about-dd')" :title="t('common.copy_path')">
                         <svg class="ic-sm" x-show="copiedKey !== 'about-dd'"><use href="#i-copy"/></svg>
                         <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'about-dd'"><use href="#i-check"/></svg>
                       </button>
                       <button class="sm" x-show="isDesktop" @click="openLocalPath(versions?.cdproxy?.data_dir || '')">
                         <svg class="ic-sm"><use href="#i-folder"/></svg>
-                        <span>打开目录</span>
+                        <span x-text="t('about.open_dir')"></span>
                       </button>
                     </div>
                   </td>
@@ -1527,10 +1523,10 @@
               <div class="save-bar">
                 <button class="primary sm" x-show="isDesktop && updateKind !== 'ready'" @click="checkUpdate()" :disabled="updateBusy">
                   <svg class="ic-sm" :class="updateBusy ? 'spin' : ''"><use href="#i-refresh"/></svg>
-                  <span x-text="updateBusy ? '正在检查…' : '检查主程序更新'"></span>
+                  <span x-text="updateBusy ? t('about.checking_core') : t('about.check_core_update')"></span>
                 </button>
-                <button class="primary sm" x-show="updateKind === 'ready'" @click="installUpdate()">重启并应用更新</button>
-                <button class="sm" @click="openExternalURL(updaterInfo?.release_url || 'https://github.com/yangyaofei/cdproxy/releases')">查看 GitHub Releases</button>
+                <button class="primary sm" x-show="updateKind === 'ready'" @click="installUpdate()" x-text="t('about.restart_apply')"></button>
+                <button class="sm" @click="openExternalURL(updaterInfo?.release_url || 'https://github.com/yangyaofei/cdproxy/releases')" x-text="t('about.view_releases')"></button>
               </div>
             </div>
 
@@ -1542,37 +1538,37 @@
                     <span class="src-ic lg sa"><svg><use href="#i-chrome"/></svg></span>
                     <span class="mono">agent-browser</span>
                     <span class="bdg" :class="versions?.agent_browser?.found ? 'ok' : 'bad'"
-                          x-text="versions?.agent_browser?.clean_version ? 'v' + versions.agent_browser.clean_version : '未检测到'"></span>
+                          x-text="versions?.agent_browser?.clean_version ? 'v' + versions.agent_browser.clean_version : t('common.not_detected')"></span>
                     <span class="bdg plain" :class="versions?.agent_browser?.source === 'bundled' ? 'ext' : ''"
                           x-text="abSourceText(versions?.agent_browser?.source || '')"></span>
                   </h2>
                 </div>
                 <table class="kv">
                   <tr>
-                    <td>生效路径</td>
+                    <td x-text="t('about.effective_path')"></td>
                     <td>
                       <div class="copyable" x-show="versions?.agent_browser?.path">
                         <span class="val mono" :title="versions?.agent_browser?.path || ''" x-text="versions?.agent_browser?.path || '—'"></span>
-                        <button class="icon-btn" @click="copyText(versions?.agent_browser?.path || '', '路径已复制', 'about-ab-path')" title="复制路径">
+                        <button class="icon-btn" @click="copyText(versions?.agent_browser?.path || '', t('toast.path_copied'), 'about-ab-path')" :title="t('common.copy_path')">
                           <svg class="ic-sm" x-show="copiedKey !== 'about-ab-path'"><use href="#i-copy"/></svg>
                           <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'about-ab-path'"><use href="#i-check"/></svg>
                         </button>
                       </div>
                       <div class="field-help" x-show="versions?.agent_browser?.bundled_version"
-                           x-text="`包内基线版本：v${versions?.agent_browser?.bundled_version || '—'}；升级版装入数据目录 bin/，不改动 App 签名`"></div>
+                           x-text="t('about.bundled_baseline', { ver: versions?.agent_browser?.bundled_version || '—' })"></div>
                     </td>
                   </tr>
                   <tr>
-                    <td>上游最新</td>
+                    <td x-text="t('about.upstream_latest')"></td>
                     <td>
                       <template x-if="abLatest">
                         <div class="rowflex">
                           <span class="bdg" :class="abLatest.update_available ? 'warn' : 'ok'"
-                                x-text="abLatest.update_available ? `可升级到 v${abLatest.latest_version}` : `已是最新 v${abLatest.latest_version}`"></span>
+                                x-text="abLatest.update_available ? t('about.ab_can_upgrade', { ver: abLatest.latest_version }) : t('about.ab_up_to_date', { ver: abLatest.latest_version })"></span>
                           <span class="hint mono" x-text="abLatest.asset_name"></span>
                         </div>
                       </template>
-                      <span class="hint" x-show="!abLatest">点击下方按钮从 GitHub 探测 vercel-labs/agent-browser 最新版</span>
+                      <span class="hint" x-show="!abLatest" x-text="t('about.ab_probe_hint')"></span>
                       <div class="err-text" style="margin-top:4px" x-show="abUpgradeErr" x-text="abUpgradeErr"></div>
                     </td>
                   </tr>
@@ -1580,14 +1576,14 @@
                 <div class="save-bar">
                   <button class="sm" @click="checkAbLatest()" :disabled="checkingAbLatest || upgradingAb">
                     <svg class="ic-sm" :class="checkingAbLatest ? 'spin' : ''"><use href="#i-refresh"/></svg>
-                    <span x-text="checkingAbLatest ? '查询中…' : '检查最新版'"></span>
+                    <span x-text="checkingAbLatest ? t('about.querying') : t('set.ab_check_latest')"></span>
                   </button>
                   <button class="primary sm" x-show="versions?.agent_browser?.upgradable"
                           @click="upgradeAgentBrowser()" :disabled="upgradingAb || checkingAbLatest">
                     <svg class="ic-sm"><use href="#i-download"/></svg>
-                    <span x-text="upgradingAb ? '下载校验中…' : (abLatest?.update_available ? `升级到 v${abLatest.latest_version}` : '在线升级 / 重装最新版')"></span>
+                    <span x-text="upgradingAb ? t('about.downloading_verifying') : (abLatest?.update_available ? t('set.ab_upgrade_to', { ver: abLatest.latest_version }) : t('about.ab_online_upgrade'))"></span>
                   </button>
-                  <button class="sm" x-show="versions?.agent_browser?.source === 'setting'" @click="useBundledAgentBrowser()">恢复内置版</button>
+                  <button class="sm" x-show="versions?.agent_browser?.source === 'setting'" @click="useBundledAgentBrowser()" x-text="t('about.ab_restore_short')"></button>
                 </div>
               </div>
 
@@ -1597,53 +1593,53 @@
                   <h2>
                     <span class="src-ic lg ext"><svg><use href="#i-puzzle"/></svg></span>
                     <span class="mono">cdp-ext</span>
-                    <span class="bdg plain mono" x-text="'随包 v' + (versions?.extension?.bundled_version || '—')"></span>
+                    <span class="bdg plain mono" x-text="t('about.ext_bundled', { ver: versions?.extension?.bundled_version || '—' })"></span>
                     <span class="bdg" x-show="versions?.extension?.connected"
                           :class="versions?.extension?.needs_reload ? 'warn' : 'ok'"
-                          x-text="versions?.extension?.connected_version ? '已回连 v' + versions.extension.connected_version : '已回连 · 旧版'"></span>
-                    <span class="bdg idle" x-show="!versions?.extension?.connected">未连接</span>
+                          x-text="versions?.extension?.connected_version ? t('about.ext_connected_ver', { ver: versions.extension.connected_version }) : t('about.ext_connected_old')"></span>
+                    <span class="bdg idle" x-show="!versions?.extension?.connected" x-text="t('set.not_connected')"></span>
                   </h2>
                 </div>
                 <table class="kv">
                   <tr>
-                    <td>版本同步状态</td>
+                    <td x-text="t('about.ext_sync_status')"></td>
                     <td>
                       <div class="rowflex">
-                        <span class="bdg warn" x-show="versions?.extension?.needs_export">本地导出目录版本较旧</span>
-                        <span class="bdg warn" x-show="versions?.extension?.needs_reload">Chrome 中运行旧版扩展，建议导出后点「重载扩展」</span>
-                        <span class="bdg ok" x-show="versions?.extension?.connected && !versions?.extension?.needs_reload">Chrome 已运行与主程序配套的最新扩展</span>
-                        <span class="hint" x-show="!versions?.extension?.connected">首次安装请导出本地目录后，在 Chrome 扩展页启用开发者模式加载。</span>
+                        <span class="bdg warn" x-show="versions?.extension?.needs_export" x-text="t('about.ext_needs_export')"></span>
+                        <span class="bdg warn" x-show="versions?.extension?.needs_reload" x-text="t('about.ext_needs_reload')"></span>
+                        <span class="bdg ok" x-show="versions?.extension?.connected && !versions?.extension?.needs_reload" x-text="t('about.ext_synced_ok')"></span>
+                        <span class="hint" x-show="!versions?.extension?.connected" x-text="t('about.ext_first_install')"></span>
                       </div>
                     </td>
                   </tr>
                   <tr>
-                    <td>本地扩展目录</td>
+                    <td x-text="t('about.ext_local_dir')"></td>
                     <td>
                       <div class="copyable" x-show="versions?.extension?.export_dir">
                         <span class="val mono" :title="versions?.extension?.export_dir || ''" x-text="versions?.extension?.export_dir || ''"></span>
-                        <button class="icon-btn" @click="copyText(versions?.extension?.export_dir || '', '扩展目录路径已复制', 'about-ext-dir')" title="复制路径">
+                        <button class="icon-btn" @click="copyText(versions?.extension?.export_dir || '', t('toast.ext_dir_copied'), 'about-ext-dir')" :title="t('common.copy_path')">
                           <svg class="ic-sm" x-show="copiedKey !== 'about-ext-dir'"><use href="#i-copy"/></svg>
                           <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'about-ext-dir'"><use href="#i-check"/></svg>
                         </button>
                       </div>
-                      <div class="field-help" x-show="versions?.extension?.exported" x-text="`磁盘已导出版本：v${versions?.extension?.exported_version}`"></div>
-                      <div class="ok-text" style="margin-top:4px" x-show="extActionMsg" x-text="extActionMsg"></div>
+                      <div class="field-help" x-show="versions?.extension?.exported" x-text="t('about.ext_disk_ver', { ver: versions?.extension?.exported_version })"></div>
+                      <div class="ok-text" style="margin-top:4px" x-show="extExportedInfo" x-text="extExportedInfo ? t('about.ext_exported_msg', extExportedInfo) : ''"></div>
                     </td>
                   </tr>
                 </table>
                 <div class="save-bar">
                   <button class="primary sm" @click="exportExtension(isDesktop)" :disabled="exportingExt">
                     <svg class="ic-sm"><use href="#i-folder"/></svg>
-                    <span x-text="exportingExt ? '写入中…' : (isDesktop ? '更新扩展目录并打开' : '同步本地扩展目录')"></span>
+                    <span x-text="exportingExt ? t('set.datadir_writing') : (isDesktop ? t('about.ext_export_open') : t('about.ext_export_sync'))"></span>
                   </button>
                   <button class="sm" @click="reloadExtension()" :disabled="!versions?.extension?.connected || reloadingExt"
-                          title="通过现有 WS 通道发送 reload 指令，Chrome 将重新读取本地扩展目录并秒级回连">
+                          :title="t('about.ext_reload_title')">
                     <svg class="ic-sm" :class="reloadingExt ? 'spin' : ''"><use href="#i-refresh"/></svg>
-                    <span x-text="reloadingExt ? '重载中…' : '通知 Chrome 重载'"></span>
+                    <span x-text="reloadingExt ? t('about.ext_reloading') : t('about.ext_reload_btn')"></span>
                   </button>
                   <button class="sm" @click="downloadExtZip()">
                     <svg class="ic-sm"><use href="#i-download"/></svg>
-                    <span>下载 ZIP</span>
+                    <span x-text="t('about.ext_download_zip')"></span>
                   </button>
                 </div>
               </div>
@@ -1656,13 +1652,13 @@
 
     <!-- ══ 全局 Toast 队列 ══ -->
     <div class="toast-stack">
-      <template x-for="t in toasts" :key="t.id">
-        <div class="toast" :class="t.kind">
-          <svg class="ic-sm t-ic" x-show="t.kind === 'ok'"><use href="#i-check"/></svg>
-          <svg class="ic-sm t-ic" x-show="t.kind === 'err'"><use href="#i-alert"/></svg>
-          <svg class="ic-sm t-ic" x-show="t.kind !== 'ok' && t.kind !== 'err'"><use href="#i-sess"/></svg>
-          <span class="t-msg" x-text="t.msg"></span>
-          <button class="icon-btn ghost" @click="dismissToast(t.id)"><svg class="ic-sm"><use href="#i-close"/></svg></button>
+      <template x-for="toastItem in toasts" :key="toastItem.id">
+        <div class="toast" :class="toastItem.kind">
+          <svg class="ic-sm t-ic" x-show="toastItem.kind === 'ok'"><use href="#i-check"/></svg>
+          <svg class="ic-sm t-ic" x-show="toastItem.kind === 'err'"><use href="#i-alert"/></svg>
+          <svg class="ic-sm t-ic" x-show="toastItem.kind !== 'ok' && toastItem.kind !== 'err'"><use href="#i-sess"/></svg>
+          <span class="t-msg" x-text="toastItem.msg"></span>
+          <button class="icon-btn ghost" @click="dismissToast(toastItem.id)"><svg class="ic-sm"><use href="#i-close"/></svg></button>
         </div>
       </template>
     </div>
@@ -1676,8 +1672,8 @@
         </div>
         <p class="modal-body" x-text="confirmDlg?.body"></p>
         <div class="modal-foot">
-          <button @click="resolveConfirm(false)" x-text="confirmDlg?.cancelText || '取消'"></button>
-          <button :class="confirmDlg?.danger ? 'danger-solid' : 'primary'" @click="resolveConfirm(true)" x-text="confirmDlg?.confirmText || '确认'"></button>
+          <button @click="resolveConfirm(false)" x-text="confirmDlg?.cancelText || t('common.cancel')"></button>
+          <button :class="confirmDlg?.danger ? 'danger-solid' : 'primary'" @click="resolveConfirm(true)" x-text="confirmDlg?.confirmText || t('common.confirm')"></button>
         </div>
       </div>
     </div>

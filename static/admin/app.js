@@ -9,20 +9,28 @@
  *     sources（源、接入点与路由）/ settings（端口与回收时限）/ logs（运行日志）/ about（三组件版本与升级）。
  */
 
-const DEFAULT_REWRITES = [
-  { match: "Target.createTarget", action: "rewrite", set: { background: true }, remove: [], group: "focus", note: "tab 创建不抢焦点（+background:true）" },
-  { match: "Target.activateTarget", action: "fake", set: {}, remove: [], group: "focus", note: "激活拦截（假成功）" },
-  { match: "Page.bringToFront", action: "fake", set: {}, remove: [], group: "focus", note: "置前拦截（假成功）" },
-  { match: "Browser.setWindowBounds", action: "rewrite", set: {}, remove: ["bounds.focused"], group: "focus", note: "剥离窗口 focused 字段" },
-  { match: "Emulation.setFocusEmulationEnabled", action: "rewrite", set: {}, remove: [], group: "focus", note: "焦点仿真透传（页内 hasFocus 失真来源）" },
-  { match: "Browser.close", action: "fake", set: {}, remove: [], group: "base", note: "基座保护（全体会话共用基础设施）" },
-];
+/* ── 国际化辅助（字典见 static/admin/i18n.js）── */
+function tr(lang, key, params) {
+  return window.CDPROXY_I18N ? window.CDPROXY_I18N.t(lang, key, params) : key;
+}
+
+function defaultRewrites(lang) {
+  const L = lang || "zh";
+  return [
+    { match: "Target.createTarget", action: "rewrite", set: { background: true }, remove: [], group: "focus", note: tr(L, "rules.note_create_target") },
+    { match: "Target.activateTarget", action: "fake", set: {}, remove: [], group: "focus", note: tr(L, "rules.note_activate_target") },
+    { match: "Page.bringToFront", action: "fake", set: {}, remove: [], group: "focus", note: tr(L, "rules.note_bring_to_front") },
+    { match: "Browser.setWindowBounds", action: "rewrite", set: {}, remove: ["bounds.focused"], group: "focus", note: tr(L, "rules.note_window_bounds") },
+    { match: "Emulation.setFocusEmulationEnabled", action: "rewrite", set: {}, remove: [], group: "focus", note: tr(L, "rules.note_focus_emulation") },
+    { match: "Browser.close", action: "fake", set: {}, remove: [], group: "base", note: tr(L, "rules.note_browser_close") },
+  ];
+}
 
 /* ── JSON 树查看器（无依赖，<details> 原生折叠）── */
 function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
-function jsonTree(value, key, depth) {
+function jsonTree(value, key, depth, lang) {
   const k = key !== null ? `<span class="k">"${esc(key)}"</span>: ` : "";
   if (value === null) return `${k}<span class="u">null</span>`;
   if (typeof value === "string") return `${k}<span class="s">"${esc(value)}"</span>`;
@@ -31,14 +39,14 @@ function jsonTree(value, key, depth) {
   const isOpen = depth < 1 ? " open" : "";
   if (Array.isArray(value)) {
     if (!value.length) return `${k}<span class="br">[]</span>`;
-    const items = value.map((v) => `<div>${jsonTree(v, null, depth + 1)}</div>`).join("");
-    return `${k}<details${isOpen}><summary><span class="br">[</span> ${value.length} 项 <span class="br">]</span></summary>${items}</details>`;
+    const items = value.map((v) => `<div>${jsonTree(v, null, depth + 1, lang)}</div>`).join("");
+    return `${k}<details${isOpen}><summary><span class="br">[</span> ${esc(tr(lang, "common.items_count", { n: value.length }))} <span class="br">]</span></summary>${items}</details>`;
   }
   if (typeof value === "object") {
     const keys = Object.keys(value);
     if (!keys.length) return `${k}<span class="br">{}</span>`;
-    const items = keys.map((kk) => `<div>${jsonTree(value[kk], kk, depth + 1)}</div>`).join("");
-    return `${k}<details${isOpen}><summary><span class="br">{</span> ${keys.length} 键 <span class="br">}</span></summary>${items}</details>`;
+    const items = keys.map((kk) => `<div>${jsonTree(value[kk], kk, depth + 1, lang)}</div>`).join("");
+    return `${k}<details${isOpen}><summary><span class="br">{</span> ${esc(tr(lang, "common.keys_count", { n: keys.length }))} <span class="br">}</span></summary>${items}</details>`;
   }
   return `${k}<span class="u">${esc(value)}</span>`;
 }
@@ -141,12 +149,27 @@ function stableRulesKey(list) {
   }
 }
 
+function stablePresetKey(list) {
+  try {
+    return JSON.stringify((list || []).map(r => ({
+      match: r.match || "",
+      action: r.action || "rewrite",
+      set: r.set || {},
+      remove: r.remove || [],
+      group: r.group || "",
+    })));
+  } catch (e) {
+    return "";
+  }
+}
+
 function admin() {
   return {
     healthy: null, // null=连接中 / true=在线 / false=离线
     status: null,
     tab: "overview",
     theme: "dark",
+    lang: window.CDPROXY_I18N ? window.CDPROXY_I18N.detect() : "zh",
     viewSessions: [],
     sideCollapsed: localStorage.getItem("sideCol") === "1",
     isDesktop: document.documentElement.classList.contains("is-desktop"),
@@ -238,6 +261,7 @@ function admin() {
     // 应用更新与三组件版本状态
     updateMsg: "",
     updateKind: "",
+    _updateEvent: null,
     updateBusy: false,
     canUpdate: false,
     updaterInfo: null,
@@ -249,7 +273,7 @@ function admin() {
     abUpgradeErr: "",
     exportingExt: false,
     reloadingExt: false,
-    extActionMsg: "",
+    extExportedInfo: null,
 
     // agent-browser 二进制选择
     abMode: "auto",
@@ -263,13 +287,45 @@ function admin() {
     // 数据目录
     layout: null,
     newDataDir: "",
-    ddSavedAt: "",
+    ddSaved: false,
     ddError: "",
+
+    t(key, params) {
+      return tr(this.lang, key, params);
+    },
+    layoutDesc(entry) {
+      return window.CDPROXY_I18N ? window.CDPROXY_I18N.translateLayoutDesc(this.lang, entry) : (entry?.desc || "");
+    },
+    configFileTitle(file) {
+      return window.CDPROXY_I18N ? window.CDPROXY_I18N.translateConfigTitle(this.lang, file) : (file?.title || "");
+    },
+    displayRuleNote(note) {
+      return window.CDPROXY_I18N ? window.CDPROXY_I18N.translateRuleNote(this.lang, note) : (note || "");
+    },
+    applyLang(next, opts = {}) {
+      const persist = opts.persist !== false;
+      const norm = window.CDPROXY_I18N
+        ? (persist ? window.CDPROXY_I18N.save(next) : window.CDPROXY_I18N.normalize(next))
+        : (next === "en" ? "en" : "zh");
+      this.lang = norm;
+      if (document.documentElement) {
+        document.documentElement.lang = norm === "zh" ? "zh-CN" : "en";
+      }
+      if (window.__cdpWails && window.__cdpWails.setLanguage) {
+        try { window.__cdpWails.setLanguage(norm); } catch (e) {}
+      }
+      this.refreshGridLocale();
+      this.refreshUpdaterMsg();
+    },
+    toggleLang() {
+      this.applyLang(this.lang === "zh" ? "en" : "zh", { persist: true });
+    },
 
     async init() {
       if (window.innerWidth <= 960) this.sideCollapsed = true;
       const saved = localStorage.getItem("abp_theme") || "dark";
       this.applyTheme(saved);
+      this.applyLang(this.lang, { persist: false });
 
       this.$watch("viewSessions", () => this.$nextTick(() => this.gridSync()));
       this.$watch("sessionQuery", () => this.$nextTick(() => this.gridSync()));
@@ -303,10 +359,16 @@ function admin() {
     dismissToast(id) {
       this.toasts = this.toasts.filter(t => t.id !== id);
     },
-    askConfirm({ title, body, confirmText = "确认", cancelText = "取消", danger = false }) {
+    askConfirm({ title, body, confirmText, cancelText, danger = false }) {
       return new Promise((resolve) => {
         this._confirmResolver = resolve;
-        this.confirmDlg = { title, body, confirmText, cancelText, danger };
+        this.confirmDlg = {
+          title,
+          body,
+          confirmText: confirmText || this.t("common.confirm"),
+          cancelText: cancelText || this.t("common.cancel"),
+          danger,
+        };
       });
     },
     resolveConfirm(ok) {
@@ -397,13 +459,16 @@ function admin() {
       localStorage.setItem("sideCol", this.sideCollapsed ? "1" : "0");
     },
     pageTitle() {
-      return {
-        sessions: "会话概览",
-        rules: "改写规则",
-        sources: "源 & 接入点",
-        settings: "全局设置",
-        logs: "运行日志",
-      }[this.tab] || "";
+      const map = {
+        overview: "nav.overview",
+        sessions: "nav.sessions",
+        rules: "nav.rules",
+        sources: "nav.sources",
+        settings: "nav.settings",
+        logs: "nav.logs",
+        about: "nav.about",
+      };
+      return map[this.tab] ? this.t(map[this.tab]) : "";
     },
     go(tab) {
       this.tab = tab;
@@ -450,9 +515,9 @@ function admin() {
         const updated = await this.api("PUT", "/settings", { routing: { default_source: src, rules } });
         this.syncAllFromSettings(updated);
         await this.refresh();
-        this.toast(`默认路由源已设为 ${src}`, "ok");
+        this.toast(this.t("toast.default_src_set", { src }), "ok");
       } catch (err) {
-        this.toast("切换默认源失败：" + err.message, "err", 4000);
+        this.toast(this.t("toast.default_src_fail", { err: err.message }), "err", 4000);
       } finally {
         this.saving = { ...this.saving, routing: false };
       }
@@ -560,9 +625,9 @@ function admin() {
       try {
         await window.__cdpWails.startEngine();
         await this.refresh();
-        this.toast("引擎已启动", "ok");
+        this.toast(this.t("toast.engine_started"), "ok");
       } catch (err) {
-        this.toast("启动引擎失败：" + (err.message || err), "err", 4000);
+        this.toast(this.t("toast.engine_start_fail", { err: err.message || err }), "err", 4000);
       } finally {
         this.actionKey = "";
       }
@@ -571,9 +636,9 @@ function admin() {
     /* ── 边栏状态 ── */
     keeperIdleText() {
       if (!this.status) return "";
-      if (!this.status.keeper.alive) return "未运行";
+      if (!this.status.keeper.alive) return this.t("keeper.not_running");
       const s = this.status.settings.keeper_idle_shutdown_seconds;
-      return s === 0 ? "不关闭" : `≤ ${s}s`;
+      return s === 0 ? this.t("keeper.no_shutdown") : `≤ ${s}s`;
     },
     keeperIdlePct() {
       if (!this.status || !this.status.keeper.alive) return 0;
@@ -623,6 +688,24 @@ function admin() {
       apply();
     },
 
+    refreshUpdaterMsg() {
+      const ev = this._updateEvent;
+      if (!ev || !this.updateMsg) return;
+      const { kind, data } = ev;
+      if (kind === "update-available" && data) {
+        this.updateMsg = this.t("upd.available", { ver: data.version || "?" });
+      } else if (kind === "no-update") {
+        this.updateMsg = this.t("upd.up_to_date");
+      } else if (kind === "download-progress" && data) {
+        const pct = data.total ? Math.round((data.written / data.total) * 100) : 0;
+        this.updateMsg = this.t("upd.downloading", { pct });
+      } else if (kind === "update-ready") {
+        this.updateMsg = this.t("upd.ready");
+      } else if (kind === "error" && data) {
+        this.updateMsg = this.t("upd.error", { err: data.message || data.stage || this.t("upd.unknown") });
+      }
+    },
+
     bindUpdaterEvents() {
       document.addEventListener("cdp-updater", (ev) => {
         const { type, data } = ev.detail || {};
@@ -630,22 +713,23 @@ function admin() {
         if (!type || !type.startsWith("wails:updater:")) return;
         this.canUpdate = true;
         const kind = type.split(":").pop();
+        this._updateEvent = { kind, data };
         if (kind === "update-available" && data) {
-          this.updateMsg = `发现新版本 v${data.version || "?"}，正在下载…`;
+          this.updateMsg = this.t("upd.available", { ver: data.version || "?" });
           this.updateKind = "info";
         } else if (kind === "no-update") {
-          this.updateMsg = "已是最新版本";
+          this.updateMsg = this.t("upd.up_to_date");
           this.updateKind = "ok";
-          setTimeout(() => { if (this.updateKind === "ok") this.updateMsg = ""; }, 4000);
+          setTimeout(() => { if (this.updateKind === "ok") { this.updateMsg = ""; this._updateEvent = null; } }, 4000);
         } else if (kind === "download-progress" && data) {
           const pct = data.total ? Math.round((data.written / data.total) * 100) : 0;
-          this.updateMsg = `下载更新中 ${pct}%`;
+          this.updateMsg = this.t("upd.downloading", { pct });
           this.updateKind = "info";
         } else if (kind === "update-ready") {
-          this.updateMsg = "新版本已就绪，重启后生效";
+          this.updateMsg = this.t("upd.ready");
           this.updateKind = "ready";
         } else if (kind === "error" && data) {
-          this.updateMsg = `更新失败：${data.message || data.stage || "未知"}`;
+          this.updateMsg = this.t("upd.error", { err: data.message || data.stage || this.t("upd.unknown") });
           this.updateKind = "err";
         }
       });
@@ -653,7 +737,7 @@ function admin() {
 
     async checkUpdate() {
       if (!window.__cdpWails || !window.__cdpWails.checkForUpdate) {
-        this.toast("网页版不支持自更新，请打开 GitHub Releases 或通过桌面 App 检查", "info", 3500);
+        this.toast(this.t("toast.web_no_updater"), "info", 3500);
         return;
       }
       this.updateBusy = true;
@@ -661,6 +745,7 @@ function admin() {
         await window.__cdpWails.checkForUpdate();
       } catch (err) {
         const msg = err?.message || String(err);
+        this._updateEvent = null;
         this.updateMsg = msg;
         this.updateKind = "err";
         this.toast(msg, "err", 4200);
@@ -682,7 +767,7 @@ function admin() {
       try {
         this.versions = await this.api("GET", "/versions");
       } catch (err) {
-        if (!opts.silent) this.toast("读取版本信息失败：" + err.message, "err", 3500);
+        if (!opts.silent) this.toast(this.t("toast.versions_fail", { err: err.message }), "err", 3500);
       } finally {
         this.loadingVersions = false;
       }
@@ -705,13 +790,13 @@ function admin() {
       try {
         this.abLatest = await this.api("GET", "/sources/agent-browser/latest");
         if (this.abLatest.update_available) {
-          this.toast(`发现 agent-browser 新版 v${this.abLatest.latest_version}`, "info", 3200);
+          this.toast(this.t("toast.ab_new_ver", { ver: this.abLatest.latest_version }), "info", 3200);
         } else {
-          this.toast(`agent-browser 已是最新 (v${this.abLatest.latest_version})`, "ok", 2600);
+          this.toast(this.t("toast.ab_latest", { ver: this.abLatest.latest_version }), "ok", 2600);
         }
       } catch (err) {
         this.abUpgradeErr = err.message;
-        this.toast("检查 agent-browser 更新失败：" + err.message, "err", 4000);
+        this.toast(this.t("toast.ab_check_fail", { err: err.message }), "err", 4000);
       } finally {
         this.checkingAbLatest = false;
       }
@@ -719,9 +804,9 @@ function admin() {
     async upgradeAgentBrowser(ver = "") {
       const target = ver || this.abLatest?.latest_version || "";
       const ok = await this.askConfirm({
-        title: target ? `升级 agent-browser 到 v${target}？` : "升级 agent-browser 到最新版？",
-        body: "将从 GitHub Releases 下载平台二进制并做 SHA-256 校验，装入数据目录 bin/ 并自动切换 agent_browser_binary 设置（原内嵌版本不受影响，可随时还原）。",
-        confirmText: "下载并升级",
+        title: target ? this.t("confirm.ab_upgrade_title", { ver: target }) : this.t("confirm.ab_upgrade_latest_title"),
+        body: this.t("confirm.ab_upgrade_body"),
+        confirmText: this.t("confirm.ab_upgrade_btn"),
       });
       if (!ok) return;
       this.abUpgradeErr = "";
@@ -737,10 +822,10 @@ function admin() {
         if (this.abLatest) {
           this.abLatest = { ...this.abLatest, current_version: res.version, update_available: false };
         }
-        this.toast(`agent-browser 已升级到 v${res.version}`, "ok", 3200);
+        this.toast(this.t("toast.ab_upgraded", { ver: res.version }), "ok", 3200);
       } catch (err) {
         this.abUpgradeErr = err.message;
-        this.toast("升级失败：" + err.message, "err", 4500);
+        this.toast(this.t("toast.ab_upgrade_fail", { err: err.message }), "err", 4500);
       } finally {
         this.upgradingAb = false;
       }
@@ -754,24 +839,24 @@ function admin() {
           this.loadAbChoice(),
           this.refresh(),
         ]);
-        this.toast("已恢复使用默认解析链（优先内嵌版本）", "ok", 2800);
+        this.toast(this.t("toast.ab_restored"), "ok", 2800);
       } catch (err) {
-        this.toast("切换失败：" + err.message, "err", 3500);
+        this.toast(this.t("toast.switch_fail", { err: err.message }), "err", 3500);
       }
     },
     async exportExtension(openAfter = false) {
       this.exportingExt = true;
-      this.extActionMsg = "";
+      this.extExportedInfo = null;
       try {
         const res = await this.api("POST", "/sources/extension/export", {});
         await this.loadVersions({ silent: true });
-        this.extActionMsg = `已写入 v${res.version} 至 ${res.path}`;
-        this.toast(`已同步 cdp-ext v${res.version} 到本地目录`, "ok", 2800);
+        this.extExportedInfo = { ver: res.version, path: res.path };
+        this.toast(this.t("toast.ext_synced", { ver: res.version }), "ok", 2800);
         if (openAfter && window.__cdpWails && window.__cdpWails.openPath) {
           await window.__cdpWails.openPath(res.path);
         }
       } catch (err) {
-        this.toast("导出扩展失败：" + err.message, "err", 4000);
+        this.toast(this.t("toast.ext_export_fail", { err: err.message }), "err", 4000);
       } finally {
         this.exportingExt = false;
       }
@@ -780,7 +865,7 @@ function admin() {
       this.reloadingExt = true;
       try {
         await this.api("POST", "/sources/extension/reload", {});
-        this.toast("已通知 Chrome 重载 cdp-ext，正在重新回连…", "ok", 2800);
+        this.toast(this.t("toast.ext_reloading"), "ok", 2800);
         setTimeout(() => {
           this.refresh();
           this.loadVersions({ silent: true });
@@ -797,10 +882,10 @@ function admin() {
         try {
           await window.__cdpWails.openPath(p);
         } catch (err) {
-          this.toast("打开目录失败：" + (err.message || err), "err", 3500);
+          this.toast(this.t("toast.open_dir_fail", { err: err.message || err }), "err", 3500);
         }
       } else {
-        this.copyText(p, "路径已复制（网页端无法直接唤起文件管理器）", "ext-dir");
+        this.copyText(p, this.t("toast.path_copied_web"), "ext-dir");
       }
     },
     downloadExtZip() {
@@ -813,7 +898,7 @@ function admin() {
         this.openExternalURL(`http://127.0.0.1:${this.status.settings.control_port}${path}`);
         return;
       }
-      this.toast("当前仅内嵌通道开放；请点击「同步到本地扩展目录」直接解压写入磁盘", "info", 3600);
+      this.toast(this.t("toast.ext_zip_embedded_only"), "info", 3600);
     },
     openExternalURL(url) {
       if (!url) return;
@@ -864,6 +949,77 @@ function admin() {
       if (tab === "logs") this.loadSessionLogs(this.selSessionName);
     },
 
+    gridColumns() {
+      return [
+        {
+          title: this.t("sess.col_name"), field: "name", headerSort: false, formatter: "plaintext",
+          cssClass: "mono", widthGrow: 3, minWidth: 140, maxWidth: 420,
+        },
+        {
+          title: this.t("sess.col_type"), field: "type", headerSort: false, width: 128, minWidth: 114,
+          formatter: (cell) => {
+            const t = cell.getValue() || "";
+            if (!t) return '<span class="hint">—</span>';
+            const isExt = t === "extension";
+            const ic = isExt ? "#i-puzzle" : "#i-chrome";
+            return `<span class="bdg with-ic ${isExt ? "ext" : "sa"}"><svg class="ic-xs"><use href="${ic}"/></svg><span>${esc(t)}</span></span>`;
+          },
+        },
+        {
+          title: this.t("sess.col_state"), field: "state", headerSort: false, width: 114, minWidth: 102,
+          formatter: (cell) => {
+            const v = cell.getValue() || "";
+            const cls = v === "connected" ? "ok" : (v === "idle" ? "idle" : "warn");
+            const lbl = v === "connected"
+              ? this.t("common.state_connected")
+              : (v === "idle" ? this.t("common.state_idle") : this.t("common.state_released"));
+            return `<span class="bdg ${cls}">${esc(lbl)}</span>`;
+          },
+        },
+        {
+          title: this.t("sess.col_tabs"), field: "targets", headerSort: false, width: 64, minWidth: 52,
+          formatter: (cell) => `<span class="bdg plain">${cell.getValue() ?? 0}</span>`,
+        },
+        {
+          title: this.t("sess.col_group"), field: "group_name", headerSort: false, cssClass: "mono sg-col",
+          widthGrow: 1, minWidth: 100, maxWidth: 260,
+          formatter: (cell) => esc(cell.getValue() || "—"),
+        },
+        {
+          title: this.t("sess.col_via"), field: "via", headerSort: false, cssClass: "mono sg-col",
+          width: 108, minWidth: 82,
+          formatter: (cell) => esc(cell.getValue() || "—"),
+        },
+        {
+          title: this.t("sess.col_last_ts"), field: "last_ts", headerSort: false, width: 104, minWidth: 86,
+          cssClass: "mono sg-col",
+          formatter: (cell) => {
+            const v = cell.getValue();
+            if (!v) return '<span class="hint">—</span>';
+            return `<span title="${esc(this.fmtFullTime(v))}">${esc(this.fmtRelTime(v))}</span>`;
+          },
+        },
+      ];
+    },
+
+    refreshGridLocale() {
+      if (!this.sessGrid || !this.sessGrid.initialized) return;
+      const holder = document.querySelector("#sessions-grid");
+      if (!holder || holder.offsetParent === null) {
+        // 隐藏态调用 Tabulator.setColumns 会导致行高/可见区坍缩，延迟到切回会话页再刷新列定义
+        this._gridLocaleDirty = true;
+        return;
+      }
+      this._gridLocaleDirty = false;
+      try {
+        this.sessGrid.setColumns(this.gridColumns());
+        if (this._applyGridCols) this._applyGridCols(holder.clientWidth);
+        this.sessGrid.replaceData(this.filteredSessions());
+        this.sessGrid.redraw(true);
+        this.syncGridSelection();
+      } catch (e) {}
+    },
+
     ensureGrid() {
       const holder = document.querySelector("#sessions-grid");
       if (!holder || holder.offsetParent === null) return;
@@ -905,54 +1061,7 @@ function admin() {
           const el = row.getElement();
           if (el) el.classList.toggle("is-active", !!this.selSessionName && row.getData().name === this.selSessionName);
         },
-        columns: [
-          {
-            title: "名称", field: "name", headerSort: false, formatter: "plaintext",
-            cssClass: "mono", widthGrow: 3, minWidth: 140, maxWidth: 420,
-          },
-          {
-            title: "类型", field: "type", headerSort: false, width: 128, minWidth: 114,
-            formatter: (cell) => {
-              const t = cell.getValue() || "";
-              if (!t) return '<span class="hint">—</span>';
-              const isExt = t === "extension";
-              const ic = isExt ? "#i-puzzle" : "#i-chrome";
-              return `<span class="bdg with-ic ${isExt ? "ext" : "sa"}"><svg class="ic-xs"><use href="${ic}"/></svg><span>${esc(t)}</span></span>`;
-            },
-          },
-          {
-            title: "状态", field: "state", headerSort: false, width: 92, minWidth: 82,
-            formatter: (cell) => {
-              const v = cell.getValue() || "";
-              const cls = v === "connected" ? "ok" : (v === "idle" ? "idle" : "warn");
-              const zh = v === "connected" ? "已连接" : (v === "idle" ? "空闲" : "已释放");
-              return `<span class="bdg ${cls}">${zh}</span>`;
-            },
-          },
-          {
-            title: "Tabs", field: "targets", headerSort: false, width: 64, minWidth: 52,
-            formatter: (cell) => `<span class="bdg plain">${cell.getValue() ?? 0}</span>`,
-          },
-          {
-            title: "组名", field: "group_name", headerSort: false, cssClass: "mono sg-col",
-            widthGrow: 1, minWidth: 100, maxWidth: 260,
-            formatter: (cell) => esc(cell.getValue() || "—"),
-          },
-          {
-            title: "入口", field: "via", headerSort: false, cssClass: "mono sg-col",
-            width: 108, minWidth: 82,
-            formatter: (cell) => esc(cell.getValue() || "—"),
-          },
-          {
-            title: "最近活动", field: "last_ts", headerSort: false, width: 96, minWidth: 80,
-            cssClass: "mono sg-col",
-            formatter: (cell) => {
-              const v = cell.getValue();
-              if (!v) return '<span class="hint">—</span>';
-              return `<span title="${esc(this.fmtFullTime(v))}">${esc(this.fmtRelTime(v))}</span>`;
-            },
-          },
-        ],
+        columns: this.gridColumns(),
       });
       this.sessGrid.on("tableBuilt", () => {
         if (this._applyGridCols) this._applyGridCols(holder.clientWidth);
@@ -968,6 +1077,13 @@ function admin() {
       const holder = document.querySelector("#sessions-grid");
       if (!holder || holder.offsetParent === null) return;
       if (!this.sessGrid.initialized) return;
+      if (this._gridLocaleDirty) {
+        this._gridLocaleDirty = false;
+        try {
+          this.sessGrid.setColumns(this.gridColumns());
+          if (this._applyGridCols) this._applyGridCols(holder.clientWidth);
+        } catch (e) {}
+      }
       this.sessGrid.replaceData(this.filteredSessions());
       try { if (this.sessGrid.redraw) this.sessGrid.redraw(true); } catch (e) {}
       const cur = this.selSessionName;
@@ -1003,7 +1119,13 @@ function admin() {
       return `ws://127.0.0.1:${this.status.settings.ws_port}/ext`;
     },
     abSourceText(src) {
-      return { bundled: "内嵌", setting: "外部·指定", path: "外部·PATH", none: "无" }[src] || src;
+      const map = {
+        bundled: "ab.src_bundled",
+        setting: "ab.src_setting",
+        path: "ab.src_path",
+        none: "ab.src_none",
+      };
+      return map[src] ? this.t(map[src]) : src;
     },
     fmtAbVersion(v) {
       if (!v) return "";
@@ -1024,7 +1146,7 @@ function admin() {
       const cur = this.status?.sources || {};
       const other = kind === "standalone" ? cur.extension?.enabled : cur.standalone?.enabled;
       if (!enable && !other) {
-        this.toast("至少需要保留一个启用中的数据源", "err");
+        this.toast(this.t("toast.keep_one_source"), "err");
         await this.refresh();
         return;
       }
@@ -1034,9 +1156,9 @@ function admin() {
           sources: { [kind === "standalone" ? "standalone_enabled" : "extension_enabled"]: enable },
         });
         await this.refresh();
-        this.toast(`${kind} 源已${enable ? "启用" : "禁用"}`, "ok");
+        this.toast(this.t(enable ? "toast.source_enabled" : "toast.source_disabled", { kind }), "ok");
       } catch (err) {
-        this.toast("切换失败：" + err.message, "err", 4000);
+        this.toast(this.t("toast.switch_fail", { err: err.message }), "err", 4000);
       } finally {
         this.saving = { ...this.saving, source: false };
       }
@@ -1050,9 +1172,9 @@ function admin() {
           this.copiedKey = key;
           setTimeout(() => { if (this.copiedKey === key) this.copiedKey = ""; }, 1500);
         }
-        this.toast(tip || "已复制到剪贴板", "ok", 2000);
+        this.toast(tip || this.t("common.copied_default"), "ok", 2000);
       } catch (err) {
-        this.toast("复制失败：" + (err.message || "剪贴板不可用"), "err", 3500);
+        this.toast(this.t("common.copy_failed", { err: err.message || this.t("common.clipboard_unavailable") }), "err", 3500);
       }
     },
 
@@ -1061,22 +1183,20 @@ function admin() {
     },
     copyEndpoint(ep, idx) {
       if (!ep.path || !ep.token) {
-        this.toast("请先保存接入点以生成令牌", "err");
+        this.toast(this.t("toast.save_ep_first"), "err");
         return;
       }
-      this.copyText(this.endpointURL(ep), `已复制 ${ep.path} 连接 URL`, `ep-url-${idx}`);
+      this.copyText(this.endpointURL(ep), this.t("toast.ep_url_copied", { path: ep.path }), `ep-url-${idx}`);
     },
     epTokenPreview(ep) {
-      return ep.token ? ep.token.slice(0, 8) + "…" : "保存后自动生成";
+      return ep.token ? ep.token.slice(0, 8) + "…" : this.t("src.ep_gen_auto");
     },
 
     async resetToken(kind) {
       const ok = await this.askConfirm({
-        title: kind === "ext" ? "重置扩展准入令牌？" : "重置分配令牌？",
-        body: kind === "ext"
-          ? "旧令牌将立即吊销。重置后需同步更新浏览器 cdp-ext 扩展的 Options 配置，否则扩展无法回连。"
-          : "旧分配令牌将立即吊销。正在使用旧令牌的脚本会收到 401（本机 agent-browser plugin 会自动重取）。",
-        confirmText: "确认重置",
+        title: kind === "ext" ? this.t("confirm.reset_ext_title") : this.t("confirm.reset_alloc_title"),
+        body: kind === "ext" ? this.t("confirm.reset_ext_body") : this.t("confirm.reset_alloc_body"),
+        confirmText: this.t("confirm.reset_confirm"),
         danger: true,
       });
       if (!ok) return;
@@ -1085,9 +1205,9 @@ function admin() {
         const path = kind === "ext" ? "/sources/ext-token/reset" : "/sources/alloc-token/reset";
         await this.api("POST", path, {});
         await this.refresh();
-        this.toast("令牌已重置并生效", "ok");
+        this.toast(this.t("toast.token_reset_ok"), "ok");
       } catch (err) {
-        this.toast("重置失败：" + err.message, "err", 4000);
+        this.toast(this.t("toast.reset_fail", { err: err.message }), "err", 4000);
       } finally {
         this.actionKey = "";
       }
@@ -1095,9 +1215,9 @@ function admin() {
 
     async resetEndpointToken(ep) {
       const ok = await this.askConfirm({
-        title: `重置接入点「${ep.path}」令牌？`,
-        body: "旧令牌将立即吊销，使用旧连接 URL 的客户端会断开。",
-        confirmText: "重置令牌",
+        title: this.t("confirm.reset_ep_title", { path: ep.path }),
+        body: this.t("confirm.reset_ep_body"),
+        confirmText: this.t("confirm.reset_ep_btn"),
         danger: true,
       });
       if (!ok) return;
@@ -1105,7 +1225,7 @@ function admin() {
       try {
         const r = await this.api("POST", `/endpoints/${encodeURIComponent(ep.path)}/reset-token`, {});
         ep.token = r.token;
-        this.toast(`接入点 ${ep.path} 令牌已更新`, "ok");
+        this.toast(this.t("toast.ep_token_updated", { path: ep.path }), "ok");
       } catch (err) {
         this.epError = err.message;
         this.toast(err.message, "err", 4000);
@@ -1136,11 +1256,11 @@ function admin() {
       try {
         const updated = await this.api("PUT", "/settings", { endpoints: eps });
         this.syncAllFromSettings(updated);
-        this.epSavedAt = "已保存 " + new Date().toLocaleTimeString();
-        this.toast("接入点配置已保存", "ok");
+        this.epSavedAt = new Date().toLocaleTimeString();
+        this.toast(this.t("toast.ep_saved"), "ok");
       } catch (err) {
         this.epError = err.message;
-        this.toast("保存接入点失败：" + err.message, "err", 4000);
+        this.toast(this.t("toast.ep_save_fail", { err: err.message }), "err", 4000);
       } finally {
         this.saving = { ...this.saving, endpoints: false };
       }
@@ -1169,7 +1289,7 @@ function admin() {
         .map(r => ({ prefix: (r.prefix || "").trim(), source: r.source }))
         .filter(r => r.prefix);
       if (this.routeForm.rules.some(r => (r.prefix || "").trim() && !["standalone", "extension"].includes(r.source))) {
-        this.routeError = "规则 source 须为 standalone 或 extension";
+        this.routeError = this.t("src.route_err_source");
         return;
       }
       this.saving = { ...this.saving, routing: true };
@@ -1180,10 +1300,10 @@ function admin() {
         this.syncAllFromSettings(updated);
         this.routeSavedAt = new Date().toLocaleTimeString();
         await this.refresh();
-        this.toast("路由规则已保存", "ok");
+        this.toast(this.t("toast.route_saved"), "ok");
       } catch (err) {
         this.routeError = err.message;
-        this.toast("保存路由失败：" + err.message, "err", 4000);
+        this.toast(this.t("toast.route_save_fail", { err: err.message }), "err", 4000);
       } finally {
         this.saving = { ...this.saving, routing: false };
       }
@@ -1228,11 +1348,11 @@ function admin() {
         });
         this.syncAllFromSettings(updated);
         this.savedAt = new Date().toLocaleTimeString();
-        this.toast("引擎与网络设置已保存", "ok");
+        this.toast(this.t("toast.settings_saved"), "ok");
         await new Promise(r => setTimeout(r, 500));
         await this.refresh();
       } catch (err) {
-        this.toast("保存失败：" + err.message, "err", 4500);
+        this.toast(this.t("toast.save_fail", { err: err.message }), "err", 4500);
       } finally {
         this.saving = { ...this.saving, settings: false };
       }
@@ -1262,7 +1382,7 @@ function admin() {
       this.abError = "";
       const path = this.abMode === "external" ? (this.abPath || this.abLookupPath).trim() : "";
       if (this.abMode === "external" && !path) {
-        this.abError = "外部模式须填绝对路径（PATH 中也未探测到）";
+        this.abError = this.t("set.ab_err_abs");
         return;
       }
       this.saving = { ...this.saving, ab: true };
@@ -1270,13 +1390,13 @@ function admin() {
         const updated = await this.api("PUT", "/settings", { agent_browser_binary: path });
         this.abPath = path;
         if (path) this.abCustomPath = path;
-        this.abSavedAt = "已保存 " + new Date().toLocaleTimeString();
+        this.abSavedAt = new Date().toLocaleTimeString();
         this.jsonDraft = JSON.stringify(updated, null, 2);
         await this.loadSources();
-        this.toast("agent-browser 配置已保存", "ok");
+        this.toast(this.t("toast.ab_saved"), "ok");
       } catch (err) {
         this.abError = err.message;
-        this.toast("保存失败：" + err.message, "err", 4000);
+        this.toast(this.t("toast.save_fail", { err: err.message }), "err", 4000);
       } finally {
         this.saving = { ...this.saving, ab: false };
       }
@@ -1295,18 +1415,18 @@ function admin() {
       const dir = (this.newDataDir || "").trim();
       if (!dir) return;
       const ok = await this.askConfirm({
-        title: "修改数据目录？",
-        body: `新目录：${dir}\n\n将写入数据目录指针（重启后生效）。原有数据不会自动迁移。`,
-        confirmText: "写入指针",
+        title: this.t("confirm.datadir_title"),
+        body: this.t("confirm.datadir_body", { dir }),
+        confirmText: this.t("confirm.datadir_btn"),
       });
       if (!ok) return;
       this.saving = { ...this.saving, datadir: true };
       try {
         await this.api("PUT", "/data-dir", { data_dir: dir });
-        this.ddSavedAt = "已写入指针，重启后生效";
+        this.ddSaved = true;
         this.newDataDir = "";
         await this.loadLayout();
-        this.toast("数据目录指针已更新，重启后生效", "ok", 3500);
+        this.toast(this.t("toast.datadir_updated"), "ok", 3500);
       } catch (err) {
         this.ddError = err.message;
       } finally {
@@ -1329,11 +1449,11 @@ function admin() {
       this.jsonError = "";
       let obj;
       try { obj = JSON.parse(this.jsonDraft); } catch (err) {
-        this.jsonError = "JSON 解析失败: " + err.message;
+        this.jsonError = this.t("set.json_err_parse", { err: err.message });
         return;
       }
       if (typeof obj !== "object" || Array.isArray(obj) || obj === null) {
-        this.jsonError = "顶层须为 JSON 对象";
+        this.jsonError = this.t("set.json_err_obj");
         return;
       }
       this.saving = { ...this.saving, json: true };
@@ -1342,10 +1462,10 @@ function admin() {
         this.syncAllFromSettings(updated);
         this.jsonSavedAt = new Date().toLocaleTimeString();
         await this.refresh();
-        this.toast("settings.json 已保存并同步至界面表单", "ok");
+        this.toast(this.t("toast.json_saved"), "ok");
       } catch (err) {
         this.jsonError = err.message;
-        this.toast("JSON 保存失败：" + err.message, "err", 4000);
+        this.toast(this.t("toast.json_save_fail", { err: err.message }), "err", 4000);
       } finally {
         this.saving = { ...this.saving, json: false };
       }
@@ -1366,10 +1486,10 @@ function admin() {
       try {
         const r = await this.api("GET", `/config/files/${encodeURIComponent(key)}`);
         this.configView = key;
-        this.configContent = r.content ?? "（空文件）";
+        this.configContent = r.content ?? this.t("set.cfg_empty_file");
       } catch (err) {
         this.configView = key;
-        this.configContent = "读取失败: " + err.message;
+        this.configContent = this.t("set.cfg_read_err", { err: err.message });
       } finally {
         this.saving = { ...this.saving, cfg: false };
       }
@@ -1377,8 +1497,9 @@ function admin() {
 
     /* ── 改写规则（精简主行 + 行内手风琴展开） ── */
     isPresetActive(kind) {
-      const target = kind === "focus" ? DEFAULT_REWRITES : DEFAULT_REWRITES.filter(r => r.group === "base");
-      return stableRulesKey(this.rules) === stableRulesKey(target);
+      const defaults = defaultRewrites(this.lang);
+      const target = kind === "focus" ? defaults : defaults.filter(r => r.group === "base");
+      return stablePresetKey(this.rules) === stablePresetKey(target);
     },
     rulesDirty() {
       return stableRulesKey(this.rules) !== this.savedRulesJson;
@@ -1391,7 +1512,8 @@ function admin() {
       }
     },
     applyPreset(kind) {
-      this.rules = JSON.parse(JSON.stringify(kind === "focus" ? DEFAULT_REWRITES : DEFAULT_REWRITES.filter(r => r.group === "base")));
+      const defaults = defaultRewrites(this.lang);
+      this.rules = JSON.parse(JSON.stringify(kind === "focus" ? defaults : defaults.filter(r => r.group === "base")));
       this.expandedRules = {};
       this.ruleSetDrafts = {};
       this.ruleSetErrors = {};
@@ -1445,7 +1567,7 @@ function admin() {
       this.ruleSetDrafts = { ...this.ruleSetDrafts, [i]: text };
       try {
         const v = JSON.parse((text || "").trim() || "{}");
-        if (typeof v !== "object" || Array.isArray(v) || v === null) throw new Error("须为 JSON 对象");
+        if (typeof v !== "object" || Array.isArray(v) || v === null) throw new Error(this.t("rules.err_must_object"));
         this.rules[i].set = v;
         const next = { ...this.ruleSetErrors };
         delete next[i];
@@ -1453,7 +1575,7 @@ function admin() {
         this.rulesError = "";
       } catch (err) {
         this.ruleSetErrors = { ...this.ruleSetErrors, [i]: err.message };
-        this.rulesError = `第 ${i + 1} 条 set JSON 无效：${err.message}`;
+        this.rulesError = this.t("rules.err_invalid_set", { idx: i + 1, err: err.message });
       }
     },
     formatRuleSet(i) {
@@ -1467,7 +1589,7 @@ function admin() {
       if (!r) return "";
       const parts = [];
       if (r.action === "fake") {
-        parts.push('<span class="rs-tok warn">拦截 · 返回伪成功</span>');
+        parts.push(`<span class="rs-tok warn">${esc(this.t("rules.summary_fake"))}</span>`);
       } else {
         const setObj = r.set || {};
         for (const k of Object.keys(setObj)) {
@@ -1484,20 +1606,20 @@ function admin() {
           parts.push(`<span class="rs-tok rm">− ${esc(p)}</span>`);
         }
       }
-      if (r.note) parts.push(`<span class="sum-note">${esc(r.note)}</span>`);
-      else if (!parts.length) parts.push('<span class="sum-note">点击展开编辑参数…</span>');
+      if (r.note) parts.push(`<span class="sum-note">${esc(this.displayRuleNote(r.note))}</span>`);
+      else if (!parts.length) parts.push(`<span class="sum-note">${esc(this.t("rules.summary_empty"))}</span>`);
       return parts.join("");
     },
     async saveRules() {
       this.rulesError = "";
       if (Object.keys(this.ruleSetErrors).length) {
-        this.rulesError = "请先修正标红行的 set JSON 格式";
+        this.rulesError = this.t("rules.err_fix_red");
         return;
       }
       const payload = [];
       for (const r of this.rules) {
         if (!r.match || !r.match.trim()) {
-          this.rulesError = "存在空的 match 方法名";
+          this.rulesError = this.t("rules.err_empty_match");
           return;
         }
         payload.push({
@@ -1514,10 +1636,10 @@ function admin() {
         const updated = await this.api("PUT", "/settings", { rewrites: payload });
         this.syncAllFromSettings(updated);
         this.rulesSavedAt = new Date().toLocaleTimeString();
-        this.toast("改写规则已保存并生效", "ok");
+        this.toast(this.t("toast.rules_saved"), "ok");
       } catch (err) {
         this.rulesError = err.message;
-        this.toast("保存规则失败：" + err.message, "err", 4000);
+        this.toast(this.t("toast.rules_save_fail", { err: err.message }), "err", 4000);
       } finally {
         this.saving = { ...this.saving, rules: false };
       }
@@ -1526,9 +1648,9 @@ function admin() {
     /* ── 会话操作与基座控制 ── */
     async release(name) {
       const ok = await this.askConfirm({
-        title: `释放会话「${name}」？`,
-        body: "将关闭该会话名下归属的标签页并摘除连接会话。",
-        confirmText: "释放会话",
+        title: this.t("confirm.release_title", { name }),
+        body: this.t("confirm.release_body"),
+        confirmText: this.t("confirm.release_btn"),
         danger: true,
       });
       if (!ok) return;
@@ -1536,9 +1658,9 @@ function admin() {
       try {
         await this.api("POST", `/sessions/${encodeURIComponent(name)}/release`, {});
         await this.refresh();
-        this.toast(`会话 ${name} 已释放`, "ok");
+        this.toast(this.t("toast.session_released", { name }), "ok");
       } catch (err) {
-        this.toast("释放失败：" + err.message, "err", 4000);
+        this.toast(this.t("toast.release_fail", { err: err.message }), "err", 4000);
       } finally {
         this.actionKey = "";
       }
@@ -1546,18 +1668,18 @@ function admin() {
 
     async restartKeeper() {
       const ok = await this.askConfirm({
-        title: "重启基座 Chrome？",
-        body: "standalone 源的所有会话将短暂断开，extension 源会话不受影响。",
-        confirmText: "重启基座",
+        title: this.t("confirm.restart_keeper_title"),
+        body: this.t("confirm.restart_keeper_body"),
+        confirmText: this.t("confirm.restart_keeper_btn"),
       });
       if (!ok) return;
       this.actionKey = "restartKeeper";
       try {
         await this.api("POST", "/keeper/restart", {});
         await this.refresh();
-        this.toast("基座 Chrome 已重启", "ok");
+        this.toast(this.t("toast.keeper_restarted"), "ok");
       } catch (err) {
-        this.toast("重启基座失败：" + err.message, "err", 4000);
+        this.toast(this.t("toast.keeper_restart_fail", { err: err.message }), "err", 4000);
       } finally {
         this.actionKey = "";
       }
@@ -1592,13 +1714,13 @@ function admin() {
       if (!ts) return "";
       const diff = Math.max(0, Math.floor((Date.now() - new Date(ts).getTime()) / 1000));
       if (Number.isNaN(diff)) return "";
-      if (diff < 5) return "刚刚";
-      if (diff < 60) return `${diff}s 前`;
+      if (diff < 5) return this.t("time.just_now");
+      if (diff < 60) return this.t("time.sec_ago", { n: diff });
       const m = Math.floor(diff / 60);
-      if (m < 60) return `${m}m 前`;
+      if (m < 60) return this.t("time.min_ago", { n: m });
       const h = Math.floor(m / 60);
-      if (h < 24) return `${h}h 前`;
-      return `${Math.floor(h / 24)}d 前`;
+      if (h < 24) return this.t("time.hour_ago", { n: h });
+      return this.t("time.day_ago", { n: Math.floor(h / 24) });
     },
     fmtTime(ts) { return ts ? new Date(ts).toLocaleTimeString() : ""; },
 
@@ -1609,7 +1731,7 @@ function admin() {
         for (const k of Object.keys(src).slice(0, 4)) {
           let v = src[k];
           if (v === null) v = "null";
-          else if (typeof v === "object") v = Array.isArray(v) ? `[${v.length} 项]` : "{…}";
+          else if (typeof v === "object") v = Array.isArray(v) ? `[${this.t("common.items_count", { n: v.length })}]` : "{…}";
           v = String(v);
           if (v.length > 40) v = v.slice(0, 40) + "…";
           chips.push(`<span class="kvp"><b>${esc(k)}</b>=${esc(v)}</span>`);
@@ -1708,9 +1830,9 @@ function admin() {
 
     async shutdown() {
       const ok = await this.askConfirm({
-        title: "停止代理服务？",
-        body: "将关闭控制面与代理引擎，正在运行的基座 Chrome 不受影响。",
-        confirmText: "停止服务",
+        title: this.t("confirm.shutdown_title"),
+        body: this.t("confirm.shutdown_body"),
+        confirmText: this.t("confirm.shutdown_btn"),
         danger: true,
       });
       if (!ok) return;
@@ -1718,7 +1840,7 @@ function admin() {
       try {
         await this.api("POST", "/shutdown", {});
         this.healthy = false;
-        this.toast("服务已停止", "info");
+        this.toast(this.t("toast.service_stopped"), "info");
       } catch (err) {
         this.healthy = false;
       } finally {

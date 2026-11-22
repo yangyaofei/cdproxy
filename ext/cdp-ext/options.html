@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>cdp-ext 设置</title>
+  <title data-i18n="optionsPageTitle">cdp-ext Settings</title>
   <style>
     body { font: 14px/1.6 system-ui, sans-serif; max-width: 480px; margin: 32px auto; padding: 0 16px; }
     label { display: block; margin: 16px 0 4px; font-weight: 600; }
@@ -12,20 +12,22 @@
   </style>
 </head>
 <body>
-  <h2>cdp-ext 反向桥设置</h2>
-  <p>扩展会反向拨出到 cdproxy（<code>extension</code> 下游源），把当前浏览器桥接为代理的标签组隔离下游。</p>
-  <label for="relayUrl">Proxy 反向入口（WebSocket URL）</label>
+  <h2 data-i18n="optionsHeading">cdp-ext Reverse Bridge Settings</h2>
+  <p>
+    <span data-i18n="optionsIntroPrefix">Connects outbound to cdproxy (</span><code>extension</code><span data-i18n="optionsIntroSuffix"> source) and bridges your everyday Chrome as a Tab-Group-isolated CDP downstream.</span>
+  </p>
+  <label for="relayUrl" data-i18n="labelRelayUrl">Proxy Reverse Endpoint (WebSocket URL)</label>
   <input id="relayUrl" placeholder="ws://127.0.0.1:9225/ext" />
-  <label for="token">连接令牌（与 cdproxy「源与接入点」令牌一致）</label>
+  <label for="token" data-i18n="labelToken">Access Token (matches cdproxy Sources &amp; Endpoints)</label>
   <input id="token" placeholder="dev" />
-  <label for="releasePolicy">会话释放时组内标签页怎么办</label>
+  <label for="releasePolicy" data-i18n="labelReleasePolicy">When a session is released, what happens to its tabs?</label>
   <select id="releasePolicy">
-    <option value="close">全部关闭并删除组（默认）</option>
-    <option value="mark">保留标签页，组标记为已释放（灰色 · released）</option>
-    <option value="keep">完全保留，不做任何改动</option>
+    <option value="close" data-i18n="policyClose">Close all tabs and remove the group (default)</option>
+    <option value="mark" data-i18n="policyMark">Keep tabs, mark group as released (grey · released)</option>
+    <option value="keep" data-i18n="policyKeep">Keep tabs and group untouched</option>
   </select>
-  <button id="save">保存</button>
-  <span id="saved">已保存</span>
+  <button id="save" data-i18n="saveButton">Save</button>
+  <span id="saved" data-i18n="savedNotice">Saved</span>
   <script src="options.js"></script>
 </body>
 </html>

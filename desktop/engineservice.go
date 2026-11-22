@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,7 @@ type EngineService struct {
 	// engineStopped 引擎被管理面停机后的标记（Tray 状态展示用）
 	engineStopped bool
 	onStateChange func(running bool)
+	onLangChange  func(lang string)
 	// emitMu/emitPending：状态事件节流（100ms 合并）——高频变化点（组 sync、
 	// 命令流）统一收敛为一次前端推送，避免事件风暴。
 	emitMu      sync.Mutex
@@ -295,6 +297,20 @@ func (s *EngineService) SetAppearance(theme string) {
 		w.SetBackgroundColour(application.NewRGB(245, 245, 247))
 	} else {
 		w.SetBackgroundColour(application.NewRGB(17, 17, 19))
+	}
+}
+
+// SetLanguage 同步前端界面语言（"zh" / "en"）至桌面托盘菜单，实时更新菜单项文案。
+func (s *EngineService) SetLanguage(lang string) {
+	norm := "en"
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(lang)), "zh") {
+		norm = "zh"
+	}
+	s.mu.Lock()
+	cb := s.onLangChange
+	s.mu.Unlock()
+	if cb != nil {
+		cb(norm)
 	}
 }
 

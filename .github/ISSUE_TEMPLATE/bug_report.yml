@@ -1,0 +1,46 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in cdproxy / cdproxy-desktop / cdp-ext
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - CLI daemon (cdproxy)
+        - Desktop App (cdproxy-desktop)
+        - Chrome Extension (cdp-ext)
+        - Admin Web UI
+        - Homebrew / Release Packaging
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version & Environment
+      placeholder: "e.g. v0.10.0 · macOS 15 arm64 · Chrome 136 · agent-browser 0.43.0"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the actual behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `...`
+        2. Observe `...`
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs (sanitized)
+      description: Paste excerpts from `service.log` or session CDP trace (remove tokens or sensitive URLs).
+      render: text

@@ -37,7 +37,7 @@ BOOTSTRAP = """  <!-- Wails 绑定引导：标记桌面端形态与 OS + 注入 
     window.addEventListener('unhandledrejection', e => window.__abpErrors.push('promise: ' + String(e.reason)));
   </script>
   <script type="module">
-    import { DoRequest, DumpDOM, CheckForUpdate, RestartForUpdate, UpdaterInfo, OpenPath, OpenURL, StartEngine, RestartEngine, SetAppearance, WindowMinimize, WindowToggleMaximize, WindowIsMaximized, WindowClose, Platform, Version } from "/bindings/github.com/yangyaofei/cdproxy/desktop/engineservice.js";
+    import { DoRequest, DumpDOM, CheckForUpdate, RestartForUpdate, UpdaterInfo, OpenPath, OpenURL, StartEngine, RestartEngine, SetAppearance, SetLanguage, WindowMinimize, WindowToggleMaximize, WindowIsMaximized, WindowClose, Platform, Version } from "/bindings/github.com/yangyaofei/cdproxy/desktop/engineservice.js";
     window.__cdpWails = {
       doRequest: DoRequest,
       dumpDOM: DumpDOM,
@@ -49,6 +49,7 @@ BOOTSTRAP = """  <!-- Wails 绑定引导：标记桌面端形态与 OS + 注入 
       startEngine: StartEngine,
       restartEngine: RestartEngine,
       setAppearance: SetAppearance,
+      setLanguage: SetLanguage,
       windowMinimize: WindowMinimize,
       windowToggleMaximize: WindowToggleMaximize,
       windowIsMaximized: WindowIsMaximized,
@@ -81,10 +82,10 @@ BOOTSTRAP = """  <!-- Wails 绑定引导：标记桌面端形态与 OS + 注入 
 
 def build_index() -> str:
     html = (SRC / "index.html").read_text(encoding="utf-8")
-    marker = '<script src="/static/app.js'
+    marker = '<script src="/static/i18n.js'
     if marker not in html:
-        raise SystemExit("index.html 缺少 /static/app.js 引用（结构变更？）")
-    # 引导注入在 app.js 引用之前（错误收集器须先于一切 defer 脚本）
+        raise SystemExit("index.html 缺少 /static/i18n.js 引用（结构变更？）")
+    # 引导注入在 i18n.js / app.js 引用之前（错误收集器须先于一切 defer 脚本）
     html = html.replace(marker, f"{BOOTSTRAP}\n  {marker}", 1)
     if "__cdpWails" not in html:
         raise SystemExit("绑定引导注入失败")
@@ -102,6 +103,7 @@ def main() -> int:
     (static_dst / "vendor").mkdir(parents=True, exist_ok=True)
 
     copies = [
+        (SRC / "i18n.js", static_dst / "i18n.js"),
         (SRC / "app.js", static_dst / "app.js"),
         (SRC / "app.css", static_dst / "app.css"),
         (SRC / "vendor" / "alpine.min.js", static_dst / "vendor" / "alpine.min.js"),

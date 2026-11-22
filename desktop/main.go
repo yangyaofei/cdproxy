@@ -17,8 +17,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -148,6 +150,63 @@ func checkForUpdate() {
 	}()
 }
 
+type trayStrings struct {
+	open           string
+	statusStarting string
+	statusRunning  string
+	statusStopped  string
+	restartEngine  string
+	checkUpdate    string
+	restartUpdate  string
+	quit           string
+}
+
+func getTrayStrings(lang string) trayStrings {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(lang)), "zh") {
+		return trayStrings{
+			open:           "打开管理界面",
+			statusStarting: "引擎：启动中…",
+			statusRunning:  "引擎：运行中 ✓",
+			statusStopped:  "引擎：已停止",
+			restartEngine:  "重启引擎",
+			checkUpdate:    "检查更新…",
+			restartUpdate:  "重启并更新",
+			quit:           "退出",
+		}
+	}
+	return trayStrings{
+		open:           "Open Dashboard",
+		statusStarting: "Engine: Starting…",
+		statusRunning:  "Engine: Running ✓",
+		statusStopped:  "Engine: Stopped",
+		restartEngine:  "Restart Engine",
+		checkUpdate:    "Check for Updates…",
+		restartUpdate:  "Restart & Update",
+		quit:           "Quit",
+	}
+}
+
+// detectSystemLang 启动期推断系统语言（前端 WebView 加载后会按用户
+// localStorage / navigator.language 调 SetLanguage 精确覆写托盘文案）。
+func detectSystemLang() string {
+	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			if strings.HasPrefix(strings.ToLower(v), "zh") {
+				return "zh"
+			}
+			return "en"
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		if out, err := exec.Command("defaults", "read", "-g", "AppleLocale").Output(); err == nil {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(string(out))), "zh") {
+				return "zh"
+			}
+		}
+	}
+	return "en"
+}
+
 func buildTray() *application.SystemTray {
 	tray := app.SystemTray.New()
 	if runtime.GOOS == "darwin" {
@@ -156,17 +215,68 @@ func buildTray() *application.SystemTray {
 		tray.SetIcon(trayWinPNG)
 	}
 	tray.SetTooltip("cdproxy")
+
+	var mu sync.Mutex
+	curLang := detectSystemLang()
+	curState := "starting"
+	s := getTrayStrings(curLang)
+
 	menu := app.NewMenu()
-	menu.Add("打开管理界面").OnClick(func(*application.Context) { showUI() })
-	statusItem := menu.Add("引擎：启动中…")
+	openItem := menu.Add(s.open)
+	openItem.OnClick(func(*application.Context) { showUI() })
+	statusItem := menu.Add(s.statusStarting)
 	statusItem.SetEnabled(false)
-	engine.onStateChange = func(running bool) {
-		label := "引擎：运行中 ✓"
-		if !running {
-			label = "引擎：已停止"
+	menu.AddSeparator()
+	restartItem := menu.Add(s.restartEngine)
+	restartItem.OnClick(func(*application.Context) {
+		if err := engine.RestartEngine(); err != nil {
+			log.Printf("重启引擎失败: %v", err)
 		}
-		statusItem.SetLabel(label)
-		tray.SetTooltip("cdproxy — " + label)
+	})
+	menu.AddSeparator()
+	checkUpdateItem := menu.Add(s.checkUpdate)
+	checkUpdateItem.OnClick(func(*application.Context) { checkForUpdate() })
+	restartUpdateItem := menu.Add(s.restartUpdate)
+	restartUpdateItem.SetHidden(true)
+	restartUpdateItem.OnClick(func(*application.Context) { engine.RestartForUpdate() })
+	app.Event.On(updater.EventUpdateReady, func(_ *application.CustomEvent) {
+		restartUpdateItem.SetHidden(false)
+		menu.Update()
+	})
+	menu.AddSeparator()
+	quitItem := menu.Add(s.quit)
+	quitItem.OnClick(func(*application.Context) { app.Quit() })
+
+	applyLabels := func() {
+		mu.Lock()
+		tr := getTrayStrings(curLang)
+		st := curState
+		mu.Unlock()
+		statusLabel := tr.statusStarting
+		if st == "running" {
+			statusLabel = tr.statusRunning
+		} else if st == "stopped" {
+			statusLabel = tr.statusStopped
+		}
+		openItem.SetLabel(tr.open)
+		statusItem.SetLabel(statusLabel)
+		restartItem.SetLabel(tr.restartEngine)
+		checkUpdateItem.SetLabel(tr.checkUpdate)
+		restartUpdateItem.SetLabel(tr.restartUpdate)
+		quitItem.SetLabel(tr.quit)
+		tray.SetTooltip("cdproxy — " + statusLabel)
+		menu.Update()
+	}
+
+	engine.onStateChange = func(running bool) {
+		mu.Lock()
+		if running {
+			curState = "running"
+		} else {
+			curState = "stopped"
+		}
+		mu.Unlock()
+		applyLabels()
 		// 引擎启停对 UI 是最重的状态变化。运行→随行完整状态；停止→专用
 		// 离线信号（复用 engine.emitState/emitOffline，保持单一出口）
 		if running {
@@ -175,22 +285,14 @@ func buildTray() *application.SystemTray {
 			go engine.EmitEngineOffline()
 		}
 	}
-	menu.AddSeparator()
-	menu.Add("重启引擎").OnClick(func(*application.Context) {
-		if err := engine.RestartEngine(); err != nil {
-			log.Printf("重启引擎失败: %v", err)
-		}
-	})
-	menu.AddSeparator()
-	menu.Add("检查更新…").OnClick(func(*application.Context) { checkForUpdate() })
-	restartUpdateItem := menu.Add("重启并更新")
-	restartUpdateItem.SetHidden(true)
-	restartUpdateItem.OnClick(func(*application.Context) { engine.RestartForUpdate() })
-	app.Event.On(updater.EventUpdateReady, func(_ *application.CustomEvent) {
-		restartUpdateItem.SetHidden(false)
-	})
-	menu.AddSeparator()
-	menu.Add("退出").OnClick(func(*application.Context) { app.Quit() })
+
+	engine.onLangChange = func(lang string) {
+		mu.Lock()
+		curLang = lang
+		mu.Unlock()
+		applyLabels()
+	}
+
 	tray.SetMenu(menu)
 	tray.OnClick(func() { showUI() })
 	return tray

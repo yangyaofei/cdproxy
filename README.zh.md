@@ -103,7 +103,7 @@ CGO_ENABLED=0 go build -ldflags="-s -w" -o var/cdproxy ./cmd/cdproxy
 codesign --force --sign - var/cdproxy          # macOS 剥离符号后必须重签
 
 # 桌面端（macOS，需已安装 Wails v3 CLI）
-cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task package:embedded VERSION=0.9.0
+cd desktop && PATH="$HOME/go/bin:$PATH" wails3 task package:embedded VERSION=0.10.0
 ```
 
 ## 快速上手
