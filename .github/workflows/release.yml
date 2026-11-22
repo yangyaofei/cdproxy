@@ -258,7 +258,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$VERSION" dist/manifest.json --clobber
 
-  # 可选：自动回写 yangyaofei/homebrew-tap 的 Formula/cdproxy.rb 与 Casks/cdproxy-desktop.rb
+  # 可选：自动回写 yangyaofei/homebrew-tap 的 Casks/cdproxy.rb
   homebrew:
     runs-on: ubuntu-latest
     needs: [release, desktop, manifest]
@@ -278,7 +278,6 @@ jobs:
           V="${VERSION#v}"
           mkdir -p tap-work/sums
           gh release download "$VERSION" -R "$GITHUB_REPOSITORY" -p "SHA256SUMS_darwin.txt" -D tap-work/sums --clobber
-          gh release download "$VERSION" -R "$GITHUB_REPOSITORY" -p "checksums.txt" -D tap-work/sums --clobber || true
 
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/yangyaofei/homebrew-tap.git" tap-work/repo
           python3 - "$V" tap-work/sums tap-work/repo << 'PY'
@@ -297,43 +296,25 @@ jobs:
                       out[Path(parts[1]).name] = parts[0]
               return out
 
-          cli_sums = parse_sums(sums_dir / "checksums.txt")
-          if cli_sums:
-              fp = repo / "Formula" / "cdproxy.rb"
-              txt = fp.read_text(encoding="utf-8")
-              for plat in ("darwin_arm64", "darwin_amd64", "linux_arm64", "linux_amd64"):
-                  fname = f"cdproxy_{ver}_{plat}.tar.gz"
-                  sha = cli_sums.get(fname)
-                  if not sha:
-                      raise SystemExit(f"checksums.txt 缺少 {fname}")
-                  pat = re.compile(
-                      rf'(url "https://github\.com/yangyaofei/cdproxy/releases/download/)v[^/]+/cdproxy_[^_]+_{plat}\.tar\.gz("\n\s+sha256 ")[0-9a-f]{{64}}(")'
-                  )
-                  txt, n = pat.subn(rf'\g<1>v{ver}/{fname}\g<2>{sha}\g<3>', txt, count=1)
-                  if n != 1:
-                      raise SystemExit(f"Formula/cdproxy.rb 未匹配到 {plat}")
-              fp.write_text(txt, encoding="utf-8")
-              print(f"Updated Formula/cdproxy.rb -> {ver}")
-
           desk_sums = parse_sums(sums_dir / "SHA256SUMS_darwin.txt")
           desk_fname = f"cdproxy-desktop_{ver}_darwin_arm64.zip"
           desk_sha = desk_sums.get(desk_fname)
           if not desk_sha:
               raise SystemExit(f"SHA256SUMS_darwin.txt 缺少 {desk_fname}")
-          cp = repo / "Casks" / "cdproxy-desktop.rb"
+          cp = repo / "Casks" / "cdproxy.rb"
           ctxt = cp.read_text(encoding="utf-8")
           ctxt, n1 = re.subn(r'version "[^"]+"', f'version "{ver}"', ctxt, count=1)
           ctxt, n2 = re.subn(r'sha256 "[0-9a-f]{64}"', f'sha256 "{desk_sha}"', ctxt, count=1)
           if n1 != 1 or n2 != 1:
-              raise SystemExit("Casks/cdproxy-desktop.rb 替换失败")
+              raise SystemExit("Casks/cdproxy.rb 替换失败")
           cp.write_text(ctxt, encoding="utf-8")
-          print(f"Updated Casks/cdproxy-desktop.rb -> {ver} ({desk_sha[:12]}...)")
+          print(f"Updated Casks/cdproxy.rb -> {ver} ({desk_sha[:12]}...)")
           PY
 
           cd tap-work/repo
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/cdproxy.rb Casks/cdproxy-desktop.rb
+          git add Casks/cdproxy.rb
           if git diff --cached --quiet; then
             echo "homebrew-tap 已是最新版本，无需提交"
           else

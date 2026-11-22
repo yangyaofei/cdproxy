@@ -54,7 +54,7 @@ wails3 updater verify -manifest ../dist/manifest.json -publickey build/updater.k
 ## 4. 客户端热更新、Homebrew 与跨机分发
 
 - **热更新**：客户端轮询 `https://github.com/yangyaofei/cdproxy/releases/latest/download/manifest.json`（Ed25519 强制验签 + 原子替换 + `codesign --verify` 失败回滚）。App 自主下载不带 `com.apple.quarantine`，不经 Gatekeeper 拦截。
-- **Homebrew 分发**：统一维护在公开仓库 [`yangyaofei/homebrew-tap`](https://github.com/yangyaofei/homebrew-tap)（CLI 公式 `Formula/cdproxy.rb` + macOS 桌面 Cask `Casks/cdproxy-desktop.rb`）。每次发版产出 `checksums.txt` 与 `SHA256SUMS_darwin.txt` 后同步版本号与 SHA-256。
+- **Homebrew 分发**：统一维护在公开仓库 [`yangyaofei/homebrew-tap`](https://github.com/yangyaofei/homebrew-tap)（macOS 桌面 Cask `Casks/cdproxy.rb`，单行安装 `brew install --cask yangyaofei/tap/cdproxy`）。每次发版产出 `SHA256SUMS_darwin.txt` 后同步版本号与 SHA-256。
 - **跨机首装**：自签证书未公证，浏览器/AirDrop 下载首次打开需在「系统设置 → 隐私与安全性 → 仍要打开」放行（或 `xattr -dr com.apple.quarantine /Applications/cdproxy-desktop.app`）。
 
 ## 5. 发布前安全与卫生核对

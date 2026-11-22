@@ -91,7 +91,7 @@
 直接执行下面这一行命令（Homebrew 会自动关联软件源并完成安装，无需先手动 `brew tap`）：
 
 ```bash
-brew install --cask yangyaofei/tap/cdproxy-desktop
+brew install --cask yangyaofei/tap/cdproxy
 ```
 
 > **macOS 首次打开提示**：应用使用项目固定自签证书签名（未走 Apple 公证）。首次打开如遇系统安全拦截，前往「系统设置 → 隐私与安全性 → 仍要打开」放行一次，或执行：

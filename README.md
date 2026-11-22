@@ -91,7 +91,7 @@ Multiple AI sessions run concurrently through `cdproxy`, operating quietly in th
 Run one command — Homebrew automatically adds the tap and installs the app in a single step:
 
 ```bash
-brew install --cask yangyaofei/tap/cdproxy-desktop
+brew install --cask yangyaofei/tap/cdproxy
 ```
 
 > **macOS first-launch note**: `cdproxy-desktop.app` is signed with a stable self-signed certificate (not Apple-notarized). If Gatekeeper warns on first launch, allow it in *System Settings → Privacy & Security → Open Anyway* or run:
