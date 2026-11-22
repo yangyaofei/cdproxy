@@ -50,11 +50,11 @@ Admin 页 / Wails 桌面 UI             keeper：Chrome @127.0.0.1:9222（profil
 
 | 概念 | 说明 |
 |------|------|
-| 基座（keeper） | 共享 Chrome 实例，`~/agent-browser/profile` 承载登录态 |
+| 基座（keeper） | 共享 Chrome 实例，`~/.cdproxy/browser-profile` 承载登录态 |
 | 上游 | agent-browser daemon 到代理的 WS 连接（每 session 一条，token 凭证） |
 | 下游/源 | 代理到浏览器的连接，**双源常开并存**：standalone=按需 dial keeper 基座（9222，id 重映射在此发生）；extension=cdp-ext 扩展反向拨入 `GET /ext?token=`（常开待命）。会话在分配时按解析链（显式 source 参数 > 前缀规则 > `settings.routing.default_source`）定格绑定一个源，之后切路由不影响存量会话（平滑切换） |
 | 归属（ownership） | tab（targetId）属于创建它的 session；getTargets 只见自己的 |
-| 会话组（tab group） | extension 下游：会话名下 tab 自动归入 Chrome 原生组 `ab: <会话名>`；**组 = 唯一真相，成员 = 会话可见性**（proxy 归属表是组事实的投影：拖入=归属、拖出=收回、跨组拖动=领地转移）；组内 tab 可真关（拖入即交出）；release 按扩展配置（close/mark/keep）；组在即领地（墓碑复活/整组认领）；冷启动 gstate 重建无孤儿 |
+| 会话组（tab group） | extension 下游：会话名下 tab 自动归入 Chrome 原生组 `<prefix> <会话名>`（默认 `cdproxy: <会话名>`，可在线配置）；**组 = 唯一真相，成员 = 会话可见性**（proxy 归属表是组事实的投影：拖入=归属、拖出=收回、跨组拖动=领地转移）；组内 tab 可真关（拖入即交出）；release 按扩展配置（close/mark/keep）；组在即领地（墓碑复活/整组认领）；冷启动 gstate 重建无孤儿 |
 | 回收（reap） | 断连 60s / 分配后未连接 300s（运行时设置可调）→ 关名下 tab 摘会话 |
 | 焦点策略（focus_mode） | background（默认）：createTarget 强制 background + activateTarget/bringToFront 假成功不转发，操作不抢用户焦点；steal=原生 |
 

@@ -32,7 +32,7 @@ Putting `cdproxy` in the middle solves three things direct CDP connections canno
 
 ## Sharing Your Everyday Chrome with Native Tab Groups
 
-When multiple AI sessions share your everyday Chrome, `cdproxy` and the `cdp-ext` extension use **Chrome's native color-coded Tab Groups** to draw a clear visual boundary — **each session gets its own colored group** (such as `ab: research` or `ab: docs`).
+When multiple AI sessions share your everyday Chrome, `cdproxy` and the `cdp-ext` extension use **Chrome's native color-coded Tab Groups** to draw a clear visual boundary — **each session gets its own colored group** (default prefix `cdproxy:`, such as `cdproxy: research` or `cdproxy: docs`, customizable in the app or extension popup).
 
 <p align="center">
   <img src="docs/assets/tab-groups-en.png" alt="Chrome Native Tab Groups as Visual Isolation Boundaries" width="960" />
@@ -43,12 +43,12 @@ The Tab Groups you see in Chrome are the live permission boundary — no command
 | Action in Chrome | Live effect |
 |---|---|
 | **Tabs outside any group** (your personal tabs, email, docs) | Completely hidden from all AI sessions by default |
-| **Drag a tab into** an `ab: <session>` group | Immediately grants that AI session access to the page |
+| **Drag a tab into** a `cdproxy: <session>` group | Immediately grants that AI session access to the page |
 | **Drag a tab out of** a group | Immediately revokes the AI's access while keeping the page open for you |
 | **Drag a tab between** two session groups | Cleanly hands the page over from one AI session to the other |
 | **Collapse / expand** a group | Purely visual — the AI keeps working normally in the background |
 
-In the `cdp-ext` extension options, you can also pick what happens when a session ends:
+Click the `cdproxy` icon in Chrome's toolbar anytime to open its status & settings popup — inspect live connection status, customize the group prefix, or pick what happens when a session ends:
 - **Close** *(default)* — close the session's tabs and remove the group;
 - **Mark** — grey-mark the group as `· released` and keep the tabs open (if the same session returns later, it automatically reclaims the whole group);
 - **Keep** — detach the session and leave the group and tabs untouched.
@@ -118,11 +118,10 @@ Both modes can stay enabled side by side, and you can switch the default mode an
 
 - **Option A — Dedicated browser (zero setup)**  
   Ready out of the box. The first time a tool connects, `cdproxy` launches an isolated Chrome automatically and shuts it down after idle time to save memory.
-- **Option B — Bridge your everyday Chrome (one-time extension install)**
-  1. In the app sidebar, open **About**, find the `cdp-ext` card, and click **Export** to save the extension folder.
-  2. Open `chrome://extensions` in your everyday Chrome, turn on **Developer mode**, click **Load unpacked**, and select the exported folder.
-  3. Open the `cdp-ext` extension **Options**, set Relay URL to `ws://127.0.0.1:9225/ext`, and paste the token shown under **Sources & Endpoints → extension** in the app.
-  4. Once `extension` shows **Connected** in the app's top bar, you're all set.
+- **Option B — Bridge your everyday Chrome (one-time drag-and-drop install, zero manual typing)**
+  1. On launch, `cdproxy` detects your local Chrome extension status automatically and prepares `~/.cdproxy/extension/cdp-ext` pre-configured with your current port and token. Follow the steps right under **Overview → Set up** or **Sources & Endpoints → extension**.
+  2. Click **Copy URL & Open Chrome**, paste `chrome://extensions` into Chrome's address bar, and turn on **Developer mode** (top-right).
+  3. Click **Open Extension Folder** and drag `cdp-ext` directly onto Chrome's Extensions page — it auto-connects within ~1s. Click the `cdproxy` toolbar icon anytime to inspect status or paste a one-click pairing URL.
 
 ### 3. Copy the Connection URL into Your Tool
 
@@ -169,7 +168,7 @@ cdproxy Desktop App (embedded Go engine + UI)
 
 ### Dynamic Named Sessions via HTTP API
 
-To spin up named, isolated sessions programmatically (each gets its own `ab: <name>` Tab Group in everyday Chrome), copy the allocation token from **Sources & Endpoints**:
+To spin up named, isolated sessions programmatically (each gets its own `cdproxy: <name>` Tab Group in everyday Chrome), copy the allocation token from **Sources & Endpoints**:
 
 ```bash
 # Allocate a named session (returns its dedicated WebSocket URL)
@@ -184,7 +183,7 @@ curl -X POST http://127.0.0.1:9224/sessions/research/release
 
 ### Default Ports & Data Directory
 
-- Default data directory: `~/agent-browser/proxy/` (single `settings.json`, configurable in **Settings**).
+- Default data directory: `~/.cdproxy/` (holds `settings.json`, `extension/cdp-ext/`, `browser-profile/`, `logs/`, and `runtime/` — inspect & open any path under **Settings → Data Directory**).
 - Default ports: control plane `127.0.0.1:9224`, CDP WebSocket `127.0.0.1:9225`, dedicated Chrome `127.0.0.1:9222` (rebound live in-process without dropping active sessions).
 
 ### Build & Test from Source

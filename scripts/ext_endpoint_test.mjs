@@ -112,7 +112,7 @@ class Cdp {
     check("E2 端点直连 extension + 预开 tab", n === 1, `targets=${n}`);
     const st = await http("GET", "/status");
     const s = (st.data?.sessions || []).find((x) => x.name === "extension");
-    check("E2 组名 ab: extension", !!s && s.group_name === "ab: extension", JSON.stringify(s));
+    check("E2 组名 cdproxy: extension", !!s && s.group_name === "cdproxy: extension", JSON.stringify(s));
     c.close();
     await http("POST", "/sessions/extension/release", {});
   } else {

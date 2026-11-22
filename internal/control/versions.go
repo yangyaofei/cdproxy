@@ -30,6 +30,7 @@ import (
 
 	assets "github.com/yangyaofei/cdproxy"
 	"github.com/yangyaofei/cdproxy/internal/keeper"
+	"github.com/yangyaofei/cdproxy/internal/settings"
 )
 
 var (
@@ -151,6 +152,73 @@ func readDiskManifestVersion(path string) string {
 	return strings.TrimSpace(m.Version)
 }
 
+func extensionExportDir(dataDir string) string {
+	return filepath.Join(dataDir, "extension", "cdp-ext")
+}
+
+func (c *Control) extensionRuntimeConfigJSON() []byte {
+	cfg := c.store.Get()
+	wsPort := cfg.WsPort
+	if snap := c.proxy.Status(); snap != nil {
+		if p, ok := snap["ws_port"].(int); ok && p > 0 {
+			wsPort = p
+		}
+	}
+	payload := map[string]string{
+		"relayUrl":    fmt.Sprintf("ws://127.0.0.1:%d/ext", wsPort),
+		"token":       cfg.Sources.ExtensionToken,
+		"groupPrefix": settings.NormalizeGroupPrefix(cfg.Sources.GroupPrefix),
+		"generatedAt": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	data, _ := json.MarshalIndent(payload, "", "  ")
+	return append(data, '\n')
+}
+
+// SyncExtensionRuntimeConfig 刷新已导出扩展目录下的 runtime-config.json（端口/令牌/分组前缀变更时自动调用）。
+func (c *Control) SyncExtensionRuntimeConfig() {
+	dataDir := filepath.Dir(c.logPath)
+	extDir := extensionExportDir(dataDir)
+	if _, err := os.Stat(filepath.Join(extDir, "manifest.json")); err != nil {
+		return
+	}
+	cfgPath := filepath.Join(extDir, "runtime-config.json")
+	if err := os.WriteFile(cfgPath, c.extensionRuntimeConfigJSON(), 0o600); err != nil {
+		c.log.Warn("写入扩展 runtime-config.json 失败", "path", cfgPath, "err", err)
+	}
+}
+
+// EnsureExtensionReady 启动时自动确保 <dataDir>/extension/cdp-ext 就绪且内置当前端口与令牌。
+func (c *Control) EnsureExtensionReady() {
+	dataDir := filepath.Dir(c.logPath)
+	extDir := extensionExportDir(dataDir)
+	bundledVer := readManifestVersion(assets.FS, "ext/cdp-ext/manifest.json")
+	exportedVer := readDiskManifestVersion(filepath.Join(extDir, "manifest.json"))
+	if exportedVer == "" || (bundledVer != "" && compareSemver(exportedVer, bundledVer) < 0) {
+		if _, err := c.exportBundledExtension(); err != nil {
+			c.log.Warn("启动自动导出 cdp-ext 失败", "err", err)
+		}
+		return
+	}
+	c.SyncExtensionRuntimeConfig()
+}
+
+func (c *Control) detectChromeExtension() ChromeExtStatus {
+	dataDir := filepath.Dir(c.logPath)
+	extDir := extensionExportDir(dataDir)
+	extBundledVer := readManifestVersion(assets.FS, "ext/cdp-ext/manifest.json")
+	extExportedVer := readDiskManifestVersion(filepath.Join(extDir, "manifest.json"))
+	snap := c.proxy.Status()
+	extConnected := false
+	extConnectedVer := ""
+	if src, ok := snap["sources"].(map[string]any); ok {
+		if ex, ok := src["extension"].(map[string]any); ok {
+			extConnected, _ = ex["connected"].(bool)
+			extConnectedVer, _ = ex["version"].(string)
+		}
+	}
+	return detectChromeExtensionsInRoots(defaultBrowserRoots(), extDir, extConnected, extConnectedVer, extBundledVer, extExportedVer != "")
+}
+
 func (c *Control) versionsPayload() map[string]any {
 	dataDir := filepath.Dir(c.logPath)
 	ab := c.agentBrowserInfo()
@@ -165,7 +233,7 @@ func (c *Control) versionsPayload() map[string]any {
 	curVerStr, _ := ab["version"].(string)
 	ab["clean_version"] = cleanSemver(curVerStr)
 
-	managedPath := filepath.Join(dataDir, "bin", agentBrowserExeNameForOS(runtime.GOOS))
+	managedPath := filepath.Join(dataDir, "runtime", "bin", agentBrowserExeNameForOS(runtime.GOOS))
 	ab["managed_path"] = managedPath
 	if _, err := os.Stat(managedPath); err == nil {
 		ab["managed_exists"] = true
@@ -179,7 +247,7 @@ func (c *Control) versionsPayload() map[string]any {
 	ab["upgradable"] = assetErr == nil
 
 	extBundledVer := readManifestVersion(assets.FS, "ext/cdp-ext/manifest.json")
-	extDir := filepath.Join(dataDir, "ext", "cdp-ext")
+	extDir := extensionExportDir(dataDir)
 	extExportedVer := readDiskManifestVersion(filepath.Join(extDir, "manifest.json"))
 
 	snap := c.proxy.Status()
@@ -194,6 +262,7 @@ func (c *Control) versionsPayload() map[string]any {
 
 	needsExport := extExportedVer != "" && extBundledVer != "" && compareSemver(extExportedVer, extBundledVer) < 0
 	needsReload := extConnected && extBundledVer != "" && extConnectedVer != extBundledVer
+	chromeExt := detectChromeExtensionsInRoots(defaultBrowserRoots(), extDir, extConnected, extConnectedVer, extBundledVer, extExportedVer != "")
 
 	return map[string]any{
 		"cdproxy": map[string]any{
@@ -212,6 +281,7 @@ func (c *Control) versionsPayload() map[string]any {
 			"exported_version":  extExportedVer,
 			"needs_export":      needsExport,
 			"needs_reload":      needsReload,
+			"chrome":            chromeExt,
 		},
 	}
 }
@@ -326,7 +396,7 @@ func (c *Control) upgradeAgentBrowser(ctx context.Context, targetVer string) (ma
 	}
 
 	dataDir := filepath.Dir(c.logPath)
-	binDir := filepath.Join(dataDir, "bin")
+	binDir := filepath.Join(dataDir, "runtime", "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return nil, fmt.Errorf("创建二进制目录失败: %w", err)
 	}
@@ -384,7 +454,7 @@ func (c *Control) upgradeAgentBrowser(ctx context.Context, targetVer string) (ma
 
 func (c *Control) exportBundledExtension() (map[string]any, error) {
 	dataDir := filepath.Dir(c.logPath)
-	destRoot := filepath.Join(dataDir, "ext", "cdp-ext")
+	destRoot := extensionExportDir(dataDir)
 	if err := os.MkdirAll(destRoot, 0o755); err != nil {
 		return nil, fmt.Errorf("创建扩展目录失败: %w", err)
 	}
@@ -423,6 +493,11 @@ func (c *Control) exportBundledExtension() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 写入本机当前端口、令牌与分组前缀，加载到 Chrome 后无需手动配置即可自动回连
+	if err := os.WriteFile(filepath.Join(destRoot, "runtime-config.json"), c.extensionRuntimeConfigJSON(), 0o600); err != nil {
+		return nil, fmt.Errorf("写入扩展运行配置失败: %w", err)
+	}
+	files = append(files, "runtime-config.json")
 	ver := readDiskManifestVersion(filepath.Join(destRoot, "manifest.json"))
 	c.log.Info("已导出内置 cdp-ext 扩展到本地目录", "dir", destRoot, "version", ver)
 	return map[string]any{
@@ -433,7 +508,7 @@ func (c *Control) exportBundledExtension() (map[string]any, error) {
 	}, nil
 }
 
-func buildExtensionZip() ([]byte, string, error) {
+func (c *Control) buildExtensionZip() ([]byte, string, error) {
 	sub, err := fs.Sub(assets.FS, "ext/cdp-ext")
 	if err != nil {
 		return nil, "", fmt.Errorf("读取内嵌扩展资产失败: %w", err)
@@ -470,6 +545,9 @@ func buildExtensionZip() ([]byte, string, error) {
 	})
 	if err != nil {
 		return nil, "", err
+	}
+	if fw, err := zw.Create("cdp-ext/runtime-config.json"); err == nil {
+		_, _ = fw.Write(c.extensionRuntimeConfigJSON())
 	}
 	if err := zw.Close(); err != nil {
 		return nil, "", err

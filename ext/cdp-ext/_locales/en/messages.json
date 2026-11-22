@@ -1,50 +1,104 @@
 {
   "extName": {
-    "message": "cdp-ext reverse bridge",
+    "message": "cdproxy Browser Bridge (cdp-ext)",
     "description": "Extension display name"
   },
   "extDescription": {
-    "message": "Reverse-dial cdproxy and bridge your Chrome browser as a Tab-Group-isolated CDP endpoint via chrome.debugger.",
+    "message": "Connect your everyday Chrome to the cdproxy desktop app with Tab-Group-isolated CDP proxying.",
     "description": "Extension description"
   },
   "actionTitle": {
-    "message": "cdp-ext: Click to wake or reconnect cdproxy",
+    "message": "cdproxy Bridge — click to view status & settings",
     "description": "Toolbar icon tooltip"
   },
   "optionsPageTitle": {
-    "message": "cdp-ext Settings"
+    "message": "cdproxy Extension Settings"
   },
   "optionsHeading": {
-    "message": "cdp-ext Reverse Bridge Settings"
+    "message": "cdproxy Bridge"
   },
-  "optionsIntroPrefix": {
-    "message": "Connects outbound to cdproxy ("
+  "statusConnected": {
+    "message": "Connected"
   },
-  "optionsIntroSuffix": {
-    "message": " source) and bridges your everyday Chrome as a Tab-Group-isolated CDP downstream."
+  "statusConnecting": {
+    "message": "Connecting…"
+  },
+  "statusAuthError": {
+    "message": "Token mismatch (401)"
+  },
+  "statusMissingToken": {
+    "message": "Access token required"
+  },
+  "statusProxyOffline": {
+    "message": "cdproxy app offline"
+  },
+  "statusSourceDisabled": {
+    "message": "Extension source disabled"
+  },
+  "statusDisconnected": {
+    "message": "Disconnected"
+  },
+  "btnReconnect": {
+    "message": "Reconnect"
+  },
+  "activeGroupsLabel": {
+    "message": "Active session groups"
+  },
+  "noActiveGroups": {
+    "message": "No active sessions"
+  },
+  "pairHint": {
+    "message": "Tip: paste a full pairing URL (ws://...?token=...) into either field to fill both automatically."
+  },
+  "pairParsed": {
+    "message": "Pairing URL parsed"
   },
   "labelRelayUrl": {
-    "message": "Proxy Reverse Endpoint (WebSocket URL)"
+    "message": "Proxy WebSocket URL"
   },
   "labelToken": {
-    "message": "Access Token (matches cdproxy Sources & Endpoints)"
+    "message": "Access Token"
+  },
+  "tokenPlaceholder": {
+    "message": "Paste token or full pairing URL"
+  },
+  "showToken": {
+    "message": "Show"
+  },
+  "hideToken": {
+    "message": "Hide"
+  },
+  "labelGroupPrefix": {
+    "message": "Tab Group Prefix"
+  },
+  "groupPrefixPreview": {
+    "message": "Preview:"
   },
   "labelReleasePolicy": {
-    "message": "When a session is released, what happens to its tabs?"
+    "message": "When a session ends"
   },
   "policyClose": {
-    "message": "Close all tabs and remove the group (default)"
+    "message": "Close tabs and remove group (default)"
   },
   "policyMark": {
-    "message": "Keep tabs, mark group as released (grey · released)"
+    "message": "Keep tabs, grey-mark group (· released)"
   },
   "policyKeep": {
     "message": "Keep tabs and group untouched"
   },
   "saveButton": {
-    "message": "Save"
+    "message": "Save & Connect"
+  },
+  "syncBundledButton": {
+    "message": "Load App Defaults"
   },
   "savedNotice": {
-    "message": "Saved"
+    "message": "Saved & reconnecting…"
+  },
+  "syncedNotice": {
+    "message": "Synced from cdproxy app"
+  },
+  "openFullOptions": {
+    "message": "Open full page"
   }
 }

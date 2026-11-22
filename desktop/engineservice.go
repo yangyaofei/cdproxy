@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -119,6 +120,23 @@ func (s *EngineService) OpenURL(rawURL string) error {
 		return nil
 	}
 	return application.Get().Browser.OpenURL(rawURL)
+}
+
+// OpenChrome 唤起宿主机 Chrome 浏览器（供扩展安装引导一键切至 Chrome 使用）。
+func (s *EngineService) OpenChrome() error {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", "-a", "Google Chrome").Start()
+	case "windows":
+		return exec.Command("cmd", "/c", "start", "", "chrome").Start()
+	default:
+		for _, bin := range []string{"google-chrome", "chromium", "chromium-browser"} {
+			if p, err := exec.LookPath(bin); err == nil {
+				return exec.Command(p).Start()
+			}
+		}
+		return fmt.Errorf("未检测到已安装的 Chrome 浏览器")
+	}
 }
 
 // newFileLogger 文件日志（打开失败回落 stderr）。

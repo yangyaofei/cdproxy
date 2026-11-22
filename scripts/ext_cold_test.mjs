@@ -135,7 +135,7 @@ check("C3 客户端未收到 targetDestroyed 风暴", !up.sawEvent("Target.targe
 await http("POST", `/sessions/${RUN}/release`, {});
 await sleep(1500);
 const g4 = await swEval(`(async () => {
-  const groups = await chrome.tabGroups.query({ title: "ab: ${RUN}" });
+  const groups = await chrome.tabGroups.query({ title: "cdproxy: ${RUN}" });
   return groups.length;
 })()`);
 check("C4 close 策略：组已消失", g4 === 0);
@@ -150,7 +150,7 @@ check("C5 前置：tab 已建", !!c5.result?.targetId);
 await http("POST", `/sessions/${RUN}/release`, {});
 await sleep(1500);
 const tomb = await swEval(`(async () => {
-  const g = await chrome.tabGroups.query({ title: "ab: ${RUN} · released" });
+  const g = await chrome.tabGroups.query({ title: "cdproxy: ${RUN} · released" });
   return g.length === 1 && g[0].color === "grey";
 })()`);
 check("C5 墓碑就位（· released + 灰色）", tomb === true);
@@ -164,7 +164,7 @@ check("C5 同名 alloc 摘碑复活，整组认领（组在即领地）", claime
 // 清理
 await swEval(`(async () => {
   await chrome.storage.local.set({ releasePolicy: "close" });
-  const gs = await chrome.tabGroups.query({ title: "ab: ${RUN}*" });
+  const gs = await chrome.tabGroups.query({ title: "cdproxy: ${RUN}*" });
   for (const g of gs) {
     const tabs = await chrome.tabs.query({ groupId: g.id });
     if (tabs.length) await chrome.tabs.remove(tabs.map((t) => t.id)).catch(() => {});

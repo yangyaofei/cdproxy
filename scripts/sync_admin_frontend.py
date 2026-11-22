@@ -37,7 +37,7 @@ BOOTSTRAP = """  <!-- Wails 绑定引导：标记桌面端形态与 OS + 注入 
     window.addEventListener('unhandledrejection', e => window.__abpErrors.push('promise: ' + String(e.reason)));
   </script>
   <script type="module">
-    import { DoRequest, DumpDOM, CheckForUpdate, RestartForUpdate, UpdaterInfo, OpenPath, OpenURL, StartEngine, RestartEngine, SetAppearance, SetLanguage, WindowMinimize, WindowToggleMaximize, WindowIsMaximized, WindowClose, Platform, Version } from "/bindings/github.com/yangyaofei/cdproxy/desktop/engineservice.js";
+    import { DoRequest, DumpDOM, CheckForUpdate, RestartForUpdate, UpdaterInfo, OpenPath, OpenURL, OpenChrome, StartEngine, RestartEngine, SetAppearance, SetLanguage, WindowMinimize, WindowToggleMaximize, WindowIsMaximized, WindowClose, Platform, Version } from "/bindings/github.com/yangyaofei/cdproxy/desktop/engineservice.js";
     window.__cdpWails = {
       doRequest: DoRequest,
       dumpDOM: DumpDOM,
@@ -46,6 +46,7 @@ BOOTSTRAP = """  <!-- Wails 绑定引导：标记桌面端形态与 OS + 注入 
       updaterInfo: UpdaterInfo,
       openPath: OpenPath,
       openURL: OpenURL,
+      openChrome: OpenChrome,
       startEngine: StartEngine,
       restartEngine: RestartEngine,
       setAppearance: SetAppearance,

@@ -138,16 +138,35 @@ type SourceRoute struct {
 	Source string `json:"source"` // standalone | extension
 }
 
+// DefaultGroupPrefix extension 源 Chrome 原生标签页分组默认前缀。
+const DefaultGroupPrefix = "cdproxy:"
+
+// NormalizeGroupPrefix 规范化标签页分组前缀（去首尾空白；空值回落默认 cdproxy:）。
+func NormalizeGroupPrefix(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return DefaultGroupPrefix
+	}
+	return s
+}
+
+// FormatGroupPrefix 生成实际拼在 Chrome 标签组标题上的前缀（带单个分隔空格）。
+func FormatGroupPrefix(raw string) string {
+	return NormalizeGroupPrefix(raw) + " "
+}
+
 // Sources 双源配置（并存，按会话路由）。
 type Sources struct {
 	// StandaloneEnabled standalone 源（agent-browser 管理的基座 Chrome）开关。
 	StandaloneEnabled bool `json:"standalone_enabled"`
 	// ExtensionEnabled extension 源（用户宿主 Chrome + cdp-ext 回连）开关。
 	ExtensionEnabled bool `json:"extension_enabled"`
-	// ExtensionToken /ext 反向入口的准入令牌（扩展 options 页配同一值）。
+	// ExtensionToken /ext 反向入口的准入令牌（扩展弹窗/选项页配同一值）。
 	// 首次启动自动生成强随机（旧默认 dev 已废除——自动换新并记日志）。
 	ExtensionToken string `json:"token"`
-	// AllocToken POST /sessions（agent-browser plugin 分配路径）的准入令牌，
+	// GroupPrefix extension 源的 Chrome 标签页分组前缀（默认 cdproxy:，展示为 "cdproxy: <会话名>"）。
+	GroupPrefix string `json:"group_prefix"`
+	// AllocToken POST /sessions 分配路径的准入令牌，
 	// 客户端以 Authorization: Bearer <token> 携带。首次启动自动生成。
 	AllocToken string `json:"alloc_token"`
 }
@@ -196,6 +215,7 @@ func Defaults() Settings {
 		Sources: Sources{
 			StandaloneEnabled: true,
 			ExtensionEnabled:  true,
+			GroupPrefix:       DefaultGroupPrefix,
 		},
 		Routing: Routing{
 			DefaultSource: SourceStandalone,
@@ -354,6 +374,11 @@ func load(path string) Settings {
 			if t, ok := src["token"].(string); ok && strings.TrimSpace(t) != "" {
 				out.Sources.ExtensionToken = strings.TrimSpace(t)
 			}
+			if gp, ok := src["group_prefix"].(string); ok && strings.TrimSpace(gp) != "" {
+				if trimmed := strings.TrimSpace(gp); len([]rune(trimmed)) <= 32 {
+					out.Sources.GroupPrefix = trimmed
+				}
+			}
 		}
 	}
 	if v, ok := raw["routing"]; ok {
@@ -491,6 +516,10 @@ func (s *Store) Update(patch map[string]any) (Settings, error) {
 				src.AllocToken = current.Sources.AllocToken // 空串=不修改
 			} else {
 				src.AllocToken = strings.TrimSpace(src.AllocToken)
+			}
+			src.GroupPrefix = NormalizeGroupPrefix(src.GroupPrefix)
+			if len([]rune(src.GroupPrefix)) > 32 {
+				return Settings{}, errors.New("sources.group_prefix 过长（≤32 字符）")
 			}
 			if !src.StandaloneEnabled && !src.ExtensionEnabled {
 				return Settings{}, errors.New("两个源不能同时禁用（至少保留一个可用源）")

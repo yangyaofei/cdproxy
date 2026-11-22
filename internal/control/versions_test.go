@@ -109,17 +109,28 @@ func TestVersionsExportZipAndReloadEndpoints(t *testing.T) {
 		t.Fatalf("expected exported=false before export, got %v", ext["exported"])
 	}
 
-	// 2) POST /sources/extension/export writes manifest + sw.js
+	// 2) POST /sources/extension/export writes manifest + locales + runtime-config.json
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sources/extension/export", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /sources/extension/export status = %d: %s", rec.Code, rec.Body.String())
 	}
-	for _, rel := range []string{"manifest.json", "_locales/en/messages.json", "_locales/zh_CN/messages.json"} {
-		p := filepath.Join(dir, "ext", "cdp-ext", filepath.FromSlash(rel))
+	for _, rel := range []string{"manifest.json", "_locales/en/messages.json", "_locales/zh_CN/messages.json", "runtime-config.json"} {
+		p := filepath.Join(dir, "extension", "cdp-ext", filepath.FromSlash(rel))
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("expected exported %s at %s: %v", rel, p, err)
 		}
+	}
+	cfgRaw, err := os.ReadFile(filepath.Join(dir, "extension", "cdp-ext", "runtime-config.json"))
+	if err != nil {
+		t.Fatalf("read runtime-config.json: %v", err)
+	}
+	var rtCfg map[string]string
+	if err := json.Unmarshal(cfgRaw, &rtCfg); err != nil {
+		t.Fatalf("decode runtime-config.json: %v", err)
+	}
+	if rtCfg["token"] != store.Get().Sources.ExtensionToken || rtCfg["groupPrefix"] != settings.DefaultGroupPrefix {
+		t.Fatalf("unexpected runtime-config.json: %+v", rtCfg)
 	}
 
 	// 3) GET /versions after export reflects exported_version
@@ -145,7 +156,7 @@ func TestVersionsExportZipAndReloadEndpoints(t *testing.T) {
 	for _, f := range zr.File {
 		zipFiles[f.Name] = true
 	}
-	for _, want := range []string{"cdp-ext/manifest.json", "cdp-ext/_locales/en/messages.json", "cdp-ext/_locales/zh_CN/messages.json"} {
+	for _, want := range []string{"cdp-ext/manifest.json", "cdp-ext/_locales/en/messages.json", "cdp-ext/_locales/zh_CN/messages.json", "cdp-ext/runtime-config.json"} {
 		if !zipFiles[want] {
 			t.Fatalf("zip missing %s", want)
 		}

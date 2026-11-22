@@ -244,6 +244,10 @@ function admin() {
     sourcesLoaded: false,
     showExtToken: false,
     showAllocToken: false,
+    extGroupPrefix: "cdproxy:",
+    savedExtGroupPrefix: "cdproxy:",
+    extSetupOpen: null, // null=自动（未连接时展开，已连接时收起）
+    detectingExt: false,
     epForm: [],
     savedEpJson: "",
     epSavedAt: "",
@@ -599,6 +603,9 @@ function admin() {
         this.routeForm.default_source = snap.routing.default_source;
         this.routeForm.rules = JSON.parse(JSON.stringify(snap.routing.rules || []));
         this.savedRouteJson = JSON.stringify(this.routeForm);
+        const gp = (snap.sources?.extension?.group_prefix || snap.settings?.sources?.group_prefix || "cdproxy:").trim() || "cdproxy:";
+        this.extGroupPrefix = gp;
+        this.savedExtGroupPrefix = gp;
         this.sourcesLoaded = true;
       }
       if (!this.epForm.length && snap.endpoints && !this.savedEpJson) {
@@ -1116,7 +1123,115 @@ function admin() {
     /* ── 源 & 接入点 ── */
     extRelayUrl() {
       if (!this.status) return "";
-      return `ws://127.0.0.1:${this.status.settings.ws_port}/ext`;
+      return `ws://127.0.0.1:${this.status.ws_port || this.status.settings.ws_port}/ext`;
+    },
+    extPairingUrl() {
+      const relay = this.extRelayUrl();
+      const tok = this.status?.sources?.extension?.token || "";
+      if (!relay) return "";
+      return tok ? `${relay}?token=${encodeURIComponent(tok)}` : relay;
+    },
+    chromeExt() {
+      return this.status?.chrome_ext || this.versions?.extension?.chrome || null;
+    },
+    chromeExtState() {
+      const ce = this.chromeExt();
+      if (ce && ce.state) return ce.state;
+      return this.status?.sources?.extension?.connected ? "connected" : "not_installed";
+    },
+    chromeExtBadgeClass() {
+      const st = this.chromeExtState();
+      return st === "connected" ? "ok" : "warn";
+    },
+    chromeExtBadgeText() {
+      const st = this.chromeExtState();
+      return this.t("ext.state_" + st);
+    },
+    chromeExtWhere() {
+      const list = this.chromeExt()?.installations || [];
+      if (!list.length) return "Chrome";
+      const first = list[0];
+      const prof = first.profile_name && first.profile_name !== first.profile
+        ? `${first.profile_name} (${first.profile})`
+        : first.profile;
+      return `${first.browser} · ${prof}`;
+    },
+    chromeExtDetailHint() {
+      const ce = this.chromeExt();
+      const st = this.chromeExtState();
+      const where = this.chromeExtWhere();
+      if (st === "connected") {
+        const ver = ce?.connected_version || this.status?.sources?.extension?.version || ce?.bundled_version || "";
+        return this.t("ext.detect_ok_hint", { where, ver });
+      }
+      if (st === "outdated") {
+        return this.t("ext.detect_outdated_hint", { cur: ce?.connected_version || "?", bundled: ce?.bundled_version || "?" });
+      }
+      if (st === "disabled") {
+        return this.t("ext.detect_disabled_hint", { where });
+      }
+      if (st === "installed_offline") {
+        return this.t("ext.detect_offline_hint", { where });
+      }
+      return this.t("ext.detect_none");
+    },
+    isExtSetupExpanded() {
+      if (this.extSetupOpen !== null) return this.extSetupOpen;
+      return !this.status?.sources?.extension?.connected;
+    },
+    toggleExtSetup() {
+      this.extSetupOpen = !this.isExtSetupExpanded();
+    },
+    goExtensionSetup() {
+      this.extSetupOpen = true;
+      this.go("sources");
+      this.$nextTick(() => {
+        const el = document.getElementById("ext-source-card");
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+    },
+    async detectChromeExt() {
+      if (this.detectingExt) return;
+      this.detectingExt = true;
+      try {
+        const res = await this.api("GET", "/sources/extension/detect");
+        if (this.status) this.status = { ...this.status, chrome_ext: res };
+        this.toast(this.t("toast.detect_done"), "ok", 2200);
+      } catch (err) {
+        this.toast(err.message, "err", 3500);
+      } finally {
+        this.detectingExt = false;
+      }
+    },
+    async saveExtGroupPrefix() {
+      if (this.saving.extPrefix) return;
+      const val = (this.extGroupPrefix || "").trim() || "cdproxy:";
+      this.saving = { ...this.saving, extPrefix: true };
+      try {
+        await this.api("PUT", "/settings", { sources: { group_prefix: val } });
+        this.extGroupPrefix = val;
+        this.savedExtGroupPrefix = val;
+        await this.refresh();
+        this.toast(this.t("toast.prefix_saved"), "ok", 2500);
+      } catch (err) {
+        this.toast(err.message, "err", 4000);
+      } finally {
+        this.saving = { ...this.saving, extPrefix: false };
+      }
+    },
+    async copyChromeExtensionsAndOpen() {
+      await this.copyText("chrome://extensions", this.t("toast.chrome_url_copied"), "chrome-ext-url");
+      if (window.__cdpWails && window.__cdpWails.openChrome) {
+        try { await window.__cdpWails.openChrome(); } catch (_) {}
+      }
+    },
+    async openExportedExtensionDir() {
+      let dir = this.chromeExt()?.export_dir || this.versions?.extension?.export_dir || "";
+      if (!dir || !this.chromeExt()?.exported) {
+        await this.exportExtension(this.isDesktop);
+        return;
+      }
+      await this.openLocalPath(dir);
     },
     abSourceText(src) {
       const map = {

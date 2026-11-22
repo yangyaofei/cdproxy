@@ -340,3 +340,35 @@ func TestAdminWebEnabledToggle(t *testing.T) {
 		t.Fatal("Update 后应为关")
 	}
 }
+
+func TestGroupPrefixDefaultAndUpdate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	st := NewStore(path)
+	if got := st.Get().Sources.GroupPrefix; got != DefaultGroupPrefix {
+		t.Fatalf("默认 group_prefix 应为 %q，实际 %q", DefaultGroupPrefix, got)
+	}
+	if got := FormatGroupPrefix(st.Get().Sources.GroupPrefix); got != "cdproxy: " {
+		t.Fatalf("FormatGroupPrefix = %q, want %q", got, "cdproxy: ")
+	}
+	up, err := st.Update(map[string]any{"sources": map[string]any{"group_prefix": "  myai:  "}})
+	if err != nil {
+		t.Fatalf("合法更新失败: %v", err)
+	}
+	if up.Sources.GroupPrefix != "myai:" {
+		t.Fatalf("group_prefix 应规范化为 myai:，实际 %q", up.Sources.GroupPrefix)
+	}
+	// 重载持久化值保持一致
+	reloaded := NewStore(path)
+	if reloaded.Get().Sources.GroupPrefix != "myai:" {
+		t.Fatalf("重载后 group_prefix = %q, want myai:", reloaded.Get().Sources.GroupPrefix)
+	}
+	// 传空字符串回落默认值
+	up, err = st.Update(map[string]any{"sources": map[string]any{"group_prefix": ""}})
+	if err != nil || up.Sources.GroupPrefix != DefaultGroupPrefix {
+		t.Fatalf("空值应回落默认 %q，实际 %q err=%v", DefaultGroupPrefix, up.Sources.GroupPrefix, err)
+	}
+	// 超长拒绝
+	if _, err := st.Update(map[string]any{"sources": map[string]any{"group_prefix": "123456789012345678901234567890123"}}); err == nil {
+		t.Fatal("超过 32 字符应报错")
+	}
+}

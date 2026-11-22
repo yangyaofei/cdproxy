@@ -141,6 +141,7 @@ func (c *Control) Handler() http.Handler {
 		snapshot["settings"] = c.store.Get()
 		snapshot["version"] = c.version
 		snapshot["recent_sessions"] = c.ilg.Recent(50)
+		snapshot["chrome_ext"] = c.detectChromeExtension()
 		writeJSON(w, http.StatusOK, snapshot)
 	})
 
@@ -196,7 +197,10 @@ func (c *Control) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "reset", "agent_browser": c.agentBrowserInfo()})
 	})
 
-	// cdp-ext 扩展：导出更新到本地 <dataDir>/ext/cdp-ext、触发浏览器重载、或打包 zip 下载
+	// cdp-ext 扩展：检测 Chrome 安装态、导出更新到本地 <dataDir>/extension/cdp-ext、触发浏览器重载、或打包 zip 下载
+	mux.HandleFunc("GET /sources/extension/detect", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, c.detectChromeExtension())
+	})
 	mux.HandleFunc("POST /sources/extension/export", func(w http.ResponseWriter, _ *http.Request) {
 		res, err := c.exportBundledExtension()
 		if err != nil {
@@ -213,7 +217,7 @@ func (c *Control) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "reloading"})
 	})
 	mux.HandleFunc("GET /sources/extension/bundle.zip", func(w http.ResponseWriter, _ *http.Request) {
-		data, ver, err := buildExtensionZip()
+		data, ver, err := c.buildExtensionZip()
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -237,20 +241,22 @@ func (c *Control) Handler() http.Handler {
 	// 展示/修改的依据）。path 全部现算（跟随数据目录）。
 	mux.HandleFunc("GET /layout", func(w http.ResponseWriter, _ *http.Request) {
 		dataDir := filepath.Dir(c.logPath)
-		home, _ := os.UserHomeDir()
 		type entry struct {
-			Path  string `json:"path"`
-			Title string `json:"title"`
-			Desc  string `json:"desc"`
-			Exists bool  `json:"exists"`
+			Key    string `json:"key"`
+			Path   string `json:"path"`
+			Title  string `json:"title"`
+			Desc   string `json:"desc"`
+			IsDir  bool   `json:"is_dir"`
+			Exists bool   `json:"exists"`
 		}
 		entries := []entry{
-			{Path: filepath.Join(dataDir, "settings.json"), Title: "settings.json", Desc: "运行设置（本页「保存设置」写入）"},
-			{Path: filepath.Join(dataDir, "logs"), Title: "logs/", Desc: "会话交互流水 <会话名>.jsonl（release 后保留，>100 文件清最老）"},
-			{Path: filepath.Join(dataDir, "keeper-config.json"), Title: "keeper-config.json", Desc: "基座 Chrome 启动配置（autostart 等）"},
-			{Path: filepath.Join(dataDir, "service.log"), Title: "service.log", Desc: "服务日志（App/CLI 同源）"},
-			{Path: filepath.Join(home, ".agent-browser", "config.json"), Title: "~/.agent-browser/config.json", Desc: "agent-browser 插件配置（全局，不在数据目录内）"},
-			{Path: datadir.Path(), Title: datadir.Path(), Desc: "数据目录指针（本页「修改数据目录」写入；重启生效）"},
+			{Key: "settings", Path: filepath.Join(dataDir, "settings.json"), Title: "settings.json", Desc: "核心配置（端口、令牌、防打扰规则、路由与接入点）"},
+			{Key: "extension", Path: extensionExportDir(dataDir), Title: "extension/cdp-ext/", Desc: "Chrome 扩展目录（自动写入最新扩展与本机连接配置）", IsDir: true},
+			{Key: "profile", Path: c.keeper.ProfileDir, Title: "browser-profile/", Desc: "独立专用 Chrome 的登录态与浏览数据", IsDir: true},
+			{Key: "logs", Path: filepath.Join(dataDir, "logs"), Title: "logs/", Desc: "单会话操作流水 <会话名>.jsonl（>100 文件自动清理最旧）", IsDir: true},
+			{Key: "service_log", Path: filepath.Join(dataDir, "service.log"), Title: "service.log", Desc: "服务运行日志"},
+			{Key: "runtime", Path: filepath.Join(dataDir, "runtime"), Title: "runtime/", Desc: "内部运行文件（独立浏览器配置、缓存与 socket）", IsDir: true},
+			{Key: "pointer", Path: datadir.Path(), Title: "pointer.json", Desc: "自定义数据目录指针（修改数据目录后写入，重启生效）"},
 		}
 		for i := range entries {
 			if _, err := os.Stat(entries[i].Path); err == nil {
@@ -326,6 +332,16 @@ func (c *Control) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, updated)
+		extCfgChanged := before.WsPort != updated.WsPort ||
+			before.Sources.ExtensionToken != updated.Sources.ExtensionToken ||
+			before.Sources.GroupPrefix != updated.Sources.GroupPrefix
+		if extCfgChanged {
+			c.SyncExtensionRuntimeConfig()
+		}
+		if before.WsPort != updated.WsPort || before.Sources.GroupPrefix != updated.Sources.GroupPrefix {
+			relayURL := fmt.Sprintf("ws://127.0.0.1:%d/ext", updated.WsPort)
+			_ = c.proxy.SyncExtensionConfig(relayURL, updated.Sources.GroupPrefix)
+		}
 		// 端口类变更：响应先写完，再异步触发监听重绑（本连接随旧监听关闭，
 		// 客户端按响应里的新值重连）
 		portsChanged := before.ControlPort != updated.ControlPort ||
@@ -400,6 +416,10 @@ func (c *Control) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /sources/ext-token/reset", func(w http.ResponseWriter, _ *http.Request) {
 		s := c.store.ResetExtensionToken()
+		c.SyncExtensionRuntimeConfig()
+		if c.onState != nil {
+			c.onState()
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"token": s.Sources.ExtensionToken})
 	})
 	mux.HandleFunc("POST /endpoints/{path}/reset-token", func(w http.ResponseWriter, r *http.Request) {
@@ -487,14 +507,15 @@ func (c *Control) agentBrowserInfo() map[string]any {
 }
 
 // configFiles 配置文件只读白名单（设置页「配置查看」用）：key 稳定，
-// path 现算（跟随数据目录/用户主目录）。
+// path 现算（跟随数据目录）。
 func (c *Control) configFiles() []map[string]any {
-	home, _ := os.UserHomeDir()
-	settingsPath := filepath.Join(filepath.Dir(c.logPath), "settings.json")
+	dataDir := filepath.Dir(c.logPath)
+	settingsPath := filepath.Join(dataDir, "settings.json")
+	extCfgPath := filepath.Join(extensionExportDir(dataDir), "runtime-config.json")
 	entries := []map[string]any{
 		{"key": "settings", "title": "cdproxy 设置", "path": settingsPath},
-		{"key": "keeper-config", "title": "基座启动配置", "path": c.keeper.ConfigPath},
-		{"key": "agent-browser-config", "title": "agent-browser 配置", "path": filepath.Join(home, ".agent-browser", "config.json")},
+		{"key": "ext-config", "title": "cdp-ext 自动配置", "path": extCfgPath},
+		{"key": "keeper-config", "title": "独立浏览器配置", "path": c.keeper.ConfigPath},
 	}
 	for _, e := range entries {
 		_, err := os.Stat(e["path"].(string))

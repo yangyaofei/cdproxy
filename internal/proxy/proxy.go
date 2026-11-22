@@ -576,14 +576,18 @@ func (p *Proxy) RestartKeeper() error {
 	return fmt.Errorf("无下游在运行（基座未运行、扩展未回连）")
 }
 
-// ExtGroupPrefix extension 源的会话组名前缀（与 cdp-ext sw.js 的
-// GROUP_PREFIX 一致；会话名 → 组名 = 前缀 + 会话名）。
-const ExtGroupPrefix = "ab: "
+// ExtGroupPrefix 默认 extension 源会话组名前缀（向后兼容常量；运行时以 settings.Sources.GroupPrefix 为准）。
+const ExtGroupPrefix = "cdproxy: "
+
+func (p *Proxy) extGroupPrefix() string {
+	return settings.FormatGroupPrefix(p.store.Get().Sources.GroupPrefix)
+}
 
 // Status 运行状态快照（双源并存视角）。
 func (p *Proxy) Status() map[string]any {
 	cfg := p.store.Get()
 	sessions := p.st.Snapshot()
+	groupPrefix := settings.FormatGroupPrefix(cfg.Sources.GroupPrefix)
 	// 会话项补充源视角字段：type（=downstream 值）、group_name（extension）、
 	// via（最近连接入口：alloc | endpoint:<path>）
 	for _, m := range sessions {
@@ -591,7 +595,7 @@ func (p *Proxy) Status() map[string]any {
 		m["type"] = kind
 		if kind == dsExtension {
 			if name, _ := m["name"].(string); name != "" {
-				m["group_name"] = ExtGroupPrefix + name
+				m["group_name"] = groupPrefix + name
 			}
 		}
 	}
@@ -603,10 +607,11 @@ func (p *Proxy) Status() map[string]any {
 				"base_session": p.cfg.Session,
 			},
 			"extension": map[string]any{
-				"enabled":   cfg.Sources.ExtensionEnabled,
-				"connected": p.linkConnected(dsExtension),
-				"token":     cfg.Sources.ExtensionToken,
-				"version":   p.extVersion(),
+				"enabled":      cfg.Sources.ExtensionEnabled,
+				"connected":    p.linkConnected(dsExtension),
+				"token":        cfg.Sources.ExtensionToken,
+				"group_prefix": settings.NormalizeGroupPrefix(cfg.Sources.GroupPrefix),
+				"version":      p.extVersion(),
 			},
 			// alloc_token 管理面可见（用户要在「源」页复制去配置 plugin）。
 			"alloc_token": cfg.Sources.AllocToken,
@@ -642,6 +647,23 @@ func (p *Proxy) extVersion() string {
 // ReloadExtension 通知已连接的浏览器扩展重载自身（更新本地扩展文件后生效）。
 func (p *Proxy) ReloadExtension() error {
 	data, err := json.Marshal(map[string]any{"abCtl": "reload"})
+	if err != nil {
+		return err
+	}
+	return p.dsSend(dsExtension, data)
+}
+
+// SyncExtensionConfig 向已连接的浏览器扩展推送最新运行配置（分组前缀 / 中继地址）。
+// 注：不通过旧连接下发重置后的新令牌，保持令牌重置的吊销安全边界。
+func (p *Proxy) SyncExtensionConfig(relayURL, groupPrefix string) error {
+	payload := map[string]any{
+		"abCtl":       "config",
+		"groupPrefix": settings.NormalizeGroupPrefix(groupPrefix),
+	}
+	if strings.TrimSpace(relayURL) != "" {
+		payload["relayUrl"] = strings.TrimSpace(relayURL)
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
@@ -994,6 +1016,10 @@ func (p *Proxy) handleExtension(w http.ResponseWriter, r *http.Request) {
 	})
 	go p.pingLoop(r.Context(), conn, 20*time.Second)
 	p.log.Info("扩展已回连（成为 extension 下游）")
+	p.sendExtControl(map[string]any{
+		"abCtl":       "config",
+		"groupPrefix": settings.NormalizeGroupPrefix(p.store.Get().Sources.GroupPrefix),
+	})
 	p.notifyState()
 	go p.dsRecvLoop(link)
 }

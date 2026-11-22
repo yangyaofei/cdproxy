@@ -52,7 +52,7 @@ func Defaults() Config {
 		AgentBrowser: agentBrowser,
 		Session:      "ab-keeper",
 		Headed:       true,
-		ProfileDir:   filepath.Join(home, "agent-browser", "profile"),
+		ProfileDir:   filepath.Join(home, ".cdproxy", "browser-profile"),
 	}
 }
 

@@ -308,8 +308,8 @@
                       <h2>
                         <span class="src-ic lg ext"><svg><use href="#i-puzzle"/></svg></span>
                         <span class="mono">extension</span>
-                        <span class="bdg" :class="status.sources.extension.connected ? 'ok' : 'warn'"
-                              x-text="status.sources.extension.connected ? t('topbar.state_ext_connected') : t('topbar.state_ext_disconnected')"></span>
+                        <span class="bdg" :class="chromeExtBadgeClass()"
+                              x-text="chromeExtBadgeText()"></span>
                         <span class="bdg plain mono" x-text="sourceSessionCount('extension') === 1 ? t('ov.session_one') : t('ov.sessions_count', { n: sourceSessionCount('extension') })"></span>
                       </h2>
                       <label class="switch" :title="status.sources.extension.enabled ? t('ov.toggle_src_disable', { src: 'extension' }) : t('ov.toggle_src_enable', { src: 'extension' })">
@@ -354,13 +354,16 @@
                     </div>
 
                     <div class="save-bar">
-                      <button class="sm" @click="copyText('Authorization: Bearer ' + status.sources.alloc_token, t('toast.bearer_copied'), 'ov-bearer')">
-                        <svg class="ic-sm" x-show="copiedKey !== 'ov-bearer'"><use href="#i-copy"/></svg>
-                        <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-bearer'"><use href="#i-check"/></svg>
-                        <span x-text="t('ov.copy_bearer')"></span>
+                      <button class="sm" @click="copyText(extPairingUrl(), t('toast.pair_copied'), 'ov-pair')">
+                        <svg class="ic-sm" x-show="copiedKey !== 'ov-pair'"><use href="#i-copy"/></svg>
+                        <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ov-pair'"><use href="#i-check"/></svg>
+                        <span x-text="t('ext.pair_copy')"></span>
                       </button>
                       <span class="spacer" style="flex:1"></span>
-                      <button class="link-btn" @click="go('sources')" x-text="t('ov.manage_tokens')"></button>
+                      <button class="link-btn" x-show="chromeExtState() === 'outdated'" @click="reloadExtension()" :disabled="reloadingExt" x-text="t('ext.ov_reload_link')"></button>
+                      <button class="link-btn" x-show="chromeExtState() === 'not_installed'" @click="goExtensionSetup()" x-text="t('ext.ov_setup_link')"></button>
+                      <button class="link-btn" x-show="chromeExtState() === 'disabled' || chromeExtState() === 'installed_offline'" @click="goExtensionSetup()" x-text="t('ext.ov_fix_link')"></button>
+                      <button class="link-btn" x-show="chromeExtState() === 'connected'" @click="go('sources')" x-text="t('ov.manage_tokens')"></button>
                     </div>
                   </div>
                 </div>
@@ -808,14 +811,14 @@
                     </div>
                   </div>
 
-                  <div class="card">
+                  <div class="card" id="ext-source-card">
                     <div class="card-head">
                       <h2>
                         <span class="src-ic lg ext"><svg><use href="#i-puzzle"/></svg></span>
                         <span class="mono">extension</span>
                         <span class="hint" style="font-weight:400" x-text="t('src.ext_sub')"></span>
-                        <span class="bdg" :class="status.sources.extension.connected ? 'ok' : 'warn'"
-                              x-text="status.sources.extension.connected ? t('topbar.state_ext_connected') : t('topbar.state_ext_disconnected')"></span>
+                        <span class="bdg" :class="chromeExtBadgeClass()"
+                              x-text="chromeExtBadgeText()"></span>
                       </h2>
                       <label class="switch" :title="status.sources.extension.enabled ? t('src.toggle_disable', { src: 'extension' }) : t('src.toggle_enable', { src: 'extension' })">
                         <input type="checkbox" :checked="status.sources.extension.enabled"
@@ -824,6 +827,20 @@
                       </label>
                     </div>
                     <table class="kv">
+                      <tr>
+                        <td x-text="t('ext.detect_label')"></td>
+                        <td>
+                          <div class="rowflex">
+                            <span class="bdg" :class="chromeExtBadgeClass()" x-text="chromeExtBadgeText()"></span>
+                            <button class="sm" @click="detectChromeExt()" :disabled="detectingExt">
+                              <svg class="ic-sm" :class="detectingExt ? 'spin' : ''"><use href="#i-refresh"/></svg>
+                              <span x-text="t('ext.detect_refresh')"></span>
+                            </button>
+                            <button class="sm" x-show="chromeExtState() === 'outdated'" @click="exportExtension(false).then(() => reloadExtension())" :disabled="exportingExt || reloadingExt" x-text="t('ext.ov_reload_link')"></button>
+                          </div>
+                          <div class="field-help" x-text="chromeExtDetailHint()"></div>
+                        </td>
+                      </tr>
                       <tr>
                         <td x-text="t('src.relay_addr')"></td>
                         <td>
@@ -851,12 +868,79 @@
                               <svg class="ic-sm" x-show="copiedKey !== 'ext-tok'"><use href="#i-copy"/></svg>
                               <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'ext-tok'"><use href="#i-check"/></svg>
                             </button>
+                            <button class="sm" @click="copyText(extPairingUrl(), t('toast.pair_copied'), 'src-pair')">
+                              <svg class="ic-sm" x-show="copiedKey !== 'src-pair'"><use href="#i-copy"/></svg>
+                              <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'src-pair'"><use href="#i-check"/></svg>
+                              <span x-text="t('ext.pair_copy')"></span>
+                            </button>
                             <button class="sm warn" @click="resetToken('ext')" :disabled="actionKey === 'reset-ext'" x-text="t('common.reset')"></button>
                           </div>
-                          <div class="field-help" x-text="t('src.ext_token_help')"></div>
+                          <div class="field-help" x-text="t('ext.pair_help')"></div>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td x-text="t('ext.prefix_label')"></td>
+                        <td>
+                          <div class="rowflex">
+                            <input x-model="extGroupPrefix" placeholder="cdproxy:" class="mono" style="width:150px" maxlength="32">
+                            <span class="bdg ext mono" x-text="((extGroupPrefix || '').trim() || 'cdproxy:') + ' research'"></span>
+                            <button class="sm primary" x-show="((extGroupPrefix || '').trim() || 'cdproxy:') !== savedExtGroupPrefix"
+                                    @click="saveExtGroupPrefix()" :disabled="saving.extPrefix"
+                                    x-text="saving.extPrefix ? t('common.saving') : t('ext.prefix_save')"></button>
+                          </div>
+                          <div class="field-help" x-text="t('ext.prefix_help')"></div>
                         </td>
                       </tr>
                     </table>
+
+                    <!-- 内嵌可折叠安装与连接步骤：未连接时自动展开，已连接后自动收起 -->
+                    <div class="ext-setup">
+                      <div class="ext-setup-head">
+                        <span class="hint" style="font-weight:550;color:var(--tx2)" x-text="t('ext.setup_toggle_show')"></span>
+                        <button class="link-btn" @click="toggleExtSetup()" x-text="isExtSetupExpanded() ? t('ext.setup_toggle_hide') : t('ext.setup_toggle_show')"></button>
+                      </div>
+                      <div class="ext-steps" x-show="isExtSetupExpanded()">
+                        <div class="ext-step">
+                          <span class="ext-step-num">1</span>
+                          <div class="ext-step-body">
+                            <div class="ext-step-title" x-text="t('ext.setup_step1_title')"></div>
+                            <div class="ext-step-desc" x-text="t('ext.setup_step1_desc')"></div>
+                            <div class="ext-step-actions">
+                              <button class="sm" @click="copyChromeExtensionsAndOpen()">
+                                <svg class="ic-sm" x-show="copiedKey !== 'chrome-ext-url'"><use href="#i-copy"/></svg>
+                                <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'chrome-ext-url'"><use href="#i-check"/></svg>
+                                <span x-text="t('ext.setup_step1_btn')"></span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="ext-step">
+                          <span class="ext-step-num">2</span>
+                          <div class="ext-step-body">
+                            <div class="ext-step-title" x-text="t('ext.setup_step2_title')"></div>
+                            <div class="ext-step-desc" x-text="t('ext.setup_step2_desc')"></div>
+                            <div class="ext-step-actions">
+                              <button class="sm primary" @click="openExportedExtensionDir()" :disabled="exportingExt">
+                                <svg class="ic-sm"><use href="#i-folder"/></svg>
+                                <span x-text="t('ext.setup_step2_open')"></span>
+                              </button>
+                              <button class="sm" @click="copyText(chromeExt()?.export_dir || versions?.extension?.export_dir || '', t('toast.ext_dir_copied'), 'src-ext-dir')">
+                                <svg class="ic-sm" x-show="copiedKey !== 'src-ext-dir'"><use href="#i-copy"/></svg>
+                                <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'src-ext-dir'"><use href="#i-check"/></svg>
+                                <span x-text="t('ext.setup_step2_copy')"></span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="ext-step">
+                          <span class="ext-step-num" :class="status.sources.extension.connected ? 'ok' : ''" x-text="status.sources.extension.connected ? '✓' : '3'"></span>
+                          <div class="ext-step-body">
+                            <div class="ext-step-title" x-text="t('ext.setup_step3_title')"></div>
+                            <div class="ext-step-desc" x-text="status.sources.extension.connected ? t('ext.setup_step3_ok') : t('ext.setup_step3_wait')"></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
 
                     <div class="subhead"><h3 x-text="t('src.alloc_title')"></h3></div>
                     <table class="kv">
@@ -1310,13 +1394,26 @@
                           <svg class="ic-sm" x-show="copiedKey !== 'datadir'"><use href="#i-copy"/></svg>
                           <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === 'datadir'"><use href="#i-check"/></svg>
                         </button>
+                        <button class="sm" x-show="isDesktop" @click="openLocalPath(layout.data_dir)">
+                          <svg class="ic-sm"><use href="#i-folder"/></svg>
+                          <span x-text="t('about.open_dir')"></span>
+                        </button>
                       </div>
                       <div class="tree" style="margin:10px 0">
                         <template x-for="(e, i) in layout.entries" :key="i">
                           <div class="row">
-                            <span class="p mono" x-text="e.title"></span>
+                            <span class="p mono" :title="e.path" x-text="e.title"></span>
                             <span :class="e.exists ? 'exists' : 'missing'" x-text="e.exists ? '●' : '○'"></span>
                             <span class="hint" style="flex:1" x-text="layoutDesc(e)"></span>
+                            <span class="row-acts">
+                              <button class="icon-btn ghost" x-show="isDesktop && e.exists" @click="openLocalPath(e.path)" :title="t('about.open_dir')">
+                                <svg class="ic-sm"><use href="#i-folder"/></svg>
+                              </button>
+                              <button class="icon-btn ghost" @click="copyText(e.path, t('toast.path_copied'), 'lay-' + i)" :title="t('common.copy_path')">
+                                <svg class="ic-sm" x-show="copiedKey !== ('lay-' + i)"><use href="#i-copy"/></svg>
+                                <svg class="ic-sm" style="color:var(--ok-fg)" x-show="copiedKey === ('lay-' + i)"><use href="#i-check"/></svg>
+                              </button>
+                            </span>
                           </div>
                         </template>
                       </div>

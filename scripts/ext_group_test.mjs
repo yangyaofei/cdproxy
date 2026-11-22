@@ -133,14 +133,14 @@ await up.call("Target.setDiscoverTargets", { discover: true }); // 对齐 agent-
 // G1 自建 tab 自动入组
 const created = await up.call("Target.createTarget", { url: "about:blank?created" });
 const createdTid = created.result?.targetId;
-check("G1 createTarget 响应带 abGroup", created.result?.abGroup === "ab: " + RUN, JSON.stringify(created.result?.abGroup));
+check("G1 createTarget 响应带 abGroup", created.result?.abGroup === "cdproxy: " + RUN, JSON.stringify(created.result?.abGroup));
 
 // 用户 tab + 拖入组（SW 存活窗口内完成：MV3 SW 在 eval 结束后可能被挂起，
 // 组变化事件与对账定时器须在同一存活窗口里跑完——真实浏览器由 WS 心跳
 // + alarm 保活，此处等价模拟）
 const userInfo = await swEval(`(async () => {
   const groups = await chrome.tabGroups.query({});
-  const g = groups.find(x => x.title === "ab: ${RUN}");
+  const g = groups.find(x => x.title === "cdproxy: ${RUN}");
   if (!g) return { err: "会话组不存在" };
   await refreshTargets();
   const tab = await chrome.tabs.create({ url: "about:blank", active: false });
@@ -185,7 +185,7 @@ check("G3 targetDestroyed 送达", destroyed?.params?.targetId === userTargetId)
 // G4 新用户 tab 拖入 → 拖出（G3 已真关旧 tab；同窗口内完成操作+等待，见 G2 注释）
 const g4user = await swEval(`(async () => {
   const groups = await chrome.tabGroups.query({});
-  const g = groups.find(x => x.title === "ab: ${RUN}");
+  const g = groups.find(x => x.title === "cdproxy: ${RUN}");
   if (!g) return { err: "no group" };
   await refreshTargets();
   const tab = await chrome.tabs.create({ url: "about:blank", active: false });
@@ -208,7 +208,7 @@ check("G4 拖出组收回（revoke）", !targets.some((t) => t.targetId === g4us
 // G5 release 策略 close（默认）：组内全部 tab 关闭、组消失
 const user2 = await swEval(`(async () => {
   const groups = await chrome.tabGroups.query({});
-  const g = groups.find(x => x.title === "ab: ${RUN}");
+  const g = groups.find(x => x.title === "cdproxy: ${RUN}");
   if (!g) return { err: "no group" };
   await refreshTargets();
   const tab = await chrome.tabs.create({ url: "about:blank", active: false });
@@ -228,7 +228,7 @@ const g5tabs = await swEval(`(async () => {
   try { await chrome.tabs.get(${user2.tabId}); alive = true; } catch {}
   let createdAlive = false;
   try { const tid = tabByTarget.get("${createdTid}"); if (tid !== undefined) { await chrome.tabs.get(tid); createdAlive = true; } } catch {}
-  const groups = await chrome.tabGroups.query({ title: "ab: ${RUN}" });
+  const groups = await chrome.tabGroups.query({ title: "cdproxy: ${RUN}" });
   return { userAlive: alive, createdAlive, groupLeft: groups.length };
 })()`);
 check("G5 close：用户 tab 已关", g5tabs?.userAlive === false);
@@ -244,7 +244,7 @@ const c2 = await up2.call("Target.createTarget", { url: "about:blank?mk" });
 check("G6 前置：新会话 tab 已建", !!c2.result?.targetId);
 const g6user = await swEval(`(async () => {
   const groups = await chrome.tabGroups.query({});
-  const g = groups.find(x => x.title === "ab: ${RUN}");
+  const g = groups.find(x => x.title === "cdproxy: ${RUN}");
   if (!g) return { err: "no group" };
   await refreshTargets();
   const tab = await chrome.tabs.create({ url: "about:blank", active: false });
@@ -259,7 +259,7 @@ await http("POST", `/sessions/${RUN}/release`, {});
 await sleep(1500);
 const g6 = await swEval(`(async () => {
   const groups = await chrome.tabGroups.query({});
-  const t = groups.find(x => x.title === "ab: ${RUN} · released");
+  const t = groups.find(x => x.title === "cdproxy: ${RUN} · released");
   let userAlive = false;
   try { await chrome.tabs.get(${g6user.tabId}); userAlive = true; } catch {}
   const mk = await chrome.tabs.query({ url: "about:blank?mk*" });
@@ -277,8 +277,8 @@ await up3.open();
 await sleep(1800); // 预开 tab 入组（摘碑）+ sync 往返
 const g7 = await swEval(`(async () => {
   const groups = await chrome.tabGroups.query({});
-  const live = groups.find(x => x.title === "ab: ${RUN}");
-  const tomb = groups.find(x => x.title === "ab: ${RUN} · released");
+  const live = groups.find(x => x.title === "cdproxy: ${RUN}");
+  const tomb = groups.find(x => x.title === "cdproxy: ${RUN} · released");
   return { live: !!live, tomb: !!tomb };
 })()`);
 check("G7 复活：活组回归（摘碑）", g7?.live === true && g7?.tomb === false, JSON.stringify(g7));
@@ -290,7 +290,7 @@ check("G7 旧 tab 整组认领（组在即领地）", t3.some((x) => x.targetId 
 await swEval(`(async () => { await chrome.storage.local.set({ releasePolicy: "keep" }); })()`);
 const g8user = await swEval(`(async () => {
   const groups = await chrome.tabGroups.query({});
-  const g = groups.find(x => x.title === "ab: ${RUN}");
+  const g = groups.find(x => x.title === "cdproxy: ${RUN}");
   if (!g) return { err: "no group" };
   await refreshTargets();
   const tab = await chrome.tabs.create({ url: "about:blank", active: false });
@@ -304,7 +304,7 @@ check("G8 前置：用户 tab 已入组", !!g8user?.targetId, JSON.stringify(g8u
 await http("POST", `/sessions/${RUN}/release`, {});
 await sleep(1500);
 const g8 = await swEval(`(async () => {
-  const groups = await chrome.tabGroups.query({ title: "ab: ${RUN}" });
+  const groups = await chrome.tabGroups.query({ title: "cdproxy: ${RUN}" });
   let userAlive = false;
   try { await chrome.tabs.get(${g8user.tabId}); userAlive = true; } catch {}
   return { group: groups.length, userAlive };
@@ -315,7 +315,7 @@ check("G8 keep：tab 原样保留", g8?.userAlive === true);
 // 清理：关掉遗留 tab + 策略复位 close
 await swEval(`(async () => {
   await chrome.storage.local.set({ releasePolicy: "close" });
-  const groups = await chrome.tabGroups.query({ title: "ab: ${RUN}" });
+  const groups = await chrome.tabGroups.query({ title: "cdproxy: ${RUN}" });
   for (const g of groups) {
     const tabs = await chrome.tabs.query({ groupId: g.id });
     if (tabs.length) await chrome.tabs.remove(tabs.map(t => t.id)).catch(() => {});

@@ -58,7 +58,7 @@ jobs:
           node --check static/admin/i18n.js
           node --check static/admin/app.js
           node --check ext/cdp-ext/sw.js
-          node --check ext/cdp-ext/options.js
+          node --check ext/cdp-ext/config-ui.js
           mkdir -p desktop/frontend/dist
           if [ ! -f desktop/build/updater.key.pub ]; then
             printf -- "-----BEGIN PLACEHOLDER PUBLIC KEY-----\nci build placeholder\n-----END PLACEHOLDER PUBLIC KEY-----\n" > desktop/build/updater.key.pub

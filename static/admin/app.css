@@ -1584,3 +1584,79 @@ table.slogt th:nth-child(4), table.slogt td:nth-child(4) { width: auto; }
 .about-hero-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
 .about-hero-title h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.02em; color: var(--tx); }
 .about-hero-sub { font-size: 12px; color: var(--tx2); line-height: 1.5; }
+
+/* ── 源页内嵌 Chrome 扩展安装步骤（克制、可折叠） ────────────── */
+.ext-setup {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.ext-setup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ext-steps {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ext-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--inset);
+  border: 1px solid var(--border);
+}
+.ext-step-num {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--accent-h);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  margin-top: 1px;
+}
+.ext-step-num.ok {
+  color: var(--ok-fg);
+  background: var(--ok-bg);
+}
+.ext-step-body {
+  flex: 1;
+  min-width: 0;
+}
+.ext-step-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--tx);
+  margin-bottom: 3px;
+}
+.ext-step-desc {
+  font-size: 12px;
+  color: var(--tx2);
+  line-height: 1.5;
+}
+.ext-step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.tree .row {
+  align-items: center;
+}
+.tree .row-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}

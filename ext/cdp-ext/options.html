@@ -2,32 +2,64 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title data-i18n="optionsPageTitle">cdp-ext Settings</title>
-  <style>
-    body { font: 14px/1.6 system-ui, sans-serif; max-width: 480px; margin: 32px auto; padding: 0 16px; }
-    label { display: block; margin: 16px 0 4px; font-weight: 600; }
-    input, select { width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit; }
-    button { margin-top: 20px; padding: 6px 20px; font: inherit; cursor: pointer; }
-    #saved { color: #080; margin-left: 12px; visibility: hidden; }
-  </style>
+  <title data-i18n="optionsPageTitle">cdproxy Extension Settings</title>
+  <link rel="stylesheet" href="config-ui.css" />
 </head>
-<body>
-  <h2 data-i18n="optionsHeading">cdp-ext Reverse Bridge Settings</h2>
-  <p>
-    <span data-i18n="optionsIntroPrefix">Connects outbound to cdproxy (</span><code>extension</code><span data-i18n="optionsIntroSuffix"> source) and bridges your everyday Chrome as a Tab-Group-isolated CDP downstream.</span>
-  </p>
-  <label for="relayUrl" data-i18n="labelRelayUrl">Proxy Reverse Endpoint (WebSocket URL)</label>
-  <input id="relayUrl" placeholder="ws://127.0.0.1:9225/ext" />
-  <label for="token" data-i18n="labelToken">Access Token (matches cdproxy Sources &amp; Endpoints)</label>
-  <input id="token" placeholder="dev" />
-  <label for="releasePolicy" data-i18n="labelReleasePolicy">When a session is released, what happens to its tabs?</label>
-  <select id="releasePolicy">
-    <option value="close" data-i18n="policyClose">Close all tabs and remove the group (default)</option>
-    <option value="mark" data-i18n="policyMark">Keep tabs, mark group as released (grey · released)</option>
-    <option value="keep" data-i18n="policyKeep">Keep tabs and group untouched</option>
-  </select>
-  <button id="save" data-i18n="saveButton">Save</button>
-  <span id="saved" data-i18n="savedNotice">Saved</span>
-  <script src="options.js"></script>
+<body class="mode-options">
+  <div class="panel">
+    <div class="head">
+      <div class="brand">
+        <img src="icons/icon-48.png" alt="cdproxy" />
+        <h1 data-i18n="optionsHeading">cdproxy Bridge</h1>
+        <span class="ver" id="extVersion"></span>
+      </div>
+    </div>
+
+    <div class="status-bar">
+      <span class="badge warn" id="statusBadge">…</span>
+      <button class="sm" id="btnReconnect" data-i18n="btnReconnect">Reconnect</button>
+    </div>
+
+    <div class="groups-box" id="groupsRow"></div>
+
+    <div class="field">
+      <label for="relayUrl" data-i18n="labelRelayUrl">Proxy WebSocket URL</label>
+      <input id="relayUrl" placeholder="ws://127.0.0.1:9225/ext" spellcheck="false" />
+    </div>
+
+    <div class="field">
+      <label for="token" data-i18n="labelToken">Access Token</label>
+      <div class="input-row">
+        <input id="token" type="password" data-i18n-placeholder="tokenPlaceholder" placeholder="Paste token or full pairing URL" spellcheck="false" />
+        <button class="sm" type="button" id="btnToggleToken" data-i18n="showToken">Show</button>
+      </div>
+      <div class="hint" data-i18n="pairHint">Tip: paste a full pairing URL to fill both fields automatically.</div>
+    </div>
+
+    <div class="field">
+      <label for="groupPrefix">
+        <span data-i18n="labelGroupPrefix">Tab Group Prefix</span>
+        <span class="preview-pill" id="prefixPreview">cdproxy: research</span>
+      </label>
+      <input id="groupPrefix" placeholder="cdproxy:" spellcheck="false" />
+    </div>
+
+    <div class="field">
+      <label for="releasePolicy" data-i18n="labelReleasePolicy">When a session ends</label>
+      <select id="releasePolicy">
+        <option value="close" data-i18n="policyClose">Close tabs and remove group (default)</option>
+        <option value="mark" data-i18n="policyMark">Keep tabs, grey-mark group (· released)</option>
+        <option value="keep" data-i18n="policyKeep">Keep tabs and group untouched</option>
+      </select>
+    </div>
+
+    <div class="actions">
+      <button class="primary" id="btnSave" data-i18n="saveButton">Save &amp; Connect</button>
+      <button id="btnSyncBundled" style="display:none" data-i18n="syncBundledButton">Load App Defaults</button>
+    </div>
+
+    <div class="notice" id="notice"></div>
+  </div>
+  <script src="config-ui.js"></script>
 </body>
 </html>

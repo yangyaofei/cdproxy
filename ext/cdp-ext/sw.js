@@ -50,8 +50,9 @@
 // 已知边界：一 tab 一 debugger（开 DevTools 时 attach 报错）；软休眠/SW 重启不保留 OOPIF/worker
 // 子会话；heap/CPU profiler 等浏览器级域不可用；下载落盘按宿主默认行为。
 
-const DEFAULT_RELAY = "ws://127.0.0.1:9235/ext";
-const DEFAULT_TOKEN = "dev";
+const DEFAULT_RELAY = "ws://127.0.0.1:9225/ext";
+const DEFAULT_TOKEN = "";
+const DEFAULT_GROUP_PREFIX = "cdproxy:";
 const HEARTBEAT_MS = 20_000; // 同时是 SW 保活间隔（须 <30s）
 const ATTACH_STORAGE_KEY = "cdpExtAttachedTargets"; // chrome.storage.session
 // 会话表持久化（chrome.storage.session：SW 重启存活、浏览器重启清空——
@@ -63,13 +64,22 @@ const STATE_KEY = "cdpExtState";
 // ── 状态表 ─────────────────────────────────────────────────────────
 
 // ── 标签组（可见性 = 组成员）─────────────────────────────────────
-// 每个会话一个 "ab: <session>" 彩色组：扩展创建的 tab 自动入组；用户把
-// 自己的 tab 拖进组 = 交给该会话，拖出 = 收回。组成员变化经 sync 控制消息
-// 与 proxy 归属表对账（幂等，事件驱动 + alarm 兜底，漏事件可自愈）。
-const GROUP_PREFIX = "ab: ";
+// 每个会话一个 "<prefix> <session>"（默认 "cdproxy: <session>"）彩色组：
+// 扩展创建的 tab 自动入组；用户把自己的 tab 拖进组 = 交给该会话，拖出 = 收回。
+// 组成员变化经 sync 控制消息与 proxy 归属表对账（幂等，事件驱动 + alarm 兜底）。
+let activeGroupPrefix = DEFAULT_GROUP_PREFIX;
 const RELEASED_SUFFIX = " · released";
 const GROUP_COLORS = ["red", "yellow", "green", "cyan", "blue", "purple", "pink", "orange"];
 let reconcileTimer = null;
+
+function normalizeGroupPrefix(raw) {
+  const s = typeof raw === "string" ? raw.trim() : "";
+  return s || DEFAULT_GROUP_PREFIX;
+}
+
+function formatGroupTitle(sessionName, released = false) {
+  return `${activeGroupPrefix} ${sessionName}${released ? RELEASED_SUFFIX : ""}`;
+}
 
 function groupColorFor(name) {
   let h = 0;
@@ -78,11 +88,19 @@ function groupColorFor(name) {
 }
 
 // SW 重启后组表重建：按标题前缀识别会话组（标题是稳定契约）
-// parseSessionName 组标题 → 会话名：仅认 "ab: " 前缀；release 策略 mark 打的
-// " · released" 后缀剥掉（墓碑组仍是该会话的领地，可被同名 alloc 复活认领）。
+// parseSessionName 组标题 → 会话名：匹配 "<prefix> " 或 "<prefix>"；release 策略
+// mark 打的 " · released" 后缀剥掉（墓碑组仍是该会话的领地，可被同名 alloc 认领）。
 function parseSessionName(title) {
-  if (!title || !title.startsWith(GROUP_PREFIX)) return null;
-  let name = title.slice(GROUP_PREFIX.length);
+  if (!title) return null;
+  const spaced = `${activeGroupPrefix} `;
+  let name = null;
+  if (title.startsWith(spaced)) {
+    name = title.slice(spaced.length);
+  } else if (title.startsWith(activeGroupPrefix)) {
+    name = title.slice(activeGroupPrefix.length).trimStart();
+  } else {
+    return null;
+  }
   if (name.endsWith(RELEASED_SUFFIX)) name = name.slice(0, -RELEASED_SUFFIX.length);
   return name || null;
 }
@@ -110,14 +128,14 @@ async function addToGroupInner(sessionName, tabId) {
       } else if (g.title.endsWith(RELEASED_SUFFIX)) {
         // 缓存命中的是墓碑组：先摘碑再入组（复活语义与显式查找一致）。
         await chrome.tabGroups.update(groupId, {
-          title: GROUP_PREFIX + sessionName,
+          title: formatGroupTitle(sessionName),
           color: groupColorFor(sessionName),
         }).catch(() => {});
       }
     }
     if (groupId === undefined) {
       // 缓存缺失（SW 被 MV3 重启过）：按标题找回既有组，防重复建组
-      const found = await chrome.tabGroups.query({ title: GROUP_PREFIX + sessionName });
+      const found = await chrome.tabGroups.query({ title: formatGroupTitle(sessionName) });
       if (found.length) {
         groupId = found[0].id;
         // 并发竞态残留的同名空组：把残留组里的 tab 并回第一个组（组空后
@@ -134,11 +152,11 @@ async function addToGroupInner(sessionName, tabId) {
         // 墓碑复活：release 策略 mark 留下的 "… · released" 组是同会话的
         // 领地标记——同名会话回来时摘掉墓碑（改回标题+配色）复用该组，
         // 不另建新组（组在即领地）。
-        const tomb = await chrome.tabGroups.query({ title: GROUP_PREFIX + sessionName + RELEASED_SUFFIX });
+        const tomb = await chrome.tabGroups.query({ title: formatGroupTitle(sessionName, true) });
         if (tomb.length) {
           groupId = tomb[0].id;
           await chrome.tabGroups.update(groupId, {
-            title: GROUP_PREFIX + sessionName,
+            title: formatGroupTitle(sessionName),
             color: groupColorFor(sessionName),
           }).catch(() => {});
         }
@@ -155,7 +173,7 @@ async function addToGroupInner(sessionName, tabId) {
       createProperties: { windowId: tab.windowId },
     });
     await chrome.tabGroups.update(groupId, {
-      title: GROUP_PREFIX + sessionName,
+      title: formatGroupTitle(sessionName),
       color: groupColorFor(sessionName),
     });
     sessionGroups.set(sessionName, groupId);
@@ -192,7 +210,7 @@ async function groupFor(sessionName) {
       if (g && parseSessionName(g.title) === sessionName && !g.title.endsWith(RELEASED_SUFFIX)) return cached;
     }
   }
-  const byTitle = await chrome.tabGroups.query({ title: GROUP_PREFIX + sessionName });
+  const byTitle = await chrome.tabGroups.query({ title: formatGroupTitle(sessionName) });
   for (const g of byTitle) {
     const ts = await chrome.tabs.query({ groupId: g.id });
     if (ts.length) {
@@ -223,14 +241,109 @@ let rootAutoAttach = false; // 浏览器级 Target.setAutoAttach 标志
 const targetByTab = new Map(); // tabId → {targetId, url, title, type}
 const tabByTarget = new Map(); // targetId → tabId
 
-// ── 配置 ───────────────────────────────────────────────────────────
+// ── 配置与状态 ────────────────────────────────────────────────────
 
-async function relayConfig() {
-  const got = await chrome.storage.local.get(["relayUrl", "token"]);
-  return {
-    url: got.relayUrl || DEFAULT_RELAY,
-    token: got.token ?? DEFAULT_TOKEN,
-  };
+let reconnectTimer = null;
+const connState = {
+  status: "disconnected", // connected | connecting | auth_error | disconnected
+  reason: "",             // invalid_token | missing_token | proxy_offline | source_disabled | ""
+  relayUrl: DEFAULT_RELAY,
+  lastConnectedAt: 0,
+};
+
+function updateBadge(status, reason) {
+  if (!chrome.action || !chrome.action.setBadgeText) return;
+  try {
+    if (status === "connected") {
+      chrome.action.setBadgeText({ text: "ON" });
+      chrome.action.setBadgeBackgroundColor({ color: "#16a34a" });
+      chrome.action.setBadgeTextColor?.({ color: "#ffffff" });
+    } else if (status === "auth_error" || reason === "missing_token" || reason === "invalid_token") {
+      chrome.action.setBadgeText({ text: "!" });
+      chrome.action.setBadgeBackgroundColor({ color: "#dc2626" });
+      chrome.action.setBadgeTextColor?.({ color: "#ffffff" });
+    } else if (status === "connecting") {
+      chrome.action.setBadgeText({ text: "…" });
+      chrome.action.setBadgeBackgroundColor({ color: "#64748b" });
+      chrome.action.setBadgeTextColor?.({ color: "#ffffff" });
+    } else {
+      chrome.action.setBadgeText({ text: "" });
+    }
+  } catch { /* ignore badge errors */ }
+}
+
+function setConnState(status, reason = "", relayUrl = connState.relayUrl) {
+  connState.status = status;
+  connState.reason = reason;
+  if (relayUrl) connState.relayUrl = relayUrl;
+  if (status === "connected") connState.lastConnectedAt = Date.now();
+  updateBadge(status, reason);
+}
+
+async function loadBundledConfig() {
+  try {
+    const resp = await fetch(chrome.runtime.getURL("runtime-config.json"), { cache: "no-store" });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (!data || typeof data !== "object") return null;
+    return {
+      relayUrl: typeof data.relayUrl === "string" ? data.relayUrl.trim() : "",
+      token: typeof data.token === "string" ? data.token.trim() : "",
+      groupPrefix: normalizeGroupPrefix(data.groupPrefix),
+      generatedAt: typeof data.generatedAt === "string" ? data.generatedAt : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function relayConfig(forceBundled = false) {
+  const [got, bundled] = await Promise.all([
+    chrome.storage.local.get(["relayUrl", "token", "groupPrefix", "releasePolicy", "_syncedFrom"]),
+    loadBundledConfig(),
+  ]);
+  let url = typeof got.relayUrl === "string" ? got.relayUrl.trim() : "";
+  let token = typeof got.token === "string" ? got.token.trim() : "";
+  let groupPrefix = normalizeGroupPrefix(got.groupPrefix);
+  const releasePolicy = got.releasePolicy || "close";
+
+  // App 导出目录写入了更新的 runtime-config.json 时自动同步（保留用户的 releasePolicy）
+  if (bundled && (forceBundled || (bundled.generatedAt && bundled.generatedAt !== got._syncedFrom) || (!url && !token))) {
+    if (bundled.relayUrl) url = bundled.relayUrl;
+    if (bundled.token !== undefined) token = bundled.token;
+    if (bundled.groupPrefix) groupPrefix = normalizeGroupPrefix(bundled.groupPrefix);
+    await chrome.storage.local.set({
+      relayUrl: url || DEFAULT_RELAY,
+      token,
+      groupPrefix,
+      releasePolicy,
+      _syncedFrom: bundled.generatedAt || "bundled",
+    }).catch(() => {});
+  }
+
+  url = url || DEFAULT_RELAY;
+  activeGroupPrefix = normalizeGroupPrefix(groupPrefix);
+  return { url, token, groupPrefix: activeGroupPrefix, releasePolicy, hasBundled: !!bundled };
+}
+
+async function diagnoseFailure(wsUrl, token) {
+  try {
+    const httpUrl = wsUrl.replace(/^ws:/i, "http:").replace(/^wss:/i, "https:");
+    const full = httpUrl + (httpUrl.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token || "");
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 2000);
+    const resp = await fetch(full, { method: "GET", signal: ctrl.signal, cache: "no-store" });
+    clearTimeout(timer);
+    if (resp.status === 401) {
+      return { status: "auth_error", reason: token ? "invalid_token" : "missing_token" };
+    }
+    if (resp.status === 503 || resp.status === 403) {
+      return { status: "disconnected", reason: "source_disabled" };
+    }
+    return { status: "disconnected", reason: "proxy_offline" };
+  } catch {
+    return { status: "disconnected", reason: "proxy_offline" };
+  }
 }
 
 // ── target 映射维护 ────────────────────────────────────────────────
@@ -276,14 +389,51 @@ async function targetInfoOf(targetId) {
 
 // ── 反向连接 ───────────────────────────────────────────────────────
 
-function connect() {
-  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
+function scheduleReconnect() {
+  if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+  const wait = backoffMs;
+  backoffMs = Math.min(backoffMs * 2, 5000);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect(false);
+  }, wait);
+}
+
+function connect(force = false) {
+  if (force) {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    backoffMs = 500;
+    if (ws) {
+      const old = ws;
+      ws = null;
+      stopHeartbeat();
+      try { old.close(1000, "reconnect"); } catch {}
+    }
+  } else if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
+    return;
+  }
   relayConfig().then(({ url, token }) => {
-    const full = url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
-    const sock = new WebSocket(full);
+    if (!force && ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
+    setConnState("connecting", "", url);
+    let sock;
+    try {
+      const full = url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
+      sock = new WebSocket(full);
+    } catch {
+      setConnState("disconnected", "proxy_offline", url);
+      scheduleReconnect();
+      return;
+    }
     ws = sock;
+    let opened = false;
     sock.onopen = async () => {
+      if (ws !== sock) return;
+      opened = true;
       backoffMs = 500;
+      setConnState("connected", "", url);
       console.info("[cdp-ext] 已连上 proxy:", url);
       send({ abCtl: "hello", version: chrome.runtime.getManifest().version });
       const restored = await loadPersistedState();
@@ -324,15 +474,20 @@ function connect() {
       if (msg && msg.id !== undefined) return onCommand(msg);
       if (msg && msg.abCtl !== undefined) return onControl(msg);
     };
-    sock.onclose = () => {
+    sock.onclose = async () => {
       if (ws !== sock) return;
       stopHeartbeat();
       ws = null;
-      setTimeout(connect, backoffMs);
-      backoffMs = Math.min(backoffMs * 2, 5000);
+      if (!opened) {
+        const diag = await diagnoseFailure(url, token);
+        if (ws === null) setConnState(diag.status, diag.reason, url);
+      } else {
+        setConnState("disconnected", "proxy_offline", url);
+      }
+      scheduleReconnect();
     };
     sock.onerror = () => {
-      /* onclose 随后触发，统一走重连 */
+      /* onclose 随后触发，统一走诊断与重连 */
     };
   });
 }
@@ -458,11 +613,43 @@ async function onControl(msg) {
           await chrome.tabs.remove(tabs.map((t) => t.id)).catch(() => {});
         } else if (policy === "mark") {
           await chrome.tabGroups.update(groupId, {
-            title: GROUP_PREFIX + sessionName + RELEASED_SUFFIX,
+            title: formatGroupTitle(sessionName, true),
             color: "grey",
           }).catch(() => {});
         }
         // keep：组与 tab 原样保留
+      }
+      break;
+    }
+    case "config": {
+      const updates = {};
+      let prefixChanged = false;
+      let urlChanged = false;
+      if (typeof msg.groupPrefix === "string" && msg.groupPrefix.trim()) {
+        const nextPrefix = normalizeGroupPrefix(msg.groupPrefix);
+        if (nextPrefix !== activeGroupPrefix) {
+          activeGroupPrefix = nextPrefix;
+          updates.groupPrefix = nextPrefix;
+          prefixChanged = true;
+        }
+      }
+      if (typeof msg.relayUrl === "string" && msg.relayUrl.trim()) {
+        const nextUrl = msg.relayUrl.trim();
+        if (nextUrl !== connState.relayUrl) {
+          updates.relayUrl = nextUrl;
+          urlChanged = true;
+        }
+      }
+      if (Object.keys(updates).length) {
+        await chrome.storage.local.set(updates).catch(() => {});
+      }
+      if (prefixChanged) {
+        sessionGroups.clear();
+        await rebuildGroupMaps();
+        await sendGstate();
+      }
+      if (urlChanged) {
+        setTimeout(() => connect(true), 120);
       }
       break;
     }
@@ -474,7 +661,7 @@ async function onControl(msg) {
   }
 }
 
-// sendGstate 全量组事实上报：所有 "ab: " 活组（非墓碑）的 会话名 → 成员
+// sendGstate 全量组事实上报：所有匹配当前前缀的活组（非墓碑）的 会话名 → 成员
 // targetId 列表。proxy 以此重建归属投影。
 async function sendGstate() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -483,7 +670,7 @@ async function sendGstate() {
     const groups = await chrome.tabGroups.query({});
     const bySession = new Map(); // 会话名 → targetIds（多组同名取并集）
     for (const g of groups) {
-      if (!g.title || !g.title.startsWith(GROUP_PREFIX) || g.title.endsWith(RELEASED_SUFFIX)) continue;
+      if (!g.title || g.title.endsWith(RELEASED_SUFFIX)) continue;
       const name = parseSessionName(g.title);
       if (name === null) continue;
       const tabs = await chrome.tabs.query({ groupId: g.id });
@@ -646,7 +833,7 @@ async function onRootCommand(id, method, params) {
         await addToGroup(sessionName, tab.id);
         const entry = targetByTab.get(tab.id);
         if (entry && tab.groupId !== undefined) entry.groupId = tab.groupId;
-        respond(id, { targetId, abGroup: GROUP_PREFIX + sessionName });
+        respond(id, { targetId, abGroup: formatGroupTitle(sessionName) });
         send({
           method: "Target.targetCreated",
           params: {
@@ -1113,7 +1300,65 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-chrome.runtime.onStartup.addListener(connect);
-chrome.runtime.onInstalled.addListener(connect);
-chrome.action?.onClicked?.addListener(connect); // 手动唤醒口：扩展被刷新后点工具栏图标即重连
-connect(); // SW 每次唤醒都尝试连接（已连接则幂等返回）
+// ── Popup / Options 页面消息通信 ──────────────────────────────────
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (!msg || !msg.type) return false;
+  (async () => {
+    try {
+      if (msg.type === "getStatus") {
+        const cfg = await relayConfig(false);
+        sendResponse({
+          ok: true,
+          version: chrome.runtime.getManifest().version,
+          connState: { ...connState },
+          config: cfg,
+          activeGroups: [...sessionGroups.keys()],
+        });
+        return;
+      }
+      if (msg.type === "saveConfig") {
+        const nextUrl = (msg.relayUrl || "").trim() || DEFAULT_RELAY;
+        const nextToken = (msg.token || "").trim();
+        const nextPrefix = normalizeGroupPrefix(msg.groupPrefix);
+        const nextPolicy = msg.releasePolicy || "close";
+        const prefixChanged = nextPrefix !== activeGroupPrefix;
+        activeGroupPrefix = nextPrefix;
+        await chrome.storage.local.set({
+          relayUrl: nextUrl,
+          token: nextToken,
+          groupPrefix: nextPrefix,
+          releasePolicy: nextPolicy,
+        });
+        if (prefixChanged) {
+          sessionGroups.clear();
+          await rebuildGroupMaps();
+        }
+        connect(true);
+        sendResponse({ ok: true, connState: { ...connState } });
+        return;
+      }
+      if (msg.type === "reconnect") {
+        connect(true);
+        sendResponse({ ok: true, connState: { ...connState } });
+        return;
+      }
+      if (msg.type === "syncBundled") {
+        const cfg = await relayConfig(true);
+        sessionGroups.clear();
+        await rebuildGroupMaps();
+        connect(true);
+        sendResponse({ ok: true, config: cfg, connState: { ...connState } });
+        return;
+      }
+      sendResponse({ ok: false, error: "unknown message type" });
+    } catch (e) {
+      sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+    }
+  })();
+  return true;
+});
+
+chrome.runtime.onStartup.addListener(() => connect(false));
+chrome.runtime.onInstalled.addListener(() => connect(true));
+connect(false); // SW 每次唤醒都尝试连接（已连接则幂等返回）

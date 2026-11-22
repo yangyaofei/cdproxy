@@ -1,7 +1,6 @@
 // Package datadir 数据目录定位（bootstrap）：数据目录本身存在哪的答案
 // 不能放在数据目录里（自举），故用固定位置的指针文件 ~/.cdproxy/pointer.json。
-// 解析链：显式参数 > env CDPROXY_DATA_DIR > 指针文件 > 默认 ~/agent-browser/proxy
-//（与历史生产部署同目录，App 与 daemon 二选一运行共享同一份数据）。
+// 解析链：显式参数 > env CDPROXY_DATA_DIR > 指针文件 > 默认 ~/.cdproxy。
 package datadir
 
 import (
@@ -39,7 +38,7 @@ func Resolve(explicit string) string {
 		}
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "agent-browser", "proxy")
+	return filepath.Join(home, ".cdproxy")
 }
 
 // WritePointer 写指针（UI「修改数据目录」用；重启生效，数据不自动迁移）。
