@@ -8,11 +8,9 @@
 package main
 
 import (
-	"context"
-	_ "embed"
-
-	"fmt"
 	"embed"
+	_ "embed"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -27,6 +25,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 	"github.com/wailsapp/wails/v3/pkg/updater"
 	"github.com/wailsapp/wails/v3/pkg/updater/providers/endpoint"
+	"github.com/yangyaofei/cdproxy/internal/httputil"
 	"github.com/yangyaofei/cdproxy/internal/plugin"
 )
 
@@ -116,20 +115,23 @@ func showUI() {
 	}
 }
 
-// buildTray 托盘：模板图标 + 状态/控制菜单。
 // initUpdater 自动更新接线：endpoint provider（GitHub Releases 静态
-// manifest.json）+ 6h 静默检查 + 托盘菜单触发。检查/下载进度经事件总线
-// 通知（wails:updater:*），UpdateReady 后在托盘亮「重启并更新」项。
+// manifest.json）+ 拆分阶段超时/退避重试 HTTP 客户端 + 6h 静默检查 + 托盘触发。
+// 检查/下载进度经事件总线通知（wails:updater:*），UpdateReady 后亮「重启并更新」。
 func initUpdater() error {
-	endpoint, err := endpoint.New(endpoint.Config{
-		URL: "https://github.com/yangyaofei/cdproxy/releases/latest/download/manifest.json",
+	dlClient := httputil.NewDownloadClient(httputil.DownloadClientOptions{
+		UserAgent: "cdproxy/" + version,
+	})
+	ep, err := endpoint.New(endpoint.Config{
+		URL:        "https://github.com/yangyaofei/cdproxy/releases/latest/download/manifest.json",
+		HTTPClient: dlClient,
 	})
 	if err != nil {
 		return fmt.Errorf("endpoint provider: %w", err)
 	}
 	if err := app.Updater.Init(updater.Config{
 		CurrentVersion: version,
-		Providers:      []updater.Provider{endpoint},
+		Providers:      []updater.Provider{ep},
 		PublicKey:      updaterPubKey,
 		CheckInterval:  6 * time.Hour,
 		Window:         updater.WindowNone,
@@ -139,14 +141,12 @@ func initUpdater() error {
 	return nil
 }
 
-// checkForUpdate 托盘「检查更新」动作：手动触发检查（WindowNone 下只跑
-// 流程不发窗口，结果经事件总线回托盘/管理界面）。
+// checkForUpdate 托盘「检查更新」动作：复用 EngineService.CheckForUpdate 统一
+// 执行检查+下载+验签闭环（WindowNone 下不弹框架窗，结果经事件总线回托盘与界面）。
 func checkForUpdate() {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if _, err := app.Updater.Check(ctx); err != nil {
-			log.Printf("检查更新失败: %v", err)
+		if err := engine.CheckForUpdate(); err != nil {
+			log.Printf("检查或下载更新失败: %v", err)
 		}
 	}()
 }

@@ -21,9 +21,10 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/updater"
 	"github.com/yangyaofei/cdproxy/internal/core"
-	"github.com/yangyaofei/cdproxy/internal/keeper"
 	"github.com/yangyaofei/cdproxy/internal/datadir"
+	"github.com/yangyaofei/cdproxy/internal/keeper"
 )
 
 // DoResponse DoRequest 的返回（前端拿到的 JSON 形状）。
@@ -50,6 +51,8 @@ type EngineService struct {
 	emitMu      sync.Mutex
 	emitPending bool
 	lastEmit    time.Time
+	// updateMu：防止托盘与界面同时触发重复检查/下载。
+	updateMu sync.Mutex
 }
 
 // NewEngineService 构造。dataDir 解析链见 internal/datadir（显式 > env >
@@ -80,15 +83,30 @@ func (s *EngineService) RestartForUpdate() {
 	}()
 }
 
-// CheckForUpdate 前端触发的手动检查（未配置公钥时返回明确原因；成功结果经 wails:updater:* 事件回 UI）。
+// CheckForUpdate 手动触发检查并在发现新版本时自动完成下载、验签与暂存
+// （未配置公钥时返回明确原因；进度与状态经 wails:updater:* 事件实时回 UI 与托盘）。
 func (s *EngineService) CheckForUpdate() error {
 	if updaterInitErr != "" {
 		return fmt.Errorf("当前构建未注入签名公钥（%s）", updaterInitErr)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	if !s.updateMu.TryLock() {
+		return nil
+	}
+	defer s.updateMu.Unlock()
+
+	curApp := application.Get()
+	switch curApp.Updater.State() {
+	case updater.StateReady:
+		curApp.Event.Emit(updater.EventUpdateReady)
+		return nil
+	case updater.StateChecking, updater.StateDownloading, updater.StateVerifying, updater.StateInstalling:
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if _, err := application.Get().Updater.Check(ctx); err != nil {
-		s.log.Error("检查更新失败", "err", err)
+	if err := curApp.Updater.CheckAndInstall(ctx); err != nil {
+		s.log.Error("检查或下载更新失败", "err", err)
 		return err
 	}
 	return nil

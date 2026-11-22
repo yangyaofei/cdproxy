@@ -734,22 +734,41 @@ function admin() {
       apply();
     },
 
+    _formatUpdaterMsg(kind, data) {
+      if (kind === "update-available" && data) {
+        return this.t("upd.available", { ver: data.version || "?" });
+      }
+      if (kind === "no-update") {
+        return this.t("upd.up_to_date");
+      }
+      if (kind === "download-started") {
+        return this.t("upd.download_started");
+      }
+      if (kind === "download-progress" && data) {
+        if (!data.total) return this.t("upd.download_started");
+        const pct = Math.min(100, Math.round((data.written / data.total) * 100));
+        return this.t("upd.downloading", { pct });
+      }
+      if (kind === "verifying") {
+        return this.t("upd.verifying");
+      }
+      if (kind === "installing") {
+        return this.t("upd.installing");
+      }
+      if (kind === "update-ready") {
+        return this.t("upd.ready");
+      }
+      if (kind === "error" && data) {
+        return this.t("upd.error", { err: data.message || data.stage || this.t("upd.unknown") });
+      }
+      return "";
+    },
+
     refreshUpdaterMsg() {
       const ev = this._updateEvent;
       if (!ev || !this.updateMsg) return;
-      const { kind, data } = ev;
-      if (kind === "update-available" && data) {
-        this.updateMsg = this.t("upd.available", { ver: data.version || "?" });
-      } else if (kind === "no-update") {
-        this.updateMsg = this.t("upd.up_to_date");
-      } else if (kind === "download-progress" && data) {
-        const pct = data.total ? Math.round((data.written / data.total) * 100) : 0;
-        this.updateMsg = this.t("upd.downloading", { pct });
-      } else if (kind === "update-ready") {
-        this.updateMsg = this.t("upd.ready");
-      } else if (kind === "error" && data) {
-        this.updateMsg = this.t("upd.error", { err: data.message || data.stage || this.t("upd.unknown") });
-      }
+      const msg = this._formatUpdaterMsg(ev.kind, ev.data);
+      if (msg) this.updateMsg = msg;
     },
 
     bindUpdaterEvents() {
@@ -759,24 +778,19 @@ function admin() {
         if (!type || !type.startsWith("wails:updater:")) return;
         this.canUpdate = true;
         const kind = type.split(":").pop();
+        const msg = this._formatUpdaterMsg(kind, data);
+        if (!msg) return;
         this._updateEvent = { kind, data };
-        if (kind === "update-available" && data) {
-          this.updateMsg = this.t("upd.available", { ver: data.version || "?" });
-          this.updateKind = "info";
-        } else if (kind === "no-update") {
-          this.updateMsg = this.t("upd.up_to_date");
+        this.updateMsg = msg;
+        if (kind === "no-update") {
           this.updateKind = "ok";
           setTimeout(() => { if (this.updateKind === "ok") { this.updateMsg = ""; this._updateEvent = null; } }, 4000);
-        } else if (kind === "download-progress" && data) {
-          const pct = data.total ? Math.round((data.written / data.total) * 100) : 0;
-          this.updateMsg = this.t("upd.downloading", { pct });
-          this.updateKind = "info";
         } else if (kind === "update-ready") {
-          this.updateMsg = this.t("upd.ready");
           this.updateKind = "ready";
-        } else if (kind === "error" && data) {
-          this.updateMsg = this.t("upd.error", { err: data.message || data.stage || this.t("upd.unknown") });
+        } else if (kind === "error") {
           this.updateKind = "err";
+        } else {
+          this.updateKind = "info";
         }
       });
     },
@@ -790,8 +804,9 @@ function admin() {
       try {
         await window.__cdpWails.checkForUpdate();
       } catch (err) {
-        const msg = err?.message || String(err);
-        this._updateEvent = null;
+        const raw = err?.message || String(err);
+        const msg = this.t("upd.error", { err: raw });
+        this._updateEvent = { kind: "error", data: { message: raw } };
         this.updateMsg = msg;
         this.updateKind = "err";
         this.toast(msg, "err", 4200);

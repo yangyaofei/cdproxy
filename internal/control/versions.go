@@ -29,6 +29,7 @@ import (
 	"time"
 
 	assets "github.com/yangyaofei/cdproxy"
+	"github.com/yangyaofei/cdproxy/internal/httputil"
 	"github.com/yangyaofei/cdproxy/internal/keeper"
 	"github.com/yangyaofei/cdproxy/internal/settings"
 )
@@ -286,18 +287,27 @@ func (c *Control) versionsPayload() map[string]any {
 	}
 }
 
+func (c *Control) downloadUserAgent() string {
+	ver := strings.TrimSpace(c.version)
+	if ver == "" {
+		return httputil.DefaultUserAgent
+	}
+	return "cdproxy/" + ver
+}
+
 func (c *Control) fetchAgentBrowserLatest(ctx context.Context) (map[string]any, error) {
-	client := &http.Client{
-		Timeout: 12 * time.Second,
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	client := httputil.NewDownloadClient(httputil.DownloadClientOptions{
+		UserAgent: c.downloadUserAgent(),
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, abReleasesLatestURL, nil)
+	})
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, abReleasesLatestURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "cdproxy")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("访问 GitHub Release 失败: %w", err)
@@ -330,14 +340,17 @@ func (c *Control) fetchAgentBrowserLatest(ctx context.Context) (map[string]any, 
 	}, nil
 }
 
-func fetchExpectedAssetSHA256(ctx context.Context, version, assetName string) string {
-	client := &http.Client{Timeout: 12 * time.Second}
+func fetchExpectedAssetSHA256(ctx context.Context, userAgent, version, assetName string) string {
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	client := httputil.NewDownloadClient(httputil.DownloadClientOptions{
+		UserAgent: userAgent,
+	})
 	url := fmt.Sprintf(abReleasesExpandedURL, version)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return ""
 	}
-	req.Header.Set("User-Agent", "cdproxy")
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		if resp != nil {
@@ -378,14 +391,18 @@ func (c *Control) upgradeAgentBrowser(ctx context.Context, targetVer string) (ma
 		return nil, fmt.Errorf("无效的版本号: %q", ver)
 	}
 
-	expectedSHA := fetchExpectedAssetSHA256(ctx, ver, assetName)
+	ua := c.downloadUserAgent()
+	expectedSHA := fetchExpectedAssetSHA256(ctx, ua, ver, assetName)
 	dlURL := fmt.Sprintf(abReleaseDownloadURL, ver, assetName)
-	client := &http.Client{Timeout: 2 * time.Minute}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
+	dlCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	client := httputil.NewDownloadClient(httputil.DownloadClientOptions{
+		UserAgent: ua,
+	})
+	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, dlURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "cdproxy")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("下载 agent-browser 失败: %w", err)

@@ -531,7 +531,10 @@
       // Updater 事件消息
       "upd.available": "发现新版本 v{ver}，正在下载…",
       "upd.up_to_date": "已是最新版本",
+      "upd.download_started": "正在下载更新…",
       "upd.downloading": "下载更新中 {pct}%",
+      "upd.verifying": "正在校验更新签名…",
+      "upd.installing": "正在解压准备安装…",
       "upd.ready": "新版本已就绪，重启后生效",
       "upd.error": "更新失败：{err}",
       "upd.unknown": "未知",
@@ -1175,7 +1178,10 @@
       // Updater Events
       "upd.available": "Update v{ver} found, downloading…",
       "upd.up_to_date": "You are on the latest version",
+      "upd.download_started": "Downloading update…",
       "upd.downloading": "Downloading update {pct}%",
+      "upd.verifying": "Verifying update signature…",
+      "upd.installing": "Preparing update…",
       "upd.ready": "Update ready — restart to apply",
       "upd.error": "Update failed: {err}",
       "upd.unknown": "Unknown error",

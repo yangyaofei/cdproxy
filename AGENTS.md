@@ -24,6 +24,7 @@ Go 主实现模块（生产 CLI 与桌面 App 共用内核；旧 Python `src/` �
 | `internal/plugin` | `agent-browser.plugin.v1` stdio provider 协议实现（CLI 与桌面 App 共用；读本地 `0600` `settings.json` 取端口与 `alloc_token`，服务未起时后台自启） | 不得弹出桌面窗口 |
 | `internal/settings` | 运行时设置（单文件 `0600` `settings.json`，内置 `default`/`standalone`/`extension` 三条标准入口与固定会话令牌，在线生效） | 端口互斥校验；越下限钳制；不得在日志打印明文令牌 |
 | `internal/keeper` | Chrome 基座探活/冷启动/精确停止 + `agent-browser` 唯一解析链 | 绝不允许无差别 killall/pkill |
+| `internal/httputil` | 下载与版本检查共享 HTTP 客户端（拆分阶段超时、无整包死限、显式 UA、429/5xx 退避重试） | `Client.Timeout` 恒为 0，由调用方 context 控制总时长 |
 | `internal/interlog` | per-session CDP 交互日志（落盘 + 内存环形） | — |
 | `cmd/cdproxy` | CLI 入口（serve/status/stop/plugin，无子命令+管道隐式进 plugin） | 端口 flags 为启动覆盖，启动后 settings 是事实源 |
 | `desktop/` | Wails v3 桌面宿主（`cdproxy.app` / `cdproxy.exe`）：`plugin` 子命令前置分流不启 GUI；Dock/托盘+管理窗口；EngineService.DoRequest 进程内执行 control 路由；内嵌 agent-browser（pin+校验+staging+解析链） | App 与 daemon 二选一（同数据目录同端口）；窗口操作勿用 app.Show()（非主线程 SIGTRAP） |
