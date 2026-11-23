@@ -133,11 +133,12 @@ func initUpdater() error {
 		CurrentVersion: version,
 		Providers:      []updater.Provider{ep},
 		PublicKey:      updaterPubKey,
-		CheckInterval:  6 * time.Hour,
+		CheckInterval:  0, // 关闭 Wails 后台自动下载落盘，改为自定义只读轮询检查（点击后再下载）
 		Window:         updater.WindowNone,
 	}); err != nil {
 		return fmt.Errorf("updater init: %w", err)
 	}
+	engine.StartPeriodicUpdateCheck(6 * time.Hour)
 	return nil
 }
 
@@ -355,6 +356,9 @@ func main() {
 	// 自动更新：官方 pkg/updater（v3.1.0 内建）。endpoint provider 读
 	// GitHub Releases 静态 manifest.json（Ed25519ph 签名，公钥编译期钉死）；
 	// 菜单栏形态不弹框架窗口（WindowNone），检查结果走托盘菜单+事件。
+	// 启动清理放在 application.New 之后：New 内部已先执行 updater.HandleHelperMode()，
+	// 更新 helper 进程会在那里直接接管并退出，不会误删自身暂存目录。
+	go cleanupStaleUpdateDirsForSelf(engine.log)
 	if err := initUpdater(); err != nil {
 		updaterInitErr = err.Error()
 		log.Printf("updater 初始化失败（更新功能停用）: %v", err)

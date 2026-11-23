@@ -199,6 +199,7 @@
         <div class="update-banner" x-show="updateMsg" x-cloak :class="updateKind">
           <span x-text="updateMsg"></span>
           <span class="spacer"></span>
+          <button class="primary sm" x-show="updateKind === 'available'" @click="checkUpdate()" :disabled="updateBusy" x-text="t('banner.download_update')"></button>
           <button class="primary sm" x-show="updateKind === 'ready'" @click="installUpdate()" x-text="t('banner.restart_update')"></button>
           <button class="icon-btn ghost" @click="updateMsg = ''; _updateEvent = null" :title="t('banner.close')"><svg class="ic-sm"><use href="#i-close"/></svg></button>
         </div>

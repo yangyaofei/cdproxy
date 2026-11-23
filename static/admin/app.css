@@ -549,7 +549,7 @@ html.is-darwin .sidebar { width: 240px; }
   flex: none;
 }
 .update-banner { background: var(--card); color: var(--tx2); }
-.update-banner.info { border-bottom-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.update-banner.info, .update-banner.available { border-bottom-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 .update-banner.ok, .update-banner.ready { background: var(--ok-bg); color: var(--ok-fg); border-bottom-color: var(--ok-bd); }
 .update-banner.err { background: var(--bad-bg); color: var(--bad-fg); border-bottom-color: var(--bad-bd); }
 .offline-banner { background: var(--warn-bg); color: var(--warn-fg); border-bottom-color: var(--warn-bd); }

@@ -54,6 +54,7 @@
 
       // 全局横幅
       "banner.restart_update": "重启并更新",
+      "banner.download_update": "下载更新",
       "banner.close": "关闭",
       "banner.offline": "代理引擎未运行，当前页面数据可能已过期",
       "banner.starting": "启动中…",
@@ -529,7 +530,7 @@
       "toast.service_stopped": "服务已停止",
 
       // Updater 事件消息
-      "upd.available": "发现新版本 v{ver}，正在下载…",
+      "upd.available": "发现新版本 v{ver}，可点击下载更新",
       "upd.up_to_date": "已是最新版本",
       "upd.download_started": "正在下载更新…",
       "upd.downloading": "下载更新中 {pct}%",
@@ -701,6 +702,7 @@
 
       // Global Banners
       "banner.restart_update": "Restart & Update",
+      "banner.download_update": "Download Update",
       "banner.close": "Close",
       "banner.offline": "Proxy engine is not running; displayed data may be stale",
       "banner.starting": "Starting…",
@@ -1176,7 +1178,7 @@
       "toast.service_stopped": "Proxy engine stopped",
 
       // Updater Events
-      "upd.available": "Update v{ver} found, downloading…",
+      "upd.available": "Update v{ver} available",
       "upd.up_to_date": "You are on the latest version",
       "upd.download_started": "Downloading update…",
       "upd.downloading": "Downloading update {pct}%",

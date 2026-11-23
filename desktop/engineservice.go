@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -52,7 +53,10 @@ type EngineService struct {
 	emitPending bool
 	lastEmit    time.Time
 	// updateMu：防止托盘与界面同时触发重复检查/下载。
-	updateMu sync.Mutex
+	updateMu            sync.Mutex
+	restartingForUpdate atomic.Bool
+	periodicStop        chan struct{}
+	periodicOnce        sync.Once
 }
 
 // NewEngineService 构造。dataDir 解析链见 internal/datadir（显式 > env >
@@ -77,8 +81,55 @@ func (s *EngineService) RestartForUpdate() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
+		s.restartingForUpdate.Store(true)
 		if err := application.Get().Updater.Restart(ctx); err != nil {
+			s.restartingForUpdate.Store(false)
 			s.log.Error("重启更新失败", "err", err)
+		}
+	}()
+}
+
+// StartPeriodicUpdateCheck 启动周期性只读检查：仅探测是否有新版本并发事件提醒，
+// 不提前下载或创建暂存目录（真正点击更新时才走 CheckAndInstall）。
+func (s *EngineService) StartPeriodicUpdateCheck(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.periodicStop == nil {
+		s.periodicStop = make(chan struct{})
+	}
+	stopCh := s.periodicStop
+	s.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				curApp := application.Get()
+				if curApp == nil || curApp.Updater == nil {
+					continue
+				}
+				switch curApp.Updater.State() {
+				case updater.StateIdle, updater.StateUpToDate, updater.StateAvailable, updater.StateError:
+				default:
+					continue
+				}
+				if !s.updateMu.TryLock() {
+					continue
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				_, err := curApp.Updater.Check(ctx)
+				cancel()
+				s.updateMu.Unlock()
+				if err != nil {
+					s.log.Debug("后台周期检查更新失败", "err", err)
+				}
+			}
 		}
 	}()
 }
@@ -219,8 +270,21 @@ func (s *EngineService) EmitEngineOffline() {
 	}
 }
 
-// ServiceShutdown Wails 生命周期：App 退出前停引擎。
+// ServiceShutdown Wails 生命周期：App 退出前停引擎，若非更新重启则清理未应用的更新暂存。
 func (s *EngineService) ServiceShutdown() error {
+	s.periodicOnce.Do(func() {
+		s.mu.Lock()
+		stopCh := s.periodicStop
+		s.mu.Unlock()
+		if stopCh != nil {
+			close(stopCh)
+		}
+	})
+	if !s.restartingForUpdate.Load() {
+		if curApp := application.Get(); curApp != nil && curApp.Updater != nil {
+			cleanupStagedUpdateForSelf(curApp.Updater.DownloadedPath(), s.log)
+		}
+	}
 	s.stopEngine()
 	return nil
 }

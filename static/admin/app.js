@@ -785,6 +785,8 @@ function admin() {
         if (kind === "no-update") {
           this.updateKind = "ok";
           setTimeout(() => { if (this.updateKind === "ok") { this.updateMsg = ""; this._updateEvent = null; } }, 4000);
+        } else if (kind === "update-available") {
+          this.updateKind = "available";
         } else if (kind === "update-ready") {
           this.updateKind = "ready";
         } else if (kind === "error") {
