@@ -16,17 +16,20 @@
 //       {"abCtl":"gstate"|"sync",...}      标签组真相快照/增量投影
 //       {"hb":1}                           心跳（20s，兼作 MV3 SW 保活）
 //
-// 仿真的浏览器级命令：
-//   Target.getTargets / getTargetInfo  ← chrome.debugger.getTargets（无参返回浏览器自身）
-//   Target.createTarget / closeTarget / activateTarget ← chrome.tabs.*
-//   Target.attachToTarget(flatten) / detachFromTarget / setAutoAttach / attachToBrowserTarget
-//                                      ← 虚拟会话多路复用（1 物理 attach 叠 N 虚拟会话）
-//   Target.getBrowserContexts          ← 恒空（单默认 context：cdp-ext-default）
-//   Storage.getCookies / setCookies / clearCookies
-//                                      ← 经会话已附着 tab 透传原生 chrome.debugger（零额外权限）
+// 仿真的浏览器级命令与扩展权限对应：
+//   Target.*                           ← debugger + tabs + tabGroups（会话隔离/组映射/popup 归属）
+//   Storage.getCookies/setCookies/clearCookies / clearDataForOrigin
+//                                      ← 优先走会话已附着 tab 的原生 chrome.debugger（零损 CDP 字段）；
+//                                        无可用 tab 时回落 chrome.cookies（依赖 cookies + <all_urls>）
+//   Browser.setDownloadBehavior / cancelDownload + Browser.downloadWillBegin/Progress
+//                                      ← 桥接 Page.download* 事件 + chrome.downloads（依赖 downloads）
+//                                        落盘后把绝对路径传给同机 proxy，实现 saveAs/path/cancel 全闭环
+//   Browser.grantPermissions / setPermission / resetPermissions
+//                                      ← chrome.contentSettings（依赖 contentSettings；仅影响本扩展层，
+//                                        resetPermissions 不擦除用户手动设置）
 //   Browser.getVersion / getWindowForTarget / getWindowBounds / setWindowBounds
-//                                      ← navigator.userAgent 真实版本 + chrome.windows.*
-//   Browser.setDownloadBehavior        ← 假成功（宿主默认下载行为）
+//                                      ← navigator.userAgent 真实版本 + chrome.windows.*（tabs 权限自带）
+//   Browser.setDockTile                ← 无害 UI 提示假成功
 //   Browser.close                      ← 拒绝（宿主是用户浏览器，proxy 侧另有基座保护）
 //   页面会话命令 & OOPIF/worker 子会话   ← chrome.debugger.sendCommand 全透传（含嵌套子会话）
 //
@@ -55,8 +58,9 @@
 //
 // 已知平台边界（Chrome MV3 扩展无法在用户日常浏览器突破）：
 //   - 一 tab 一 debugger（开 DevTools 时触发软休眠，关闭后懒重挂恢复）
-//   - Target.createBrowserContext / Security.setIgnoreCertificateErrors / Browser.grantPermissions 不可用
-//   - 下载落盘按宿主默认行为；软休眠不保留 OOPIF/worker 子会话（需页面重载或重新附着）
+//   - Target.createBrowserContext / Security.setIgnoreCertificateErrors 不可用（多沙箱/自签证书请走 standalone 源）
+//   - chrome.contentSettings 未开放 clipboard/midi/sensors 等权限类型，遇不支持项如实报错
+//   - 软休眠不保留 OOPIF/worker 子会话（需页面重载或重新附着）
 
 const DEFAULT_RELAY = "ws://127.0.0.1:9225/ext";
 const DEFAULT_TOKEN = "";
@@ -235,6 +239,7 @@ let heartbeatTimer = null;
 const sessionGroups = new Map(); // 会话名 → groupId（SW 重启按组标题重建）
 const popupSessionByTab = new Map(); // popup 窗口 tabId → 会话名（Chrome 不允许 popup 窗口分组）
 const openerByTab = new Map(); // tabId → openerTabId（保留给 targetInfo.openerId）
+const closingTargets = new Set(); // Target.closeTarget 正在关闭的 targetId（防关组内最后 tab 时 Chrome 先发 onUpdated(groupId=-1) 误判为组外）
 // recentWindowOpens：chrome.debugger 的 Page.windowOpen 先于 chrome.tabs.onCreated
 // 触发，携带真正发起跳转的后台 tabId（Chrome 对后台 tab 调用 window.open('_blank') 时，
 // tabs.onCreated.openerTabId 会误填为窗口当前激活的用户 tab，必须以 Page.windowOpen 为准）。
@@ -261,6 +266,359 @@ function consumeWindowOpen(tabUrl) {
     if (idx >= 0) return recentWindowOpens.splice(idx, 1)[0].openerTabId;
   }
   return recentWindowOpens.shift().openerTabId;
+}
+
+// ── 下载桥接与站点权限状态 ─────────────────────────────────────────
+// 下载桥接：Chrome 扩展无法在 chrome.debugger 下调 Browser.setDownloadBehavior，
+// 但已附着 tab 会原生发出 Page.downloadWillBegin / Page.downloadProgress；
+// 结合 chrome.downloads 拿真实磁盘绝对路径并传给同机 proxy 复制到 <downloadPath>/<guid>，
+// 使 Playwright waitForEvent('download') / path() / saveAs() / cancel() 全闭环。
+const sessionDownloadBehavior = new Map(); // sessionName → "allowAndName" | "allow" | "deny" | "default"
+const activeDownloads = new Map(); // guid → 下载跟踪记录
+const downloadGuidById = new Map(); // chrome.downloads item.id → guid
+const unmatchedChromeDownloads = []; // chrome.downloads.onCreated 先于 Page.downloadWillBegin 到达时的暂存
+const DOWNLOAD_MATCH_TTL_MS = 10_000;
+const touchedContentSettings = new Set(); // 本扩展通过 contentSettings 写入过的权限键
+const textEncoder = new TextEncoder();
+
+const CDP_PERMISSION_TO_CONTENT_SETTING = {
+  geolocation: "location",
+  location: "location",
+  notifications: "notifications",
+  camera: "camera",
+  videoCapture: "camera",
+  microphone: "microphone",
+  audioCapture: "microphone",
+  automaticDownloads: "automaticDownloads",
+  "automatic-downloads": "automaticDownloads",
+  popups: "popups",
+  cookies: "cookies",
+  images: "images",
+  javascript: "javascript",
+  fullscreen: "fullscreen",
+  mouselock: "mouselock",
+  "pointer-lock": "mouselock",
+};
+
+const RESETTABLE_CONTENT_SETTINGS = [
+  "location",
+  "notifications",
+  "camera",
+  "microphone",
+  "automaticDownloads",
+  "popups",
+  "cookies",
+  "images",
+  "javascript",
+  "fullscreen",
+  "mouselock",
+];
+
+function sessionNameOfTabSync(tabId) {
+  if (tabId === undefined) return null;
+  if (popupSessionByTab.has(tabId)) return popupSessionByTab.get(tabId);
+  const gid = targetByTab.get(tabId)?.groupId;
+  if (gid !== undefined && gid !== -1) {
+    for (const [name, id] of sessionGroups) {
+      if (id === gid) return name;
+    }
+  }
+  return null;
+}
+
+function basenameOf(p) {
+  if (!p) return "";
+  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return idx >= 0 ? p.slice(idx + 1) : p;
+}
+
+function stripChromeDupSuffix(name) {
+  // Chrome 重复下载自动重命名如 "report (1).pdf" → "report.pdf"
+  return name.replace(/ \(\d+\)(\.[^.]+)?$/, "$1");
+}
+
+function matchChromeDownloadScore(rec, item) {
+  if (!item) return 0;
+  if (rec.url && (item.url === rec.url || item.finalUrl === rec.url)) return 3;
+  if (rec.suggestedFilename && item.filename) {
+    const base = basenameOf(item.filename);
+    if (base === rec.suggestedFilename || stripChromeDupSuffix(base) === rec.suggestedFilename) {
+      return 2;
+    }
+  }
+  const itemTs = typeof item.at === "number"
+    ? item.at
+    : (item.startTime ? Date.parse(item.startTime) : NaN);
+  if (Number.isFinite(itemTs) && Math.abs(itemTs - rec.createdAt) <= DOWNLOAD_MATCH_TTL_MS) {
+    return 1;
+  }
+  return 0;
+}
+
+async function cancelChromeDownload(downloadId, eraseAfter = false) {
+  if (!chrome.downloads || downloadId == null) return;
+  await chrome.downloads.cancel(downloadId).catch(() => {});
+  if (eraseAfter) {
+    await chrome.downloads.removeFile(downloadId).catch(() => {});
+    await chrome.downloads.erase({ id: downloadId }).catch(() => {});
+  }
+}
+
+function bindChromeDownload(rec, itemId, filename) {
+  rec.downloadId = itemId;
+  downloadGuidById.set(itemId, rec.guid);
+  if (filename) rec.filename = filename;
+  if (rec.deny || rec.canceledRequested) {
+    cancelChromeDownload(itemId, rec.deny);
+  }
+}
+
+function pruneUnmatchedChromeDownloads() {
+  const now = Date.now();
+  while (unmatchedChromeDownloads.length && now - unmatchedChromeDownloads[0].at > DOWNLOAD_MATCH_TTL_MS) {
+    unmatchedChromeDownloads.shift();
+  }
+}
+
+function handlePageDownloadWillBegin(tabId, rootTargetId, params) {
+  const guid = params && params.guid;
+  if (!guid || activeDownloads.has(guid)) return;
+  const sessionName = sessionNameOfTabSync(tabId);
+  const behavior = sessionName ? (sessionDownloadBehavior.get(sessionName) || "default") : "default";
+  const rec = {
+    guid,
+    rootTargetId: rootTargetId || "",
+    tabId,
+    frameId: (params && params.frameId) || "",
+    url: (params && params.url) || "",
+    suggestedFilename: (params && params.suggestedFilename) || "",
+    deny: behavior === "deny",
+    canceledRequested: false,
+    downloadId: null,
+    filename: "",
+    createdAt: Date.now(),
+    completing: false,
+    finished: false,
+  };
+  activeDownloads.set(guid, rec);
+  pruneUnmatchedChromeDownloads();
+  let bestIdx = -1;
+  let bestScore = 0;
+  for (let i = 0; i < unmatchedChromeDownloads.length; i++) {
+    const score = matchChromeDownloadScore(rec, unmatchedChromeDownloads[i]);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+  if (bestIdx >= 0 && (bestScore >= 2 || unmatchedChromeDownloads.length === 1)) {
+    const matched = unmatchedChromeDownloads.splice(bestIdx, 1)[0];
+    bindChromeDownload(rec, matched.id, matched.filename);
+  }
+  send({
+    method: "Browser.downloadWillBegin",
+    params: {
+      frameId: rec.frameId,
+      guid: rec.guid,
+      url: rec.url,
+      suggestedFilename: rec.suggestedFilename,
+      abTargetId: rec.rootTargetId,
+    },
+  });
+}
+
+function finalizeDownload(rec, state, totalBytes, receivedBytes, abFilename) {
+  if (rec.finished) return;
+  rec.finished = true;
+  activeDownloads.delete(rec.guid);
+  if (rec.downloadId !== null) downloadGuidById.delete(rec.downloadId);
+  send({
+    method: "Browser.downloadProgress",
+    params: {
+      guid: rec.guid,
+      totalBytes: totalBytes ?? 0,
+      receivedBytes: receivedBytes ?? 0,
+      state,
+      ...(abFilename ? { abFilename } : {}),
+    },
+  });
+}
+
+async function resolveDownloadDiskPath(rec) {
+  if (!chrome.downloads) return "";
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (rec.downloadId !== null) {
+      const items = await chrome.downloads.search({ id: rec.downloadId }).catch(() => []);
+      const it = items && items[0];
+      if (it) {
+        if (it.filename) rec.filename = it.filename;
+        if (it.state === "complete" && it.filename) return it.filename;
+        if (it.state === "interrupted") return "";
+      }
+    } else {
+      const items = await chrome.downloads.search({ orderBy: ["-startTime"], limit: 10 }).catch(() => []);
+      let best = null;
+      let bestScore = 0;
+      let windowCandidates = 0;
+      for (const it of items || []) {
+        if (downloadGuidById.has(it.id)) continue;
+        const score = matchChromeDownloadScore(rec, it);
+        if (score >= 1) windowCandidates++;
+        if (score > bestScore) {
+          bestScore = score;
+          best = it;
+        }
+      }
+      if (best && (bestScore >= 2 || (bestScore === 1 && windowCandidates === 1))) {
+        rec.downloadId = best.id;
+        downloadGuidById.set(best.id, rec.guid);
+        if (best.filename) rec.filename = best.filename;
+        if (best.state === "complete" && best.filename) return best.filename;
+        if (best.state === "interrupted") return "";
+      }
+    }
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  return rec.filename || "";
+}
+
+function handlePageDownloadProgress(params) {
+  const guid = params && params.guid;
+  const rec = guid && activeDownloads.get(guid);
+  if (!rec || rec.finished) return;
+  const st = (params && params.state) || "inProgress";
+  if (st === "inProgress") {
+    send({
+      method: "Browser.downloadProgress",
+      params: {
+        guid,
+        totalBytes: params.totalBytes ?? 0,
+        receivedBytes: params.receivedBytes ?? 0,
+        state: "inProgress",
+      },
+    });
+    return;
+  }
+  if (st === "canceled") {
+    finalizeDownload(rec, "canceled", params.totalBytes, params.receivedBytes, "");
+    return;
+  }
+  if (st === "completed") {
+    if (rec.completing) return;
+    rec.completing = true;
+    (async () => {
+      if (rec.deny || rec.canceledRequested) {
+        if (rec.downloadId === null && chrome.downloads) {
+          await resolveDownloadDiskPath(rec);
+        }
+        if (rec.downloadId !== null) {
+          await cancelChromeDownload(rec.downloadId, rec.deny);
+        }
+        finalizeDownload(rec, "canceled", params.totalBytes, params.receivedBytes, "");
+        return;
+      }
+      const diskPath = await resolveDownloadDiskPath(rec);
+      finalizeDownload(rec, "completed", params.totalBytes, params.receivedBytes, diskPath);
+    })();
+  }
+}
+
+function contentSettingPattern(origin) {
+  if (!origin || origin === "*") return "<all_urls>";
+  const u = new URL(origin);
+  return `${u.origin}/*`;
+}
+
+function callContentSetting(cs, methodName, arg) {
+  return new Promise((resolve, reject) => {
+    try {
+      const maybePromise = cs[methodName](arg, () => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve();
+        }
+      });
+      if (maybePromise && typeof maybePromise.then === "function") {
+        maybePromise.then(resolve, reject);
+      }
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function applyContentSetting(apiKey, pattern, setting) {
+  const cs = chrome.contentSettings && chrome.contentSettings[apiKey];
+  if (!cs || typeof cs.set !== "function") {
+    throw new Error(`chrome.contentSettings.${apiKey} 不可用`);
+  }
+  const effective = setting === "ask" && (apiKey === "popups" || apiKey === "images" || apiKey === "javascript")
+    ? "allow"
+    : setting;
+  await callContentSetting(cs, "set", { primaryPattern: pattern, setting: effective });
+  touchedContentSettings.add(apiKey);
+}
+
+async function handleCookiesViaExtAPI(method, params) {
+  if (method === "Storage.getCookies") {
+    const raw = await chrome.cookies.getAll({});
+    const sameSiteMap = { no_restriction: "None", lax: "Lax", strict: "Strict" };
+    const cookies = raw.map((c) => {
+      const out = {
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        expires: c.session || c.expirationDate === undefined ? -1 : c.expirationDate,
+        size: textEncoder.encode(c.name + c.value).length,
+        httpOnly: !!c.httpOnly,
+        secure: !!c.secure,
+        session: !!c.session,
+        priority: "Medium",
+        sameParty: false,
+        sourceScheme: c.secure ? "Secure" : "NonSecure",
+        sourcePort: c.secure ? 443 : 80,
+      };
+      if (sameSiteMap[c.sameSite]) out.sameSite = sameSiteMap[c.sameSite];
+      return out;
+    });
+    return { cookies };
+  }
+  if (method === "Storage.setCookies") {
+    const sameSiteRev = { None: "no_restriction", Lax: "lax", Strict: "strict" };
+    for (const c of params.cookies || []) {
+      let url = c.url;
+      if (!url) {
+        const host = (c.domain || "").replace(/^\./, "");
+        if (!host) throw new Error("cookie 缺少 url 与 domain");
+        const scheme = c.secure ? "https" : "http";
+        const path = c.path && c.path.startsWith("/") ? c.path : "/";
+        url = `${scheme}://${host}${path}`;
+      }
+      const details = { url, name: c.name, value: c.value };
+      if (c.domain) details.domain = c.domain;
+      if (c.path) details.path = c.path;
+      if (c.secure !== undefined) details.secure = !!c.secure;
+      if (c.httpOnly !== undefined) details.httpOnly = !!c.httpOnly;
+      if (typeof c.expires === "number" && c.expires > 0) details.expirationDate = c.expires;
+      if (c.sameSite && sameSiteRev[c.sameSite]) details.sameSite = sameSiteRev[c.sameSite];
+      await chrome.cookies.set(details);
+    }
+    return {};
+  }
+  if (method === "Storage.clearCookies") {
+    const raw = await chrome.cookies.getAll({});
+    for (const c of raw) {
+      const host = (c.domain || "").replace(/^\./, "");
+      if (!host) continue;
+      const url = `${c.secure ? "https" : "http"}://${host}${c.path || "/"}`;
+      await chrome.cookies.remove({ url, name: c.name, storeId: c.storeId }).catch(() => {});
+    }
+    return {};
+  }
+  throw new Error(`未知 cookies 方法: ${method}`);
 }
 
 // ── 会话表 ─────────────────────────────────────────────────────────
@@ -711,7 +1069,18 @@ async function syncSession(sessionName) {
   for (const e of await collectPopupEntries(sessionName)) {
     byTid.set(e.targetId, e);
   }
-  if (groupId === undefined && byTid.size === 0) return;
+  if (groupId === undefined && byTid.size === 0) {
+    // 此前存在活组但现已解散（最后一张 tab 关闭或被拖出）：
+    // 若非 mark 策略的墓碑组，须发空 sync 通知 proxy 收回残余归属并清理缓存。
+    if (sessionGroups.has(sessionName)) {
+      const tomb = await chrome.tabGroups.query({ title: formatGroupTitle(sessionName, true) }).catch(() => []);
+      if (tomb.length === 0) {
+        sessionGroups.delete(sessionName);
+        send({ abCtl: "sync", session: sessionName, targetIds: [], infos: [] });
+      }
+    }
+    return;
+  }
   const entries = [...byTid.values()];
   send({
     abCtl: "sync",
@@ -753,6 +1122,7 @@ async function onControl(msg) {
       // 三种策略下该会话的虚拟会话与物理 attach 都清理（daemon 已断，
       // E 句柄作废；proxy 已合成销毁事件）。
       const sessionName = msg.session;
+      sessionDownloadBehavior.delete(sessionName);
       const cfg = await chrome.storage.local.get(["releasePolicy"]);
       const policy = cfg.releasePolicy || "close";
       const groupId = await groupFor(sessionName);
@@ -900,7 +1270,13 @@ async function resetState() {
   tabByTarget.clear();
   popupSessionByTab.clear();
   openerByTab.clear();
+  closingTargets.clear();
   recentWindowOpens.length = 0;
+  sessionDownloadBehavior.clear();
+  activeDownloads.clear();
+  downloadGuidById.clear();
+  unmatchedChromeDownloads.length = 0;
+  touchedContentSettings.clear();
   idEcho.clear();
   rootAutoAttach = false;
   sidSeq = 0;
@@ -1054,7 +1430,13 @@ async function onRootCommand(id, method, params) {
     case "Target.closeTarget": {
       const tabId = tabByTarget.get(params.targetId);
       if (tabId === undefined) return respondErr(id, `cdp-ext: target ${params.targetId} 不存在`);
-      await chrome.tabs.remove(tabId);
+      closingTargets.add(params.targetId);
+      try {
+        await chrome.tabs.remove(tabId);
+      } catch (err) {
+        closingTargets.delete(params.targetId);
+        throw err;
+      }
       respond(id, { success: true });
       return;
     }
@@ -1114,12 +1496,31 @@ async function onRootCommand(id, method, params) {
     case "Storage.getCookies":
     case "Storage.setCookies":
     case "Storage.clearCookies": {
-      // Chrome 在页面 debuggee 上原生支持 Storage.*Cookies（返回无损 CDP
-      // Cookie 结构，无需申请 <all_urls> / cookies 权限）。只借用当前会话名下
-      // 或已附着 tab 执行，绝不碰用户组外 tab。
-      const picked = await resolveTabForStorage(params);
+      // 优先走本会话名下已附着 tab 的原生 chrome.debugger（返回完整 CDP Cookie 字段）；
+      // 本会话当前无可用页面时回落 chrome.cookies（依赖 cookies + <all_urls> 权限），
+      // 不触碰用户组外或其他会话的 tab。
+      const picked = await resolveTabForStorage(params, { allowAnyAttached: !chrome.cookies });
+      if (picked) {
+        await ensureAttached(picked.targetId, picked.tabId);
+        const fwd = { ...params };
+        delete fwd.abSession;
+        delete fwd.abTargetId;
+        delete fwd.browserContextId;
+        const res = await chrome.debugger.sendCommand({ tabId: picked.tabId }, method, fwd);
+        respond(id, res === undefined ? {} : res);
+        return;
+      }
+      if (chrome.cookies) {
+        const res = await handleCookiesViaExtAPI(method, params);
+        respond(id, res);
+        return;
+      }
+      return respondErr(id, `cdp-ext: 当前会话无可用页面且未授予 cookies 权限，无法执行 ${method}`);
+    }
+    case "Storage.clearDataForOrigin": {
+      const picked = await resolveTabForStorage(params, { allowAnyAttached: true });
       if (!picked) {
-        return respondErr(id, `cdp-ext: 当前会话无可用页面，无法执行 ${method}`);
+        return respondErr(id, "cdp-ext: 当前无可用页面，无法执行 Storage.clearDataForOrigin");
       }
       await ensureAttached(picked.targetId, picked.tabId);
       const fwd = { ...params };
@@ -1181,8 +1582,109 @@ async function onRootCommand(id, method, params) {
       return;
     }
     case "Browser.setDownloadBehavior": {
-      // 假成功：Playwright 连接期无条件发送，报错会中断其初始化。下载按
-      // 宿主浏览器默认行为落盘。
+      // 记录本会话下载策略（allowAndName / allow / deny / default）；
+      // 实际下载事件经 Page.download* + chrome.downloads 桥接并由 proxy 同步到会话 downloadPath。
+      if (params.abSession) {
+        sessionDownloadBehavior.set(params.abSession, params.behavior || "default");
+      }
+      respond(id, {});
+      return;
+    }
+    case "Browser.cancelDownload": {
+      const guid = params.guid;
+      const rec = guid && activeDownloads.get(guid);
+      if (rec) {
+        rec.canceledRequested = true;
+        if (chrome.downloads) {
+          if (rec.downloadId === null) {
+            const deadline = Date.now() + 600;
+            while (rec.downloadId === null && !rec.finished && Date.now() < deadline) {
+              const items = await chrome.downloads.search({ orderBy: ["-startTime"], limit: 5 }).catch(() => []);
+              for (const it of items || []) {
+                if (!downloadGuidById.has(it.id) && matchChromeDownloadScore(rec, it) >= 2) {
+                  rec.downloadId = it.id;
+                  downloadGuidById.set(it.id, rec.guid);
+                  break;
+                }
+              }
+              if (rec.downloadId === null) await new Promise((r) => setTimeout(r, 30));
+            }
+          }
+          if (rec.downloadId !== null) {
+            await chrome.downloads.cancel(rec.downloadId).catch(() => {});
+          }
+        }
+      }
+      respond(id, {});
+      return;
+    }
+    case "Browser.grantPermissions": {
+      if (!chrome.contentSettings) {
+        return respondErr(id, "cdp-ext: 未授予 contentSettings 权限，无法执行 Browser.grantPermissions");
+      }
+      const perms = Array.isArray(params.permissions) ? params.permissions : [];
+      const unsupported = [];
+      const apiKeys = [];
+      for (const p of perms) {
+        const key = CDP_PERMISSION_TO_CONTENT_SETTING[p];
+        if (!key || !chrome.contentSettings[key]) {
+          unsupported.push(String(p));
+        } else {
+          apiKeys.push(key);
+        }
+      }
+      if (unsupported.length > 0) {
+        return respondErr(
+          id,
+          `cdp-ext: Browser.grantPermissions 不支持权限 [${unsupported.join(", ")}]` +
+            `（Chrome contentSettings API 未开放该类型，如需此权限请改用 standalone 源）`,
+        );
+      }
+      const pattern = contentSettingPattern(params.origin);
+      for (const key of apiKeys) {
+        await applyContentSetting(key, pattern, "allow");
+      }
+      respond(id, {});
+      return;
+    }
+    case "Browser.setPermission": {
+      if (!chrome.contentSettings) {
+        return respondErr(id, "cdp-ext: 未授予 contentSettings 权限，无法执行 Browser.setPermission");
+      }
+      const permName = params.permission && params.permission.name;
+      const key = CDP_PERMISSION_TO_CONTENT_SETTING[permName];
+      if (!key || !chrome.contentSettings[key]) {
+        return respondErr(
+          id,
+          `cdp-ext: Browser.setPermission 不支持权限 "${permName || ""}"` +
+            `（Chrome contentSettings API 未开放该类型，如需此权限请改用 standalone 源）`,
+        );
+      }
+      const settingMap = { granted: "allow", denied: "block", prompt: "ask" };
+      const mapped = settingMap[params.setting];
+      if (!mapped) {
+        return respondErr(id, `cdp-ext: Browser.setPermission 无效 setting: ${params.setting}`);
+      }
+      await applyContentSetting(key, contentSettingPattern(params.origin), mapped);
+      respond(id, {});
+      return;
+    }
+    case "Browser.resetPermissions": {
+      if (chrome.contentSettings) {
+        // Chrome contentSettings.*.clear({}) 仅清除本扩展层写入的规则，不会擦除用户手动设置
+        const keys = new Set([...touchedContentSettings, ...RESETTABLE_CONTENT_SETTINGS]);
+        for (const key of keys) {
+          const cs = chrome.contentSettings[key];
+          if (cs && typeof cs.clear === "function") {
+            await callContentSetting(cs, "clear", {}).catch(() => {});
+          }
+        }
+        touchedContentSettings.clear();
+      }
+      respond(id, {});
+      return;
+    }
+    case "Browser.setDockTile": {
       respond(id, {});
       return;
     }
@@ -1196,7 +1698,7 @@ async function onRootCommand(id, method, params) {
   }
 }
 
-async function resolveTabForStorage(params) {
+async function resolveTabForStorage(params, { allowAnyAttached = true } = {}) {
   if (params.abTargetId) {
     let tabId = tabByTarget.get(params.abTargetId);
     if (tabId === undefined) {
@@ -1221,9 +1723,11 @@ async function resolveTabForStorage(params) {
       if (e) return { targetId: e.targetId, tabId };
     }
   }
-  for (const [tid, rec] of attached) {
-    const tabId = rec.tabId ?? tabByTarget.get(tid);
-    if (tabId !== undefined) return { targetId: tid, tabId };
+  if (allowAnyAttached) {
+    for (const [tid, rec] of attached) {
+      const tabId = rec.tabId ?? tabByTarget.get(tid);
+      if (tabId !== undefined) return { targetId: tid, tabId };
+    }
   }
   return null;
 }
@@ -1282,6 +1786,15 @@ async function onSessionCommand(id, sid, method, params) {
     const tab = await chrome.tabs.get(tabId);
     const win = await chrome.windows.get(tab.windowId);
     return send({ id, sessionId: sid, result: { windowId: win.id, bounds: windowBoundsOf(win) } });
+  }
+  if (method === "Page.setDownloadBehavior") {
+    // chrome.debugger 在页面会话上直接调 Page.setDownloadBehavior 会报
+    // "Cannot not access browser-level commands"；在此接管记录会话策略。
+    const sessionName = params.abSession || sessionNameOfTabSync(sess.tabId);
+    if (sessionName) {
+      sessionDownloadBehavior.set(sessionName, params.behavior || "default");
+    }
+    return send({ id, sessionId: sid, result: {} });
   }
 
   // 页面会话上的 Target.detachFromTarget（如 Playwright 主动摘除 service_worker 子会话）：
@@ -1507,6 +2020,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     if (method === "Page.windowOpen" && source.tabId !== undefined) {
       recordWindowOpen(source.tabId, params && params.url);
     }
+    if (method === "Page.downloadWillBegin") {
+      handlePageDownloadWillBegin(source.tabId ?? tabByTarget.get(rec.targetId), rec.targetId, params);
+    } else if (method === "Page.downloadProgress") {
+      handlePageDownloadProgress(params);
+    }
     for (const childOur of rec.byParent.values()) {
       send({ method, params, sessionId: childOur });
     }
@@ -1529,10 +2047,63 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   if (method === "Page.windowOpen" && source.tabId !== undefined) {
     recordWindowOpen(source.tabId, params && params.url);
   }
+  if (method === "Page.downloadWillBegin") {
+    handlePageDownloadWillBegin(source.tabId, targetId, params);
+  } else if (method === "Page.downloadProgress") {
+    handlePageDownloadProgress(params);
+  }
   for (const ourSid of siblings) {
     send({ method, params, sessionId: ourSid });
   }
 });
+
+// chrome.downloads 桥接：绑定 Chrome 原生 downloadId 拿真实落盘路径并支持 cancelDownload / deny
+if (chrome.downloads) {
+  chrome.downloads.onCreated.addListener((item) => {
+    if (!item || item.id == null) return;
+    pruneUnmatchedChromeDownloads();
+    let bestRec = null;
+    let bestScore = 0;
+    let openUnbound = 0;
+    for (const rec of activeDownloads.values()) {
+      if (rec.downloadId !== null || rec.finished) continue;
+      openUnbound++;
+      const score = matchChromeDownloadScore(rec, item);
+      if (score > bestScore) {
+        bestScore = score;
+        bestRec = rec;
+      }
+    }
+    if (bestRec && (bestScore >= 2 || (bestScore === 1 && openUnbound === 1))) {
+      bindChromeDownload(bestRec, item.id, item.filename);
+      return;
+    }
+    unmatchedChromeDownloads.push({
+      id: item.id,
+      url: item.url || "",
+      finalUrl: item.finalUrl || "",
+      filename: item.filename || "",
+      at: Date.now(),
+    });
+  });
+
+  chrome.downloads.onChanged.addListener((delta) => {
+    if (!delta || delta.id == null) return;
+    const guid = downloadGuidById.get(delta.id);
+    const rec = guid && activeDownloads.get(guid);
+    if (!rec) return;
+    if (delta.filename && delta.filename.current) {
+      rec.filename = delta.filename.current;
+    }
+    if (delta.state && delta.state.current === "interrupted" && !rec.finished && !rec.completing) {
+      setTimeout(() => {
+        if (!rec.finished && !rec.completing) {
+          finalizeDownload(rec, "canceled", 0, 0, "");
+        }
+      }, 250);
+    }
+  });
+}
 
 // onBrowserDetach 浏览器侧断开调试的处理主体（onDetach 监听器调用；测试经
 // sw_eval 直接调用以复现「用户点取消」路径）。区分两种语义：
@@ -1661,8 +2232,20 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!entry) return;
   if (changeInfo.url) entry.url = changeInfo.url;
   if (changeInfo.title) entry.title = changeInfo.title;
-  // 组员身份缓存：tab.groupId 是最新事实（-1=无组）
-  if (tab && tab.groupId !== undefined) entry.groupId = tab.groupId;
+  // 组员身份缓存：tab.groupId 是最新事实（-1=无组）；
+  // 若从会话组变为 -1，短暂记录 prevGroupId/ungroupedAt（Chrome 关掉组内 tab 时会先发
+  // onUpdated(groupId=-1) 再发 onRemoved，避免 onRemoved 误判为组外而吞掉 detachedFromTarget）。
+  if (tab && tab.groupId !== undefined) {
+    const prev = entry.groupId;
+    if (tab.groupId === -1 && prev && prev !== -1 && sessionGroupIds().has(prev)) {
+      entry.prevGroupId = prev;
+      entry.ungroupedAt = Date.now();
+    } else if (tab.groupId !== -1) {
+      entry.prevGroupId = undefined;
+      entry.ungroupedAt = 0;
+    }
+    entry.groupId = tab.groupId;
+  }
   // 准入：非会话组成员且非派生 popup 的 tab 不进入事件流
   const isMember = (entry.groupId && sessionGroupIds().has(entry.groupId)) || popupSessionByTab.has(tabId);
   if (!isMember) return;
@@ -1685,10 +2268,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (!entry) return;
   targetByTab.delete(tabId);
   tabByTarget.delete(entry.targetId);
-  // 准入：组员或派生 popup 的关闭才进入事件流（entry.groupId 是最后已知身份，不查实时——
-  // 关闭瞬间 Chrome 可能已把 tab 移出组，实时查询会误判成组外）。组外的
-  // 用户 tab 关闭与系统无关。
-  const wasMember = (entry.groupId && sessionGroupIds().has(entry.groupId)) || wasPopup;
+  const wasClosingTarget = closingTargets.delete(entry.targetId);
+  // 准入：组员、刚在关闭瞬间退组的组员、派生 popup 或 Target.closeTarget 显式关闭的 tab
+  // 才进入事件流；组外用户 tab 关闭保持完全静默。
+  const gids = sessionGroupIds();
+  const recentlyUngrouped =
+    entry.prevGroupId && gids.has(entry.prevGroupId) && Date.now() - (entry.ungroupedAt || 0) < 1000;
+  const wasMember = (entry.groupId && gids.has(entry.groupId)) || recentlyUngrouped || wasPopup || wasClosingTarget;
   if (!wasMember) {
     // 组外 tab 若曾挂载过虚拟会话（如被拖出组后关闭），静默清账防 sessions 泄漏，不发事件
     if (rootsByTarget.has(entry.targetId)) dropTarget(entry.targetId, { notify: false });

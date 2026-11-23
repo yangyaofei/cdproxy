@@ -25,10 +25,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
-	"strings"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,8 +87,10 @@ type Proxy struct {
 	// extAdoptGen 扩展采纳代次：每次采纳 +1；gstate/restore 到达也 +1（作废
 	// 待定的兜底计时器）。采纳后兜底计时器以自己看到的代次为凭，代次已变则放弃。
 	// extGstateSeen 本次采纳周期内是否收到过组事实（gstate）。
-	extAdoptGen  uint64
-	extGstateSeen bool
+	extAdoptGen          uint64
+	extGstateSeen        bool
+	standaloneDlPath     string // standalone 基座最近一次设置的 setDownloadBehavior downloadPath
+	standaloneDlBehavior string // standalone 基座最近一次设置的 setDownloadBehavior behavior
 
 	server *http.Server
 }
@@ -825,19 +830,39 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 	delta := outcome.Delta
 	action := outcome.Action
 
+	// 记录会话的 Browser/Page.setDownloadBehavior（双源均需：用于多会话 downloadPath 隔离及
+	// extension 源完成下载后将真实落盘文件复制到会话期望的 <downloadPath>/<guid>）。
+	if method == "Browser.setDownloadBehavior" || method == "Page.setDownloadBehavior" {
+		behavior, _ := params["behavior"].(string)
+		dlPath, _ := params["downloadPath"].(string)
+		sess.SetDownloadConfig(behavior, dlPath)
+		if kind == dsStandalone && dlPath != "" {
+			p.mu.Lock()
+			p.standaloneDlPath = dlPath
+			p.standaloneDlBehavior = behavior
+			p.mu.Unlock()
+		}
+	}
+
 	// 扩展下游：
 	// - createTarget 夹带会话名（私有参数，扩展据此把新 tab 归入会话标签组后剥离）
-	// - Storage.*Cookies 夹带会话名与名下目标（扩展借该会话已附着 tab 调原生
-	//   chrome.debugger 执行，绝不触碰用户组外 tab）
+	// - Storage.*Cookies / clearDataForOrigin 夹带会话名与名下目标（借会话已附着 tab 执行）
+	// - Browser/Page.setDownloadBehavior / cancelDownload / grantPermissions / setPermission /
+	//   resetPermissions 夹带会话名（按会话维护下载策略与权限归属）
 	// chrome 下游不带私有参数。
 	if kind == dsExtension {
+		upSid, _ := msg["sessionId"].(string)
 		switch method {
-		case "Target.createTarget":
+		case "Target.createTarget",
+			"Browser.setDownloadBehavior", "Page.setDownloadBehavior", "Browser.cancelDownload",
+			"Browser.grantPermissions", "Browser.setPermission", "Browser.resetPermissions":
 			params["abSession"] = sess.Name
-		case "Storage.getCookies", "Storage.setCookies", "Storage.clearCookies":
-			params["abSession"] = sess.Name
-			if owned := sess.OwnedTargets(); len(owned) > 0 {
-				params["abTargetId"] = owned[0]
+		case "Storage.getCookies", "Storage.setCookies", "Storage.clearCookies", "Storage.clearDataForOrigin":
+			if upSid == "" {
+				params["abSession"] = sess.Name
+				if owned := sess.OwnedTargets(); len(owned) > 0 {
+					params["abTargetId"] = owned[0]
+				}
 			}
 		}
 	}
@@ -1592,6 +1617,18 @@ func (p *Proxy) onDsEvent(msg map[string]any, kind string) {
 					p.st.BindDsSession(sess, childSid, childTid)
 				}
 			}
+			// 记录子帧归属（供子帧触发 Browser.downloadWillBegin 时反查会话）
+			if method == "Page.frameAttached" {
+				if fid, _ := params["frameId"].(string); fid != "" {
+					p.st.OwnFrame(sess, fid)
+				}
+			} else if method == "Page.frameNavigated" {
+				if fr, ok := params["frame"].(map[string]any); ok {
+					if fid, _ := fr["id"].(string); fid != "" {
+						p.st.OwnFrame(sess, fid)
+					}
+				}
+			}
 			// 只记结构类事件（Target 生命周期/对话框/弹窗），网络与帧噪声跳过——
 			// 它们会淹没命令流水
 			if strings.HasPrefix(method, "Target.") || method == "Page.javascriptDialogOpening" || method == "Page.windowOpen" {
@@ -1675,7 +1712,110 @@ func (p *Proxy) onDsEvent(msg map[string]any, kind string) {
 		if owner != nil && owner.Downstream() == kind {
 			p.sendTo(owner, msg)
 		}
+	case "Browser.downloadWillBegin":
+		guid, _ := params["guid"].(string)
+		frameID, _ := params["frameId"].(string)
+		suggested, _ := params["suggestedFilename"].(string)
+		abTargetID, _ := params["abTargetId"].(string)
+		delete(params, "abTargetId")
+		var owner *state.Session
+		if abTargetID != "" {
+			owner = p.st.OwnerOf(abTargetID)
+		}
+		if owner == nil && frameID != "" {
+			owner = p.st.FrameOwnerOf(frameID)
+		}
+		if owner != nil && owner.Downstream() == kind {
+			srcDir, srcBehavior := "", ""
+			if kind == dsStandalone {
+				p.mu.Lock()
+				srcDir = p.standaloneDlPath
+				srcBehavior = p.standaloneDlBehavior
+				p.mu.Unlock()
+			}
+			p.st.TrackDownload(guid, owner, suggested, srcDir, srcBehavior)
+			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: owner.Name,
+				Method: method, Action: "routed", Detail: suggested})
+			p.sendTo(owner, msg)
+		}
+	case "Browser.downloadProgress":
+		guid, _ := params["guid"].(string)
+		stateStr, _ := params["state"].(string)
+		abFilename, _ := params["abFilename"].(string)
+		delete(params, "abFilename")
+		track, ok := p.st.DownloadOf(guid)
+		if !ok || track.Sess == nil || track.Sess.Downstream() != kind {
+			return
+		}
+		if stateStr == "completed" {
+			p.st.UntrackDownload(guid)
+			behavior, dlPath := track.Sess.DownloadConfig()
+			destName := guid
+			if behavior != "allowAndName" && track.SuggestedFilename != "" {
+				destName = track.SuggestedFilename
+			}
+			srcFile := abFilename
+			if srcFile == "" && kind == dsStandalone && track.SrcDir != "" && dlPath != "" {
+				srcName := guid
+				if track.SrcBehavior != "" && track.SrcBehavior != "allowAndName" && track.SuggestedFilename != "" {
+					srcName = track.SuggestedFilename
+				}
+				if filepath.Clean(track.SrcDir) != filepath.Clean(dlPath) || srcName != destName {
+					srcFile = filepath.Join(track.SrcDir, filepath.Base(srcName))
+				}
+			}
+			if srcFile != "" && dlPath != "" {
+				destFile := filepath.Join(dlPath, filepath.Base(destName))
+				if filepath.Clean(srcFile) != filepath.Clean(destFile) {
+					// 放 goroutine 拷贝文件避免大文件复制阻塞 dsRecvLoop；拷贝落盘后再发 completed
+					go func(sess *state.Session, payload map[string]any, src, dst string) {
+						if err := copyFileAtomic(src, dst); err != nil {
+							p.log.Warn("下载文件同步到会话目录失败", "session", sess.Name, "src", src, "dst", dst, "err", err)
+						}
+						p.sendTo(sess, payload)
+					}(track.Sess, msg, srcFile, destFile)
+					return
+				}
+			}
+			p.sendTo(track.Sess, msg)
+			return
+		}
+		if stateStr == "canceled" {
+			p.st.UntrackDownload(guid)
+		}
+		p.sendTo(track.Sess, msg)
 	}
+}
+
+// copyFileAtomic 将下载完成的本机文件原子复制到目标路径（不修改/删除源文件）。
+func copyFileAtomic(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dst + ".cdproxy.tmp"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // emitBFCacheLifecycle 在 Chrome BFCache 恢复后补发已完成页面生命周期事件，

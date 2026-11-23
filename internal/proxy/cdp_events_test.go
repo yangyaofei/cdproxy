@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -213,5 +214,146 @@ func TestOnDsEvent_StandaloneOpenerAdoptsBlankTarget(t *testing.T) {
 	ev := readEvent(t, rx)
 	if ev["method"] != "Target.targetCreated" {
 		t.Fatalf("expected Target.targetCreated routed to opener, got %v", ev)
+	}
+}
+
+func TestOnDsEvent_ExtensionDownloadSyncsFileBeforeCompleted(t *testing.T) {
+	p, name, rx, cleanup := newTestProxyWithUpstream(t, dsExtension)
+	defer cleanup()
+	sess := p.st.FindByName(name)
+	p.st.OwnTarget(sess, "T1")
+
+	srcDir := t.TempDir()
+	destDir := t.TempDir()
+	srcFile := filepath.Join(srcDir, "report.txt")
+	wantPayload := "hello-download-payload"
+	if err := os.WriteFile(srcFile, []byte(wantPayload), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	sess.SetDownloadConfig("allowAndName", destDir)
+
+	p.onDsEvent(map[string]any{
+		"method": "Browser.downloadWillBegin",
+		"params": map[string]any{
+			"frameId":           "F1",
+			"guid":              "g-ext-1",
+			"url":               "http://127.0.0.1/report.txt",
+			"suggestedFilename": "report.txt",
+			"abTargetId":        "T1",
+		},
+	}, dsExtension)
+	ev1 := readEvent(t, rx)
+	if ev1["method"] != "Browser.downloadWillBegin" {
+		t.Fatalf("expected Browser.downloadWillBegin, got %v", ev1)
+	}
+	if params1, _ := ev1["params"].(map[string]any); params1["abTargetId"] != nil {
+		t.Fatalf("abTargetId must be stripped before forwarding: %v", params1)
+	}
+
+	p.onDsEvent(map[string]any{
+		"method": "Browser.downloadProgress",
+		"params": map[string]any{
+			"guid":          "g-ext-1",
+			"totalBytes":    float64(len(wantPayload)),
+			"receivedBytes": float64(5),
+			"state":         "inProgress",
+		},
+	}, dsExtension)
+	ev2 := readEvent(t, rx)
+	if ev2["method"] != "Browser.downloadProgress" {
+		t.Fatalf("expected inProgress event, got %v", ev2)
+	}
+
+	p.onDsEvent(map[string]any{
+		"method": "Browser.downloadProgress",
+		"params": map[string]any{
+			"guid":          "g-ext-1",
+			"totalBytes":    float64(len(wantPayload)),
+			"receivedBytes": float64(len(wantPayload)),
+			"state":         "completed",
+			"abFilename":    srcFile,
+		},
+	}, dsExtension)
+	ev3 := readEvent(t, rx)
+	if ev3["method"] != "Browser.downloadProgress" {
+		t.Fatalf("expected completed event, got %v", ev3)
+	}
+	params3, _ := ev3["params"].(map[string]any)
+	if params3["state"] != "completed" || params3["abFilename"] != nil {
+		t.Fatalf("unexpected completed params (abFilename must be stripped): %v", params3)
+	}
+
+	gotBytes, err := os.ReadFile(filepath.Join(destDir, "g-ext-1"))
+	if err != nil {
+		t.Fatalf("expected copied file at <destDir>/<guid>: %v", err)
+	}
+	if string(gotBytes) != wantPayload {
+		t.Fatalf("payload mismatch: got %q want %q", string(gotBytes), wantPayload)
+	}
+	if _, err := os.Stat(srcFile); err != nil {
+		t.Fatalf("source file must not be deleted: %v", err)
+	}
+}
+
+func TestOnDsEvent_StandaloneSubframeDownloadRoutingAndCopy(t *testing.T) {
+	p, name, rx, cleanup := newTestProxyWithUpstream(t, dsStandalone)
+	defer cleanup()
+	sess := p.st.FindByName(name)
+	p.st.OwnTarget(sess, "T1")
+	p.st.BindDsSession(sess, "S1", "T1")
+
+	// 子帧事件自动登记 FrameOwnerOf
+	p.onDsEvent(map[string]any{
+		"sessionId": "S1",
+		"method":    "Page.frameAttached",
+		"params":    map[string]any{"frameId": "SUBF1", "parentFrameId": "T1"},
+	}, dsStandalone)
+	_ = readEvent(t, rx)
+
+	otherDir := t.TempDir()
+	sessDir := t.TempDir()
+	wantPayload := "standalone-subframe-bytes"
+	if err := os.WriteFile(filepath.Join(otherDir, "g-st-1"), []byte(wantPayload), 0o644); err != nil {
+		t.Fatalf("write otherDir file: %v", err)
+	}
+	sess.SetDownloadConfig("allowAndName", sessDir)
+	p.mu.Lock()
+	p.standaloneDlPath = otherDir
+	p.standaloneDlBehavior = "allowAndName"
+	p.mu.Unlock()
+
+	p.onDsEvent(map[string]any{
+		"method": "Browser.downloadWillBegin",
+		"params": map[string]any{
+			"frameId":           "SUBF1",
+			"guid":              "g-st-1",
+			"url":               "http://127.0.0.1/sub.bin",
+			"suggestedFilename": "sub.bin",
+		},
+	}, dsStandalone)
+	ev1 := readEvent(t, rx)
+	if ev1["method"] != "Browser.downloadWillBegin" {
+		t.Fatalf("expected Browser.downloadWillBegin routed via subframe, got %v", ev1)
+	}
+
+	p.onDsEvent(map[string]any{
+		"method": "Browser.downloadProgress",
+		"params": map[string]any{
+			"guid":          "g-st-1",
+			"totalBytes":    float64(len(wantPayload)),
+			"receivedBytes": float64(len(wantPayload)),
+			"state":         "completed",
+		},
+	}, dsStandalone)
+	ev2 := readEvent(t, rx)
+	if ev2["method"] != "Browser.downloadProgress" {
+		t.Fatalf("expected completed event, got %v", ev2)
+	}
+	gotBytes, err := os.ReadFile(filepath.Join(sessDir, "g-st-1"))
+	if err != nil {
+		t.Fatalf("expected copied standalone download at <sessDir>/<guid>: %v", err)
+	}
+	if string(gotBytes) != wantPayload {
+		t.Fatalf("payload mismatch: got %q want %q", string(gotBytes), wantPayload)
 	}
 }

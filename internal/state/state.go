@@ -26,14 +26,33 @@ type Session struct {
 
 	writeMu sync.Mutex // 串行化对 WS 的并发写（事件路由/响应回传/拒绝回包）
 
-	mu            sync.Mutex // 守护以下字段
-	ownedTargets  map[string]struct{}
-	connected     bool
-	ws            *websocket.Conn
-	autoAttach    bool   // root 级 Target.setAutoAttach(autoAttach=true) 已启用
-	discoverTargets bool // root 级 Target.setDiscoverTargets(discover=true) 已启用
-	downstream    string // 会话绑定的下游形态：chrome | extension（分配时定格）
-	origin        string // 最近一次连接入口：alloc（/cdp token）| endpoint:<path>
+	mu               sync.Mutex // 守护以下字段
+	ownedTargets     map[string]struct{}
+	connected        bool
+	ws               *websocket.Conn
+	autoAttach       bool   // root 级 Target.setAutoAttach(autoAttach=true) 已启用
+	discoverTargets  bool   // root 级 Target.setDiscoverTargets(discover=true) 已启用
+	downstream       string // 会话绑定的下游形态：standalone | extension（分配时定格）
+	origin           string // 最近一次连接入口：alloc（/cdp token）| endpoint:<path>
+	downloadBehavior string // 最近一次 Browser.setDownloadBehavior 的 behavior
+	downloadPath     string // 最近一次 Browser.setDownloadBehavior 的 downloadPath
+}
+
+// SetDownloadConfig 记录本会话通过 Browser.setDownloadBehavior 配置的下载行为与目录。
+func (s *Session) SetDownloadConfig(behavior, path string) {
+	s.mu.Lock()
+	s.downloadBehavior = behavior
+	if path != "" {
+		s.downloadPath = path
+	}
+	s.mu.Unlock()
+}
+
+// DownloadConfig 返回本会话的下载行为与目录快照。
+func (s *Session) DownloadConfig() (behavior, path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.downloadBehavior, s.downloadPath
 }
 
 // Origin 返回最近一次连接入口（alloc | endpoint:<path>）。
@@ -159,6 +178,14 @@ type PendingEntry struct {
 	RespCh  chan map[string]any // 非空 = 同步调用（dsCall），响应投递到此
 }
 
+// DownloadTrack 进行中的下载项关联记录（按 CDP guid 索引）。
+type DownloadTrack struct {
+	Sess              *Session
+	SuggestedFilename string
+	SrcDir            string // standalone 模式下发 setDownloadBehavior 时的有效目录
+	SrcBehavior       string // standalone 模式下发 setDownloadBehavior 时的有效 behavior
+}
+
 // State 全局状态表。
 type State struct {
 	mu            sync.Mutex
@@ -166,10 +193,12 @@ type State struct {
 	sessions      map[string]*Session // name → session
 	byToken       map[string]*Session // token → session
 	targetOwn     map[string]*Session // targetId → session
+	frameOwn      map[string]*Session // frameId → session（子帧下载归属反查）
 	dsSession     map[string]*Session // 下游 sessionId → session
 	sidTarget     map[string]string   // 下游 sessionId → targetId（revoke 反查）
 	pending       map[int64]PendingEntry // 下游命令 id → 关联
 	pendingGroups map[string][]string   // 组名（会话名）→ targetIds：组事实先于会话到达时的领地暂存（alloc 认领）
+	downloads     map[string]*DownloadTrack // guid → 下载归属
 }
 
 // New 构造空状态表。
@@ -178,10 +207,12 @@ func New() *State {
 		sessions:      map[string]*Session{},
 		byToken:       map[string]*Session{},
 		targetOwn:     map[string]*Session{},
+		frameOwn:      map[string]*Session{},
 		dsSession:     map[string]*Session{},
 		sidTarget:     map[string]string{},
 		pending:       map[int64]PendingEntry{},
 		pendingGroups: map[string][]string{},
+		downloads:     map[string]*DownloadTrack{},
 	}
 }
 
@@ -232,6 +263,16 @@ func (st *State) drop(sess *Session) {
 		if s == sess {
 			delete(st.dsSession, sid)
 			delete(st.sidTarget, sid)
+		}
+	}
+	for fid, s := range st.frameOwn {
+		if s == sess {
+			delete(st.frameOwn, fid)
+		}
+	}
+	for guid, tr := range st.downloads {
+		if tr.Sess == sess {
+			delete(st.downloads, guid)
 		}
 	}
 }
@@ -304,6 +345,16 @@ func (st *State) ClearOwnershipFor(kind string) (owned map[*Session][]string, bo
 		delete(st.dsSession, sid)
 		delete(st.sidTarget, sid)
 	}
+	for fid, sess := range st.frameOwn {
+		if sess.Downstream() == kind {
+			delete(st.frameOwn, fid)
+		}
+	}
+	for guid, tr := range st.downloads {
+		if tr.Sess != nil && tr.Sess.Downstream() == kind {
+			delete(st.downloads, guid)
+		}
+	}
 	return owned, bound
 }
 
@@ -324,6 +375,16 @@ func (st *State) DetachSessionTargets(sess *Session) (tids []string, sids []stri
 			delete(st.sidTarget, sid)
 		}
 	}
+	for fid, s := range st.frameOwn {
+		if s == sess {
+			delete(st.frameOwn, fid)
+		}
+	}
+	for guid, tr := range st.downloads {
+		if tr.Sess == sess {
+			delete(st.downloads, guid)
+		}
+	}
 	return tids, sids
 }
 
@@ -333,6 +394,62 @@ func (st *State) OwnTarget(sess *Session, targetID string) {
 	defer st.mu.Unlock()
 	sess.ownedTargets[targetID] = struct{}{}
 	st.targetOwn[targetID] = sess
+}
+
+// OwnFrame 登记 frameId → session 映射（供子帧触发 Browser.downloadWillBegin 反查归属）。
+func (st *State) OwnFrame(sess *Session, frameID string) {
+	if sess == nil || frameID == "" {
+		return
+	}
+	st.mu.Lock()
+	st.frameOwn[frameID] = sess
+	st.mu.Unlock()
+}
+
+// FrameOwnerOf 查询 frameId 所属会话（优先 targetOwn，回退 frameOwn）。
+func (st *State) FrameOwnerOf(frameID string) *Session {
+	if frameID == "" {
+		return nil
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s := st.targetOwn[frameID]; s != nil {
+		return s
+	}
+	return st.frameOwn[frameID]
+}
+
+// TrackDownload 登记进行中的下载项归属。
+func (st *State) TrackDownload(guid string, sess *Session, suggestedFilename, srcDir, srcBehavior string) {
+	if guid == "" || sess == nil {
+		return
+	}
+	st.mu.Lock()
+	st.downloads[guid] = &DownloadTrack{
+		Sess:              sess,
+		SuggestedFilename: suggestedFilename,
+		SrcDir:            srcDir,
+		SrcBehavior:       srcBehavior,
+	}
+	st.mu.Unlock()
+}
+
+// DownloadOf 查询下载项归属快照。
+func (st *State) DownloadOf(guid string) (DownloadTrack, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	tr, ok := st.downloads[guid]
+	if !ok || tr == nil {
+		return DownloadTrack{}, false
+	}
+	return *tr, true
+}
+
+// UntrackDownload 移除已完成或已取消的下载项记录。
+func (st *State) UntrackDownload(guid string) {
+	st.mu.Lock()
+	delete(st.downloads, guid)
+	st.mu.Unlock()
 }
 
 // PendingGroupClaim 认领待领组：组事实先于同名会话到达（扩展先连上、

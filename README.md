@@ -161,6 +161,23 @@ Every common setting is editable directly from the sidebar and takes effect imme
 - **Sources & Endpoints**: Manage both browser modes, set session-name prefix routing (for example, `ext-` sessions automatically go to your everyday Chrome), detect/back up/wire `agent-browser` global config in one click, and copy or reset access tokens.
 - **Settings**: Adjust listening ports, idle cleanup timeouts (60s after disconnect, 10m idle shutdown for the dedicated browser), and data directory.
 
+## `Cdproxy Connector` Extension Permissions
+
+When bridging your everyday Chrome, `Cdproxy Connector` talks exclusively to your local `cdproxy` instance and sends nothing off-machine. Each requested Chrome permission maps directly to specific capabilities:
+
+| Chrome Permission | Capabilities Enabled | Behavior Without This Permission |
+|---|---|---|
+| `debugger` *(core)* | Forwards page-level CDP commands & events via `chrome.debugger` (DOM, JS, network, screenshots, OOPIF, Web Workers, download events, and cookies when a tab is open) | Extension cannot control pages |
+| `tabs`, `tabGroups` *(core)* | Per-session tab lifecycle, Tab Group isolation boundaries, window bounds read/write, and auto-adoption of `target="_blank"` tabs & popups | No Tab Group isolation boundary or derived popup ownership |
+| `storage`, `alarms` *(core)* | Persists connection config and virtual session tables across MV3 Service Worker restarts, with periodic keep-alive & reconnect | Active sessions drop whenever Chrome suspends the Service Worker |
+| `downloads` | Full Playwright/CDP download pipeline: `download.path()`, `download.saveAs()` (copies the finished file into the session's download directory without deleting the original), `download.cancel()`, and `behavior: 'deny'` | Download start/progress events still fire, but disk path lookup (`path()`/`saveAs()`) and `cancel()`/`deny` are unavailable |
+| `contentSettings` | Site permissions via `context.grantPermissions()`, `Browser.setPermission`, and `clearPermissions()` (geolocation, notifications, camera, microphone, automatic downloads, popups, etc.); `clearPermissions()` clears only this extension's own layer and never touches your manual Chrome site settings | Calls to grant or modify site permissions return an error |
+| `cookies` + `<all_urls>` | Zero-tab fallback for `context.cookies()`, `addCookies()`, and `clearCookies()` when a session has no open tabs | Cookie commands still work via `debugger` whenever the session has at least one open tab; only 0-tab calls fail |
+
+> **Chrome MV3 Platform Boundaries** (Chrome extension architecture limits, not missing permissions):
+> - **Isolated browser contexts (`createBrowserContext`)**, **ignoring self-signed certificates (`Security.setIgnoreCertificateErrors`)**, and permission types not exposed by `chrome.contentSettings` (such as `clipboard`, `midi`, `sensors`) are rejected honestly by the extension — switch to the built-in **`standalone` dedicated Chrome** source when you need them.
+> - **Single debugger per tab**: opening DevTools on a controlled tab or clicking *Cancel* on Chrome's debugging banner puts the session into silent soft-hibernation; the next CDP command lazily re-attaches automatically.
+
 ---
 
 <details>

@@ -161,6 +161,23 @@ const browser = await puppeteer.connect({
 - **源与接入点**：管理两类浏览器模式、按会话名前缀自动分流（如 `ext-` 开头的会话自动走日常 Chrome）、一键检测/备份并写入 `agent-browser` 全局配置，以及查看/重置连接令牌。
 - **设置**：调整监听端口、断开后自动清理残留网页的等待时间（默认 60 秒）、独立浏览器空闲自动退出的等待时间（默认 10 分钟）和数据存放目录。
 
+## `Cdproxy Connector` 扩展权限说明
+
+连接日常 Chrome 时，`Cdproxy Connector` 扩展只在本机与 `cdproxy` 通信，不上传任何数据。每项 Chrome 权限与对应解锁的能力如下：
+
+| Chrome 权限 | 解锁的能力 | 缺失或未开启时的影响 |
+|---|---|---|
+| `debugger`（核心） | 经 `chrome.debugger` 转发页面级 CDP 命令与事件（DOM/JS/网络/截图/OOPIF/Worker/下载事件/带标签页时的 Cookie 读写） | 扩展无法控制任何网页 |
+| `tabs`、`tabGroups`（核心） | 按会话创建/关闭/分组标签页、窗口尺寸读写、`target="_blank"` 与弹窗自动归属 | 无法建立标签页分组隔离边界，也无法自动认领派生标签与弹窗 |
+| `storage`、`alarms`（基础） | 持久化连接配置与会话映射、在 MV3 Service Worker 休眠后原位恢复并自动保活重连 | Service Worker 被 Chrome 回收后会话句柄会中断 |
+| `downloads` | 打通 `waitForEvent('download')` 后的 `download.path()`、`saveAs()`（复制落盘文件到会话目录，不删除原下载文件）、`download.cancel()` 与 `behavior: 'deny'` | 仍能收到下载开始/结束事件，但无法读取真实落盘路径（`path()`/`saveAs()` 不可用），且无法取消或拦截下载 |
+| `contentSettings` | 支持 `context.grantPermissions()` / `Browser.setPermission` / `clearPermissions()`（地理定位、通知、摄像头、麦克风、自动下载、弹窗等）；`clearPermissions()` 仅清除本扩展写入的规则，不改动你手动保存的站点设置 | 调用站点权限授予/修改接口会直接报错 |
+| `cookies` + `<all_urls>` | 会话关闭全部标签页（0 tab）时，`context.cookies()` / `addCookies()` / `clearCookies()` 自动回落到 `chrome.cookies` | 只要会话内仍有至少 1 个打开的标签页，Cookie 读写仍可经 `debugger` 正常工作；仅在 0 标签页状态下报错 |
+
+> **已知的 Chrome MV3 扩展平台边界**（非权限问题，无法在日常 Chrome 中通过扩展绕过）：
+> - **多隐身上下文（`createBrowserContext`）**、**忽略自签证书（`Security.setIgnoreCertificateErrors`）** 及 `chrome.contentSettings` 未开放的权限类型（如 `clipboard`、`midi`、`sensors`）——扩展会如实报错，如需这些能力请切换到内置的 **`standalone` 独立浏览器**模式。
+> - **同一标签页同时只能挂一个调试器**：在受控标签页手动打开 DevTools 或点击顶部调试横幅的「取消」时，会话会静默进入软休眠，下一条命令到达时自动重新挂载。
+
 ---
 
 <details>

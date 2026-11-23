@@ -138,7 +138,7 @@ Admin 页：服务起来后开 `http://127.0.0.1:9224/`（状态/会话释放/�
 | 标签组 E2E | `scripts/ext_group_test.mjs`（G1–G8：自动入组/拖入归属/真关/拖出收回/三策略 release/墓碑复活/整组认领；SW eval 模拟用户组操作） | 同上 + 浏览器带调试端口 | 改组/归属/release 语义后必跑 |
 | 冷启动孤儿 E2E | `scripts/ext_cold_test.mjs`（C1–C5：清持久化+杀 SW 冷启动 → gstate 重建无孤儿；墓碑复活认领） | 同上 | 改 gstate/冷启动语义后必跑 |
 | Playwright E2E | `scripts/ext_playwright_e2e.mjs`（connectOverCDP 零改动客户端全链路） | 同上 | 改会话语义/时序后必跑 |
-| CDP 协议兼容 | `scripts/ext_cdp_compat_test.mjs`（14 项：BFCache goBack/goForward、`_blank`/window.open/popup、Storage Cookies、跨源 OOPIF、Web Worker、Fetch 拦截、Browser 窗口与版本号） | 同上 | 改扩展/proxy 协议转发后必跑 |
+| CDP 协议兼容 | `scripts/ext_cdp_compat_test.mjs`（19 项：BFCache goBack/goForward、`_blank`/window.open/popup、Storage Cookies 与 0-tab 回落、跨源 OOPIF、Web Worker、Fetch 拦截、Browser 窗口与版本号、文件下载 `waitForEvent`/`path`/`saveAs`/`cancel`、站点权限 `grantPermissions`/`clearPermissions` 与不支持项诚实报错） | 同上 | 改扩展/proxy 协议转发后必跑 |
 | 并发压测 | `scripts/concurrency_test.sh`（3 校验流 + 1 churn 流四路并行，零串扰判定） | 服务 + 真实 Chrome | 改转发/焦点/回收语义后必跑 |
 | 浏览器级 | agent-browser 实连（指向 `cdproxy` 二进制的 plugin 配置） | 全链路 | 接入相关改动 |
 
