@@ -7,7 +7,8 @@
 //   G5 无主类别不复存在：__unowned__ 日志为空/不存在
 // 前置：测试服务（EXT_CONTROL）+ 测试浏览器（EXT_CDP_HTTP，已装新 sw.js）+ 扩展已回连。
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 const _req = createRequire(import.meta.url);
 let WebSocket;
@@ -26,14 +27,21 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "✓" : "✗"} ${name}${detail ? " — " + detail : ""}`);
   if (!ok) process.exitCode = 1;
 };
+const _readDefaultToken = () => {
+  if (process.env.ALLOC_TOKEN || process.env.EXT_TOKEN) return process.env.ALLOC_TOKEN || process.env.EXT_TOKEN;
+  try {
+    return JSON.parse(readFileSync(path.join(os.homedir(), ".cdproxy", "settings.json"), "utf8"))?.sources?.alloc_token || "";
+  } catch { return ""; }
+};
+const _tok = _readDefaultToken();
 const http = async (method, p, body, headers = {}) => {
   const resp = await fetch(CONTROL + p, {
-    method, headers: { "Content-Type": "application/json", ...headers },
+    method, headers: { "Content-Type": "application/json", ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { code: resp.status, data: await resp.json().catch(() => ({})) };
 };
-const allocToken = async () => (await http("GET", "/status")).data?.sources?.alloc_token;
+const allocToken = async () => _tok || (await http("GET", "/status")).data?.sources?.alloc_token;
 
 // 浏览器自身 CDP：开/关组外 tab（模拟用户手动开 tab）
 const browserCdp = async (method, params = {}) => {

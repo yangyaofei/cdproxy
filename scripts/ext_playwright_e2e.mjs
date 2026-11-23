@@ -3,6 +3,9 @@
 // 前置：extension 模式服务运行中（9234/9235）+ 扩展已回连。
 // 依赖：npm --prefix var/pwtest i playwright-core（回落解析该目录）。
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 const require = createRequire(import.meta.url);
 let chromium;
 try {
@@ -11,21 +14,24 @@ try {
   ({ chromium } = require("../var/pwtest/node_modules/playwright-core"));
 }
 
-const CONTROL = "http://127.0.0.1:9234";
+const CONTROL = process.env.EXT_CONTROL || "http://127.0.0.1:9234";
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push([name, ok, detail]);
   console.log(`${ok ? "✓" : "✗"} ${name}${detail ? " — " + detail : ""}`);
 };
 
-// 分配令牌：从管理面 /status 自取（POST /sessions 需要 Bearer 准入）
-const _st = await fetch(`${CONTROL}/status`).then((r) => r.json());
-const allocToken = _st?.sources?.alloc_token || "";
+// 分配令牌：优先读环境变量，回落 ~/.cdproxy/settings.json
+const allocToken = process.env.ALLOC_TOKEN || process.env.EXT_TOKEN || (() => {
+  try {
+    return JSON.parse(readFileSync(path.join(os.homedir(), ".cdproxy", "settings.json"), "utf8"))?.sources?.alloc_token || "";
+  } catch { return ""; }
+})();
 
 const alloc = await fetch(`${CONTROL}/sessions`, {
   method: "POST",
   headers: { "Content-Type": "application/json", Authorization: `Bearer ${allocToken}` },
-  body: JSON.stringify({ name: `pw-e2e-${Date.now()}` }),
+  body: JSON.stringify({ name: `pw-e2e-${Date.now()}`, source: "extension" }),
 }).then((r) => r.json());
 
 const browser = await chromium.connectOverCDP(alloc.cdpUrl);

@@ -22,15 +22,20 @@
 //   Target.attachToTarget(flatten) / detachFromTarget / setAutoAttach / attachToBrowserTarget
 //                                      ← 虚拟会话多路复用（1 物理 attach 叠 N 虚拟会话）
 //   Target.getBrowserContexts          ← 恒空（单默认 context：cdp-ext-default）
-//   Browser.getVersion / setDownloadBehavior ← 合成 Chrome/cdp-ext-bridge / 假成功
+//   Storage.getCookies / setCookies / clearCookies
+//                                      ← 经会话已附着 tab 透传原生 chrome.debugger（零额外权限）
+//   Browser.getVersion / getWindowForTarget / getWindowBounds / setWindowBounds
+//                                      ← navigator.userAgent 真实版本 + chrome.windows.*
+//   Browser.setDownloadBehavior        ← 假成功（宿主默认下载行为）
 //   Browser.close                      ← 拒绝（宿主是用户浏览器，proxy 侧另有基座保护）
-//   页面会话命令 & OOPIF/worker 子会话   ← chrome.debugger.sendCommand 全透传
+//   页面会话命令 & OOPIF/worker 子会话   ← chrome.debugger.sendCommand 全透传（含嵌套子会话）
 //
 // Playwright connectOverCDP 关键契约（改动须过 ext_smoke_test + ext_playwright_e2e）：
-//   1) 响应必回带 sessionId；targetInfo 必带 browserContextId；detachedFromTarget 必带 targetId
+//   1) 响应必回带 sessionId；targetInfo 必带 browserContextId（及 openerId）；detachedFromTarget 必带 targetId
 //   2) attachedToTarget 先于 setAutoAttach / createTarget 响应送达
 //   3) 会话内 attach 事件须嵌套在父 sessionId 下，禁止广播（防 Duplicate target）
 //   4) createTarget 毫秒级应答（防 alloc 预开归属输给紧随其后的 getTargets）
+//   5) 会话 tab 触发的 target="_blank" / window.open / popup 窗口按 openerTabId 自动归属并立即同步
 //
 // 会话韧性与软休眠（改动须过 ext_restart_test）：
 //   - 虚拟会话表变更即写透 chrome.storage.session（禁止防抖写——SW 挂起会冻住计时器丢写入）；
@@ -40,15 +45,18 @@
 //     下一条会话命令懒重挂；若休眠期 tab 已关则诚实报错未知 sessionId
 //
 // 标签组投影与事件准入（组 = 唯一真相，改动须过 ext_group_test + ext_cold_test + ext_event_gate_test）：
-//   - 会话 tab 自动入组 `ab: <会话名>`（入组按会话名经 groupChain 串行防并发双组）；
-//     拖入=归属、拖出=收回、跨组拖动=领地转移；组内 tab 允许真关
+//   - 会话 tab 自动入组 `cdproxy: <会话名>`（入组按会话名经 groupChain 串行防并发双组）；
+//     拖入=归属、拖出=收回、跨组拖动=领地转移；组内 tab 允许真关；会话弹出的独立 popup 窗口
+//     因 Chrome 不允许对 popup 窗口分组，由 popupSessionByTab 随同会话同步与回收
 //   - release 策略由 options 页 releasePolicy 控制：close（全关删组）/ mark（墓碑 `· released`
 //     灰组，同名会话回来摘碑认领）/ keep（原样保留）；冷启动凭 gstate 全量重建无孤儿
-//   - 事件准入：仅会话组成员进入事件流；创建单出口在 createTarget 归组且应答之后，
-//     tabs.onCreated 不直发 targetCreated（用户手动开 tab = 组外不可见）
+//   - 事件准入：仅会话组成员（及会话派生的 popup 窗口）进入事件流；用户手动开的无 opener tab
+//     仍为组外不可见
 //
-// 已知边界：一 tab 一 debugger（开 DevTools 时 attach 报错）；软休眠/SW 重启不保留 OOPIF/worker
-// 子会话；heap/CPU profiler 等浏览器级域不可用；下载落盘按宿主默认行为。
+// 已知平台边界（Chrome MV3 扩展无法在用户日常浏览器突破）：
+//   - 一 tab 一 debugger（开 DevTools 时触发软休眠，关闭后懒重挂恢复）
+//   - Target.createBrowserContext / Security.setIgnoreCertificateErrors / Browser.grantPermissions 不可用
+//   - 下载落盘按宿主默认行为；软休眠不保留 OOPIF/worker 子会话（需页面重载或重新附着）
 
 const DEFAULT_RELAY = "ws://127.0.0.1:9225/ext";
 const DEFAULT_TOKEN = "";
@@ -225,20 +233,49 @@ let ws = null;
 let backoffMs = 500;
 let heartbeatTimer = null;
 const sessionGroups = new Map(); // 会话名 → groupId（SW 重启按组标题重建）
+const popupSessionByTab = new Map(); // popup 窗口 tabId → 会话名（Chrome 不允许 popup 窗口分组）
+const openerByTab = new Map(); // tabId → openerTabId（保留给 targetInfo.openerId）
+// recentWindowOpens：chrome.debugger 的 Page.windowOpen 先于 chrome.tabs.onCreated
+// 触发，携带真正发起跳转的后台 tabId（Chrome 对后台 tab 调用 window.open('_blank') 时，
+// tabs.onCreated.openerTabId 会误填为窗口当前激活的用户 tab，必须以 Page.windowOpen 为准）。
+const recentWindowOpens = []; // { openerTabId, url, at }
+const WINDOW_OPEN_TTL_MS = 3000;
+
+function recordWindowOpen(openerTabId, url) {
+  if (openerTabId === undefined) return;
+  const now = Date.now();
+  while (recentWindowOpens.length && now - recentWindowOpens[0].at > WINDOW_OPEN_TTL_MS) {
+    recentWindowOpens.shift();
+  }
+  recentWindowOpens.push({ openerTabId, url: url || "", at: now });
+}
+
+function consumeWindowOpen(tabUrl) {
+  const now = Date.now();
+  while (recentWindowOpens.length && now - recentWindowOpens[0].at > WINDOW_OPEN_TTL_MS) {
+    recentWindowOpens.shift();
+  }
+  if (!recentWindowOpens.length) return undefined;
+  if (tabUrl) {
+    const idx = recentWindowOpens.findIndex((r) => r.url && r.url === tabUrl);
+    if (idx >= 0) return recentWindowOpens.splice(idx, 1)[0].openerTabId;
+  }
+  return recentWindowOpens.shift().openerTabId;
+}
 
 // ── 会话表 ─────────────────────────────────────────────────────────
 // ourSid → 会话；root 键（targetId）与 childDsSid 各有反向索引。
 // 每次反向连接重建（proxy 侧同刻清归属，旧 id 无引用者）。
 
 let sidSeq = 0;
-const sessions = new Map(); // ourSid → {targetId, tabId, children: Map<dsSid, ourSid>}
+const sessions = new Map(); // ourSid → {targetId, tabId, children: Map<dsSid, ourSid>, dsChildSid?, parentOurSid?, rootTargetId?, browser?}
 const rootsByTarget = new Map(); // targetId → Set<ourSid>（一个物理 attach 叠 N 个虚拟会话）
-const childByDsSid = new Map(); // dsChildSessionId → {targetId, byParent: Map<parentOurSid, childOurSid>}
+const childByDsSid = new Map(); // dsChildSessionId → {targetId, childTargetId, byParent: Map<parentOurSid, childOurSid>}
 const attached = new Map(); // targetId → {tabId} 物理 attach 状态（一 tab 一 debugger，引用计数去重）
 let rootAutoAttach = false; // 浏览器级 Target.setAutoAttach 标志
 
 // targetId ⇄ tabId 映射（getTargets 刷新维护；事件路由与 attach 都依赖）
-const targetByTab = new Map(); // tabId → {targetId, url, title, type}
+const targetByTab = new Map(); // tabId → {targetId, url, title, type, groupId?, openerTabId?}
 const tabByTarget = new Map(); // targetId → tabId
 
 // ── 配置与状态 ────────────────────────────────────────────────────
@@ -350,36 +387,89 @@ async function diagnoseFailure(wsUrl, token) {
 
 async function refreshTargets() {
   const infos = await chrome.debugger.getTargets();
+  // 同一 tabId 下可能同时存在 page、iframe、worker、other（及 BFCache/prerender 临时目标）：
+  // 仅 type === "page" 才可占据 targetByTab；同 tabId 多 page 时优先保留已附着/已注册会话的目标，
+  // 防止非 page 或非活跃目标覆盖主 page targetId（导致 openerId 错配、事件路由丢失）。
+  const pagesByTab = new Map();
   for (const ti of infos) {
-    if (ti.tabId === undefined) continue;
-    const known = targetByTab.get(ti.tabId);
-    const fresh = { targetId: ti.id, url: ti.url, title: ti.title, type: ti.type };
-    targetByTab.set(ti.tabId, fresh);
-    tabByTarget.set(ti.id, ti.tabId);
-    if (known && known.targetId !== ti.id) tabByTarget.delete(known.targetId);
+    if (ti.tabId === undefined || ti.type !== "page") continue;
+    const prev = pagesByTab.get(ti.tabId);
+    if (!prev) {
+      pagesByTab.set(ti.tabId, ti);
+      continue;
+    }
+    const prevScore = (rootsByTarget.has(prev.id) ? 4 : 0) + (attached.has(prev.id) ? 2 : 0) + (prev.attached ? 1 : 0);
+    const curScore = (rootsByTarget.has(ti.id) ? 4 : 0) + (attached.has(ti.id) ? 2 : 0) + (ti.attached ? 1 : 0);
+    if (curScore > prevScore) pagesByTab.set(ti.tabId, ti);
+  }
+  for (const [tabId, ti] of pagesByTab) {
+    const known = targetByTab.get(tabId);
+    const fresh = {
+      targetId: ti.id,
+      url: ti.url,
+      title: ti.title,
+      type: ti.type,
+      groupId: known?.groupId,
+      openerTabId: known?.openerTabId ?? openerByTab.get(tabId),
+    };
+    targetByTab.set(tabId, fresh);
+    tabByTarget.set(ti.id, tabId);
+    if (known && known.targetId !== ti.id && !rootsByTarget.has(known.targetId)) {
+      tabByTarget.delete(known.targetId);
+    }
   }
   return infos;
 }
 
+async function waitForTargetId(tabId, maxAttempts = 80) {
+  let targetId = null;
+  for (let i = 0; i < maxAttempts && !targetId; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 25));
+    await refreshTargets();
+    targetId = (targetByTab.get(tabId) || {}).targetId || null;
+  }
+  return targetId;
+}
+
 function cdpTargetInfo(ti, openerTabId) {
+  const tid = ti.id ?? ti.targetId;
+  const tabId = ti.tabId !== undefined ? ti.tabId : tabByTarget.get(tid);
+  const resolvedOpenerTabId = openerTabId ?? ti.openerTabId ?? (tabId !== undefined ? openerByTab.get(tabId) : undefined);
   const info = {
     // 兼容两种来源：chrome.debugger 原始 targetInfo（id 字段）与缓存归一化
     // 条目（targetId 字段，sync/gstate 随行信息用）
-    targetId: ti.id ?? ti.targetId,
-    type: ti.type,
-    title: ti.title,
-    url: ti.url,
-    attached: ti.attached,
+    targetId: tid,
+    type: ti.type || "page",
+    title: ti.title || "",
+    url: ti.url || "",
+    attached: ti.attached !== undefined ? !!ti.attached : attached.has(tid),
     // 真 Chrome 的 targetInfo 带 browserContextId（默认 context 亦有固定 id）；
     // Playwright 对缺失该字段的 target 直接 detach——必须带上（不在
     // getBrowserContexts 列表内的 id 会回落到默认 context，语义正确）。
     browserContextId: "cdp-ext-default",
   };
-  if (ti.tabId !== undefined) info.tabId = ti.tabId;
-  if (openerTabId && targetByTab.has(openerTabId)) {
-    info.openerId = targetByTab.get(openerTabId).targetId;
+  if (tabId !== undefined) info.tabId = tabId;
+  if (resolvedOpenerTabId !== undefined && targetByTab.has(resolvedOpenerTabId)) {
+    info.openerId = targetByTab.get(resolvedOpenerTabId).targetId;
   }
   return info;
+}
+
+function windowBoundsOf(win) {
+  const stateMap = {
+    normal: "normal",
+    minimized: "minimized",
+    maximized: "maximized",
+    fullscreen: "fullscreen",
+    "locked-fullscreen": "fullscreen",
+  };
+  return {
+    left: win.left ?? 0,
+    top: win.top ?? 0,
+    width: win.width ?? 0,
+    height: win.height ?? 0,
+    windowState: stateMap[win.state] || "normal",
+  };
 }
 
 async function targetInfoOf(targetId) {
@@ -515,7 +605,14 @@ function persistStateSoon() {
 function serializeState() {
   const sess = {};
   for (const [sid, s] of sessions) {
-    sess[sid] = { targetId: s.targetId, tabId: s.tabId, browser: !!s.browser };
+    sess[sid] = {
+      targetId: s.targetId,
+      tabId: s.tabId,
+      browser: !!s.browser,
+      ...(s.dsChildSid ? { dsChildSid: s.dsChildSid } : {}),
+      ...(s.parentOurSid ? { parentOurSid: s.parentOurSid } : {}),
+      ...(s.rootTargetId ? { rootTargetId: s.rootTargetId } : {}),
+    };
   }
   const roots = {};
   for (const [tid, set] of rootsByTarget) roots[tid] = [...set];
@@ -523,9 +620,13 @@ function serializeState() {
   for (const [dsSid, c] of childByDsSid) {
     const byParent = {};
     for (const [p, child] of c.byParent) byParent[p] = child;
-    children[dsSid] = { targetId: c.targetId, byParent };
+    children[dsSid] = { targetId: c.targetId, childTargetId: c.childTargetId || "", byParent };
   }
-  return { sidSeq, rootAutoAttach, sessions: sess, roots, children, attached: [...attached.keys()] };
+  const popups = {};
+  for (const [tabId, name] of popupSessionByTab) popups[String(tabId)] = name;
+  const openers = {};
+  for (const [tabId, openerId] of openerByTab) openers[String(tabId)] = openerId;
+  return { sidSeq, rootAutoAttach, sessions: sess, roots, children, attached: [...attached.keys()], popups, openers };
 }
 
 async function loadPersistedState() {
@@ -536,15 +637,36 @@ async function loadPersistedState() {
     sidSeq = st.sidSeq || 0;
     rootAutoAttach = !!st.rootAutoAttach;
     for (const [sid, s] of Object.entries(st.sessions || {})) {
-      sessions.set(sid, { targetId: s.targetId, tabId: s.tabId, browser: !!s.browser, children: new Map() });
+      sessions.set(sid, {
+        targetId: s.targetId,
+        tabId: s.tabId,
+        browser: !!s.browser,
+        ...(s.dsChildSid ? { dsChildSid: s.dsChildSid } : {}),
+        ...(s.parentOurSid ? { parentOurSid: s.parentOurSid } : {}),
+        ...(s.rootTargetId ? { rootTargetId: s.rootTargetId } : {}),
+        children: new Map(),
+      });
     }
     for (const [tid, sids] of Object.entries(st.roots || {})) {
       rootsByTarget.set(tid, new Set(sids));
     }
     for (const [dsSid, c] of Object.entries(st.children || {})) {
-      childByDsSid.set(dsSid, { targetId: c.targetId, byParent: new Map(Object.entries(c.byParent || {})) });
+      const byParent = new Map(Object.entries(c.byParent || {}));
+      childByDsSid.set(dsSid, { targetId: c.targetId, childTargetId: c.childTargetId || "", byParent });
+      for (const [p, child] of byParent) {
+        const parent = sessions.get(p);
+        if (parent) parent.children.set(dsSid, child);
+      }
     }
     for (const tid of st.attached || []) attached.set(tid, {});
+    for (const [k, name] of Object.entries(st.popups || {})) {
+      const tabId = Number(k);
+      if (Number.isInteger(tabId) && name) popupSessionByTab.set(tabId, name);
+    }
+    for (const [k, v] of Object.entries(st.openers || {})) {
+      const tabId = Number(k);
+      if (Number.isInteger(tabId) && Number.isInteger(v)) openerByTab.set(tabId, v);
+    }
     return true;
   } catch (err) {
     console.warn("[cdp-ext] 持久化恢复异常（按冷启动处理）", err && err.message);
@@ -553,36 +675,65 @@ async function loadPersistedState() {
 }
 
 // ── 组对账（sync 控制消息）────────────────────────────────────────
-// 组成员 = 会话可见集。浏览器侧 tabs/tabGroups 事件驱动 + alarm 兜底，
-// 防抖合并后把每个会话组的当前成员全量上报，proxy 差分 adopt/revoke。
+// 组成员 = 会话可见集（标签组 tab ∪ 会话派生的 popup 窗口 tab）。浏览器侧
+// tabs/tabGroups 事件驱动 + alarm 兜底，防抖合并后全量上报，proxy 差分 adopt/revoke。
+
+async function collectPopupEntries(sessionName) {
+  const out = [];
+  for (const [tabId, name] of [...popupSessionByTab.entries()]) {
+    if (name !== sessionName) continue;
+    const t = await chrome.tabs.get(tabId).catch(() => null);
+    if (!t) {
+      popupSessionByTab.delete(tabId);
+      continue;
+    }
+    const e = targetByTab.get(tabId);
+    if (e) out.push(e);
+  }
+  return out;
+}
+
+async function syncSession(sessionName) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  await refreshTargets();
+  const groupId = await groupFor(sessionName);
+  const byTid = new Map();
+  if (groupId !== undefined) {
+    const tabs = await chrome.tabs.query({ groupId });
+    for (const t of tabs) {
+      const e = targetByTab.get(t.id);
+      if (e) {
+        e.groupId = groupId;
+        byTid.set(e.targetId, e);
+      }
+    }
+  }
+  for (const e of await collectPopupEntries(sessionName)) {
+    byTid.set(e.targetId, e);
+  }
+  if (groupId === undefined && byTid.size === 0) return;
+  const entries = [...byTid.values()];
+  send({
+    abCtl: "sync",
+    session: sessionName,
+    targetIds: entries.map((e) => e.targetId),
+    // targetInfo 全量随行（含 openerId）：proxy 归属新增时向客户端合成
+    // targetCreated 事件并自动 attach（popup / target="_blank" 依赖 openerId）
+    infos: entries.map((e) => cdpTargetInfo(e, e.openerTabId)),
+  });
+}
 
 function scheduleReconcile(delayMs = 300) {
   if (reconcileTimer !== null) clearTimeout(reconcileTimer);
   reconcileTimer = setTimeout(async () => {
     reconcileTimer = null;
-    if (!ws || ws.readyState !== WebSocket.OPEN || sessionGroups.size === 0) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const names = new Set([...sessionGroups.keys(), ...popupSessionByTab.values()]);
+    if (names.size === 0) return;
     try {
       await refreshTargets();
-      for (const [sessionName] of sessionGroups) {
-        const groupId = await groupFor(sessionName);
-        if (groupId === undefined) continue;
-        const tabs = await chrome.tabs.query({ groupId });
-        // 组员身份回填：tab 静止（无 onUpdated）时这是 entry.groupId 的唯一
-        // 更新来源（adopt 拖入/SW 重启恢复后尤其如此）
-        for (const t of tabs) {
-          const e = targetByTab.get(t.id);
-          if (e) e.groupId = groupId;
-        }
-        const entries = tabs
-          .map((t) => targetByTab.get(t.id))
-          .filter(Boolean);
-        send({
-          abCtl: "sync", session: sessionName,
-          targetIds: entries.map((e) => e.targetId),
-          // targetInfo 全量随行：proxy 归属新增时向客户端合成 targetCreated
-          // 事件（页面列表靠事件流维护，getTargets 轮询不可依赖）
-          infos: entries.map((e) => cdpTargetInfo(e)),
-        });
+      for (const sessionName of names) {
+        await syncSession(sessionName);
       }
     } catch (e) {
       console.warn("[cdp-ext] 组对账失败", e);
@@ -595,7 +746,7 @@ async function onControl(msg) {
   switch (msg.abCtl) {
     case "release": {
       // 会话结束：tab 处置归本扩展的 release 策略（options 配置）——
-      // close：关闭全部组内 tab（组随最后一个 tab 消失）；
+      // close：关闭全部组内 tab 与派生 popup tab（组随最后一个 tab 消失）；
       // mark：组加墓碑（标题 "… · released" + 灰色），tab 保留，同名会话
       //       回来时摘碑复活、整组认领；
       // keep：什么都不动（领地原样保留）。
@@ -605,20 +756,34 @@ async function onControl(msg) {
       const cfg = await chrome.storage.local.get(["releasePolicy"]);
       const policy = cfg.releasePolicy || "close";
       const groupId = await groupFor(sessionName);
+      const tabIdsToDrop = new Set();
       if (groupId !== undefined) {
         const tabs = await chrome.tabs.query({ groupId });
-        const tids = tabs.map((t) => (targetByTab.get(t.id) || {}).targetId).filter(Boolean);
-        for (const tid of tids) await dropTarget(tid);
-        if (policy === "close") {
-          await chrome.tabs.remove(tabs.map((t) => t.id)).catch(() => {});
-        } else if (policy === "mark") {
-          await chrome.tabGroups.update(groupId, {
-            title: formatGroupTitle(sessionName, true),
-            color: "grey",
-          }).catch(() => {});
-        }
-        // keep：组与 tab 原样保留
+        for (const t of tabs) tabIdsToDrop.add(t.id);
       }
+      const popupTabIds = [];
+      for (const [tabId, name] of [...popupSessionByTab.entries()]) {
+        if (name === sessionName) {
+          tabIdsToDrop.add(tabId);
+          popupTabIds.push(tabId);
+        }
+      }
+      for (const tabId of tabIdsToDrop) {
+        const tid = (targetByTab.get(tabId) || {}).targetId;
+        if (tid) await dropTarget(tid);
+      }
+      if (policy === "close") {
+        if (tabIdsToDrop.size > 0) {
+          await chrome.tabs.remove([...tabIdsToDrop]).catch(() => {});
+        }
+        for (const tabId of popupTabIds) popupSessionByTab.delete(tabId);
+      } else if (policy === "mark" && groupId !== undefined) {
+        await chrome.tabGroups.update(groupId, {
+          title: formatGroupTitle(sessionName, true),
+          color: "grey",
+        }).catch(() => {});
+      }
+      // keep：组与 tab 原样保留
       break;
     }
     case "config": {
@@ -661,14 +826,14 @@ async function onControl(msg) {
   }
 }
 
-// sendGstate 全量组事实上报：所有匹配当前前缀的活组（非墓碑）的 会话名 → 成员
-// targetId 列表。proxy 以此重建归属投影。
+// sendGstate 全量组事实上报：所有匹配当前前缀的活组（非墓碑）与派生 popup 的
+// 会话名 → 成员 targetId 列表。proxy 以此重建归属投影。
 async function sendGstate() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   try {
     await refreshTargets();
     const groups = await chrome.tabGroups.query({});
-    const bySession = new Map(); // 会话名 → targetIds（多组同名取并集）
+    const bySession = new Map(); // 会话名 → Map<targetId, entry>（多组/popup 取并集）
     for (const g of groups) {
       if (!g.title || g.title.endsWith(RELEASED_SUFFIX)) continue;
       const name = parseSessionName(g.title);
@@ -679,17 +844,34 @@ async function sendGstate() {
         const e = targetByTab.get(t.id);
         if (e) e.groupId = g.id;
       }
-      const entries = tabs.map((t) => targetByTab.get(t.id)).filter(Boolean);
-      if (!bySession.has(name)) bySession.set(name, { targetIds: [], infos: [] });
-      const agg = bySession.get(name);
-      agg.targetIds.push(...entries.map((e) => e.targetId));
-      agg.infos.push(...entries.map((e) => cdpTargetInfo(e)));
+      if (!bySession.has(name)) bySession.set(name, new Map());
+      const map = bySession.get(name);
+      for (const t of tabs) {
+        const e = targetByTab.get(t.id);
+        if (e) map.set(e.targetId, e);
+      }
+    }
+    for (const [tabId, name] of [...popupSessionByTab.entries()]) {
+      const t = await chrome.tabs.get(tabId).catch(() => null);
+      if (!t) {
+        popupSessionByTab.delete(tabId);
+        continue;
+      }
+      const e = targetByTab.get(tabId);
+      if (!e) continue;
+      if (!bySession.has(name)) bySession.set(name, new Map());
+      bySession.get(name).set(e.targetId, e);
     }
     send({
       abCtl: "gstate",
-      groups: [...bySession.entries()].map(([session, agg]) => ({
-        session, targetIds: agg.targetIds, infos: agg.infos,
-      })),
+      groups: [...bySession.entries()].map(([session, map]) => {
+        const entries = [...map.values()];
+        return {
+          session,
+          targetIds: entries.map((e) => e.targetId),
+          infos: entries.map((e) => cdpTargetInfo(e, e.openerTabId)),
+        };
+      }),
     });
   } catch (e) {
     console.warn("[cdp-ext] gstate 上报失败", e);
@@ -705,7 +887,6 @@ function stopHeartbeat() {
   heartbeatTimer = null;
 }
 
-// resetState 新连接的干净起点：清会话表，detach 上一 SW 世代 attach 过的 tab。
 // resetState 冷启动的干净起点（浏览器重启/无持久化状态）：清会话表并
 // detach 上一世代 attach 过的 tab。
 // 注意：SW 普通重启不走这里（loadPersistedState 命中 → restore 原位续接，
@@ -717,6 +898,9 @@ async function resetState() {
   attached.clear();
   targetByTab.clear();
   tabByTarget.clear();
+  popupSessionByTab.clear();
+  openerByTab.clear();
+  recentWindowOpens.length = 0;
   idEcho.clear();
   rootAutoAttach = false;
   sidSeq = 0;
@@ -819,12 +1003,7 @@ async function onRootCommand(id, method, params) {
       // 等 target 映射就位：立即首查（新 tab 通常同步可见，应答须与真 Chrome
       // 同数量级——alloc 预开是 fire-and-forget，慢了会被客户端 getTargets
       // 抢先导致归属未记录）；未就位再 25ms×80 兜底轮询。
-      let targetId = null;
-      for (let i = 0; i < 80 && !targetId; i++) {
-        if (i > 0) await new Promise((r) => setTimeout(r, 25));
-        await refreshTargets();
-        targetId = (targetByTab.get(tab.id) || {}).targetId;
-      }
+      const targetId = await waitForTargetId(tab.id);
       if (!targetId) return respondErr(id, "cdp-ext: 新 tab 的 targetId 解析超时");
       // targetCreated 单出口：归组完成后在应答之后发出。应答先到 → proxy 记
       // 归属 → 事件到达时 OwnerOf 命中，路由给会话（顺序反了会以无主身份
@@ -832,7 +1011,8 @@ async function onRootCommand(id, method, params) {
       if (sessionName) {
         await addToGroup(sessionName, tab.id);
         const entry = targetByTab.get(tab.id);
-        if (entry && tab.groupId !== undefined) entry.groupId = tab.groupId;
+        const gid = sessionGroups.get(sessionName);
+        if (entry && gid !== undefined) entry.groupId = gid;
         respond(id, { targetId, abGroup: formatGroupTitle(sessionName) });
         send({
           method: "Target.targetCreated",
@@ -931,20 +1111,78 @@ async function onRootCommand(id, method, params) {
       respond(id, { browserContextIds: [] });
       return;
     }
+    case "Storage.getCookies":
+    case "Storage.setCookies":
+    case "Storage.clearCookies": {
+      // Chrome 在页面 debuggee 上原生支持 Storage.*Cookies（返回无损 CDP
+      // Cookie 结构，无需申请 <all_urls> / cookies 权限）。只借用当前会话名下
+      // 或已附着 tab 执行，绝不碰用户组外 tab。
+      const picked = await resolveTabForStorage(params);
+      if (!picked) {
+        return respondErr(id, `cdp-ext: 当前会话无可用页面，无法执行 ${method}`);
+      }
+      await ensureAttached(picked.targetId, picked.tabId);
+      const fwd = { ...params };
+      delete fwd.abSession;
+      delete fwd.abTargetId;
+      delete fwd.browserContextId;
+      const res = await chrome.debugger.sendCommand({ tabId: picked.tabId }, method, fwd);
+      respond(id, res === undefined ? {} : res);
+      return;
+    }
     case "Browser.getVersion": {
+      const m = /Chrome\/([0-9.]+)/.exec(navigator.userAgent);
       respond(id, {
         protocolVersion: "1.3",
-        product: "Chrome/cdp-ext-bridge",
+        product: m ? `Chrome/${m[1]}` : "Chrome/cdp-ext-bridge",
+        revision: "",
         userAgent: navigator.userAgent,
         jsVersion: "",
       });
       return;
     }
+    case "Browser.getWindowForTarget": {
+      let tabId = params.targetId ? tabByTarget.get(params.targetId) : undefined;
+      if (tabId === undefined && params.targetId) {
+        await refreshTargets();
+        tabId = tabByTarget.get(params.targetId);
+      }
+      if (tabId === undefined) return respondErr(id, `cdp-ext: target ${params.targetId || ""} 不存在`);
+      const tab = await chrome.tabs.get(tabId);
+      const win = await chrome.windows.get(tab.windowId);
+      respond(id, { windowId: win.id, bounds: windowBoundsOf(win) });
+      return;
+    }
+    case "Browser.getWindowBounds": {
+      if (typeof params.windowId !== "number") {
+        return respondErr(id, "cdp-ext: Browser.getWindowBounds 缺少 windowId");
+      }
+      const win = await chrome.windows.get(params.windowId);
+      respond(id, { bounds: windowBoundsOf(win) });
+      return;
+    }
+    case "Browser.setWindowBounds": {
+      if (typeof params.windowId !== "number" || !params.bounds || typeof params.bounds !== "object") {
+        return respondErr(id, "cdp-ext: Browser.setWindowBounds 参数不完整");
+      }
+      const b = params.bounds;
+      const upd = {};
+      if (b.windowState === "minimized" || b.windowState === "maximized" || b.windowState === "fullscreen") {
+        upd.state = b.windowState;
+      } else {
+        if (b.windowState === "normal") upd.state = "normal";
+        if (typeof b.left === "number") upd.left = Math.round(b.left);
+        if (typeof b.top === "number") upd.top = Math.round(b.top);
+        if (typeof b.width === "number") upd.width = Math.round(b.width);
+        if (typeof b.height === "number") upd.height = Math.round(b.height);
+      }
+      await chrome.windows.update(params.windowId, upd);
+      respond(id, {});
+      return;
+    }
     case "Browser.setDownloadBehavior": {
       // 假成功：Playwright 连接期无条件发送，报错会中断其初始化。下载按
-      // 宿主浏览器默认行为落盘，Page.downloadWillBegan/Progress 事件仍经
-      // 页面会话正常流动（playwright download 对象的路径解析受限，属文档化
-      // 缺口——精确控制需 chrome.downloads，不在 CDP 语义层补偿）。
+      // 宿主浏览器默认行为落盘。
       respond(id, {});
       return;
     }
@@ -956,6 +1194,38 @@ async function onRootCommand(id, method, params) {
     default:
       respondErr(id, `cdp-ext: 浏览器级命令不支持: ${method}`);
   }
+}
+
+async function resolveTabForStorage(params) {
+  if (params.abTargetId) {
+    let tabId = tabByTarget.get(params.abTargetId);
+    if (tabId === undefined) {
+      await refreshTargets();
+      tabId = tabByTarget.get(params.abTargetId);
+    }
+    if (tabId !== undefined) return { targetId: params.abTargetId, tabId };
+  }
+  if (params.abSession) {
+    await refreshTargets();
+    const gid = await groupFor(params.abSession);
+    if (gid !== undefined) {
+      const tabs = await chrome.tabs.query({ groupId: gid });
+      for (const t of tabs) {
+        const e = targetByTab.get(t.id);
+        if (e) return { targetId: e.targetId, tabId: t.id };
+      }
+    }
+    for (const [tabId, name] of popupSessionByTab) {
+      if (name !== params.abSession) continue;
+      const e = targetByTab.get(tabId);
+      if (e) return { targetId: e.targetId, tabId };
+    }
+  }
+  for (const [tid, rec] of attached) {
+    const tabId = rec.tabId ?? tabByTarget.get(tid);
+    if (tabId !== undefined) return { targetId: tid, tabId };
+  }
+  return null;
 }
 
 // onSessionCommand 页面会话命令：透传 chrome.debugger（root 或 child 会话）。
@@ -992,16 +1262,56 @@ async function onSessionCommand(id, sid, method, params) {
     return;
   }
 
-  // 页面会话：物理 attach 可能处于软休眠（用户点过横幅「取消」）——先懒重挂
-  // 再透传。重挂失败（DevTools 占用 / tab 已关）如实报错，客户端可见明确原因。
+  // 页面会话上的浏览器域只读/窗口命令（真 Chrome 在 page session 上同样受理）：
+  // 含 Browser.getVersion / getWindowForTarget / getWindowBounds / setWindowBounds。
+  if (method === "Browser.getVersion" || method === "Browser.getWindowBounds" || method === "Browser.setWindowBounds") {
+    idEcho.set(id, sid);
+    try {
+      await onRootCommand(id, method, params);
+    } catch (err) {
+      respondErr(id, `cdp-ext: ${method} 失败: ${err && err.message ? err.message : String(err)}`);
+    }
+    return;
+  }
+  if (method === "Browser.getWindowForTarget") {
+    let tabId = sess.tabId;
+    if (params.targetId) tabId = tabByTarget.get(params.targetId) ?? tabId;
+    if (tabId === undefined) {
+      return send({ id, sessionId: sid, error: { code: -32000, message: "cdp-ext: 当前会话缺少 tabId" } });
+    }
+    const tab = await chrome.tabs.get(tabId);
+    const win = await chrome.windows.get(tab.windowId);
+    return send({ id, sessionId: sid, result: { windowId: win.id, bounds: windowBoundsOf(win) } });
+  }
+
+  // 页面会话上的 Target.detachFromTarget（如 Playwright 主动摘除 service_worker 子会话）：
+  // 须把虚拟子 sessionId 映射回 chrome.debugger 的真实 dsChildSid 再透传。
+  if (method === "Target.detachFromTarget" && params.sessionId) {
+    const childSess = sessions.get(params.sessionId);
+    if (childSess && childSess.dsChildSid) {
+      const dsChildSid = childSess.dsChildSid;
+      const target = sess.dsChildSid
+        ? { tabId: sess.tabId, sessionId: sess.dsChildSid }
+        : { tabId: sess.tabId };
+      try {
+        await chrome.debugger.sendCommand(target, "Target.detachFromTarget", { sessionId: dsChildSid });
+      } catch { /* 子目标可能已自行退出 */ }
+      detachChildSession(dsChildSid, childSess.targetId);
+      return send({ id, sessionId: sid, result: {} });
+    }
+  }
+
+  // 页面/子会话：物理 attach 挂在根 tab 上，可能处于软休眠（用户点过横幅「取消」）——
+  // 先懒重挂再透传。重挂失败（DevTools 占用 / tab 已关）如实报错，客户端可见明确原因。
+  const rootTid = sess.rootTargetId || sess.targetId;
   try {
-    await ensureAttached(sess.targetId, sess.tabId);
+    await ensureAttached(rootTid, sess.tabId);
   } catch (err) {
     return send({
       id, sessionId: sid,
       error: {
         code: -32000,
-        message: `cdp-ext: 会话 ${sid} 处于休眠，重新附加 ${sess.targetId} 失败` +
+        message: `cdp-ext: 会话 ${sid} 处于休眠，重新附加 ${rootTid} 失败` +
           `（tab 已关或被 DevTools 占用）: ${err && err.message ? err.message : String(err)}`,
       },
     });
@@ -1047,28 +1357,52 @@ async function attachTarget(targetId, parentSid) {
   const tabId = tabByTarget.get(targetId);
   const ti = await targetInfoOf(targetId);
   if (!ti) throw new Error(`target ${targetId} 不存在`);
-  await ensureAttached(targetId, tabId);
+  const resolvedTabId = tabId ?? ti.tabId;
+  await ensureAttached(targetId, resolvedTabId);
   const ourSid = `E${++sidSeq}`;
-  sessions.set(ourSid, { targetId, tabId, children: new Map() });
+  sessions.set(ourSid, { targetId, tabId: resolvedTabId, children: new Map() });
   if (!rootsByTarget.has(targetId)) rootsByTarget.set(targetId, new Set());
   rootsByTarget.get(targetId).add(ourSid);
   persistStateSoon();
+  const openerTabId = resolvedTabId !== undefined
+    ? (openerByTab.get(resolvedTabId) ?? targetByTab.get(resolvedTabId)?.openerTabId)
+    : undefined;
   // 会话内 attach（如 attachToBrowserTarget 会话上的 attachToTarget）：
   // 事件嵌套发给该会话（顶层 sessionId=父），不广播浏览器级——真 Chrome
   // 如此，广播会让 Playwright 的浏览器级处理器重复注册 target 而断言。
   send({
     method: "Target.attachedToTarget",
-    params: { sessionId: ourSid, targetInfo: cdpTargetInfo(ti) },
+    params: { sessionId: ourSid, targetInfo: cdpTargetInfo(ti, openerTabId) },
     ...(parentSid ? { sessionId: parentSid } : {}),
   });
   return ourSid;
 }
 
+// purgeChildTree 递归清理某父会话名下的全部子虚拟会话（OOPIF/Worker/嵌套子目标）。
+function purgeChildTree(parentOurSid) {
+  const parent = sessions.get(parentOurSid);
+  if (!parent || !parent.children) return;
+  for (const [dsSid, childOur] of [...parent.children.entries()]) {
+    purgeChildTree(childOur);
+    sessions.delete(childOur);
+    const rec = childByDsSid.get(dsSid);
+    if (rec) {
+      rec.byParent.delete(parentOurSid);
+      if (rec.byParent.size === 0) childByDsSid.delete(dsSid);
+    }
+  }
+  parent.children.clear();
+}
+
 async function detachSession(ourSid) {
   const sess = sessions.get(ourSid);
   if (!sess) return;
+  if (sess.dsChildSid) {
+    detachChildSession(sess.dsChildSid, sess.targetId);
+    return;
+  }
+  purgeChildTree(ourSid);
   sessions.delete(ourSid);
-  for (const dsSid of sess.children.keys()) childByDsSid.delete(dsSid);
   const siblings = rootsByTarget.get(sess.targetId);
   if (siblings) siblings.delete(ourSid);
   if (siblings && siblings.size === 0) {
@@ -1086,9 +1420,8 @@ async function dropTarget(targetId, { notify = true } = {}) {
   const siblings = rootsByTarget.get(targetId);
   if (!siblings) return;
   for (const ourSid of [...siblings]) {
-    const sess = sessions.get(ourSid);
+    purgeChildTree(ourSid);
     sessions.delete(ourSid);
-    for (const dsSid of (sess ? sess.children.keys() : [])) childByDsSid.delete(dsSid);
     if (notify) {
       send({ method: "Target.detachedFromTarget", params: { sessionId: ourSid, targetId } });
     }
@@ -1100,24 +1433,79 @@ async function dropTarget(targetId, { notify = true } = {}) {
 
 // ── chrome.debugger 事件 → CDP 事件 ─────────────────────────────────
 
+// attachChildSession 为 OOPIF / Worker / 嵌套子目标在所有父虚拟会话下登记独立 childOur，
+// 并写入 sessions（含 dsChildSid 与 rootTargetId），使子会话命令与事件双向贯通。
+function attachChildSession(parentOurSids, dsSid, params, rootTargetId) {
+  if (!dsSid) return;
+  const childTargetId = (params && params.targetInfo && params.targetInfo.targetId) || "";
+  if (!childByDsSid.has(dsSid)) {
+    childByDsSid.set(dsSid, { targetId: rootTargetId, childTargetId, byParent: new Map() });
+  }
+  const rec = childByDsSid.get(dsSid);
+  if (childTargetId && !rec.childTargetId) rec.childTargetId = childTargetId;
+  for (const parentOur of parentOurSids) {
+    if (rec.byParent.has(parentOur)) continue;
+    const parent = sessions.get(parentOur);
+    if (!parent) continue;
+    const childOur = `E${++sidSeq}`;
+    parent.children.set(dsSid, childOur);
+    rec.byParent.set(parentOur, childOur);
+    sessions.set(childOur, {
+      targetId: childTargetId || rootTargetId,
+      rootTargetId,
+      tabId: parent.tabId,
+      dsChildSid: dsSid,
+      parentOurSid: parentOur,
+      children: new Map(),
+    });
+    send({
+      method: "Target.attachedToTarget",
+      params: { ...params, sessionId: childOur },
+      sessionId: parentOur,
+    });
+  }
+  persistStateSoon();
+}
+
+function detachChildSession(dsSid, targetIdFromParams) {
+  const rec = dsSid && childByDsSid.get(dsSid);
+  if (!rec) return;
+  for (const [parentOur, childOur] of [...rec.byParent.entries()]) {
+    purgeChildTree(childOur);
+    sessions.delete(childOur);
+    send({
+      method: "Target.detachedFromTarget",
+      params: { sessionId: childOur, targetId: targetIdFromParams || rec.childTargetId },
+      sessionId: parentOur,
+    });
+    const parent = sessions.get(parentOur);
+    if (parent) parent.children.delete(dsSid);
+  }
+  childByDsSid.delete(dsSid);
+  persistStateSoon();
+}
+
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (source.sessionId) {
     // 子会话（OOPIF/worker）事件：按 byParent 定向到各父会话自己的 child id
     const rec = childByDsSid.get(source.sessionId);
     if (!rec) return;
-    if (method === "Target.detachedFromTarget") {
-      for (const [parentOur, childOur] of rec.byParent) {
-        send({
-          method: "Target.detachedFromTarget",
-          params: { sessionId: childOur, targetId: params && params.targetId },
-          sessionId: parentOur,
-        });
-        const parent = sessions.get(parentOur);
-        if (parent) parent.children.delete(source.sessionId);
-      }
-      childByDsSid.delete(source.sessionId);
-      persistStateSoon();
+    if (method === "Target.attachedToTarget") {
+      // 嵌套子目标（如 OOPIF 内部再创建 Worker）
+      attachChildSession(rec.byParent.values(), params && params.sessionId, params, rec.targetId);
       return;
+    }
+    if (method === "Target.detachedFromTarget") {
+      const innerDsSid = params && params.sessionId;
+      if (innerDsSid && childByDsSid.has(innerDsSid)) {
+        detachChildSession(innerDsSid, params && params.targetId);
+      } else {
+        detachChildSession(source.sessionId, params && params.targetId);
+      }
+      return;
+    }
+    if (method === "Page.windowOpen" && source.tabId !== undefined) {
+      recordWindowOpen(source.tabId, params && params.url);
     }
     for (const childOur of rec.byParent.values()) {
       send({ method, params, sessionId: childOur });
@@ -1131,46 +1519,15 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!siblings || siblings.size === 0) return;
 
   if (method === "Target.attachedToTarget") {
-    // 页面会话内的 auto-attach（子 target）：每个父会话生成自己的 child id
-    const dsSid = params && params.sessionId;
-    if (!dsSid) return;
-    if (!childByDsSid.has(dsSid)) {
-      childByDsSid.set(dsSid, { targetId, byParent: new Map() });
-    }
-    const rec = childByDsSid.get(dsSid);
-    for (const ourSid of siblings) {
-      if (rec.byParent.has(ourSid)) continue;
-      const parent = sessions.get(ourSid);
-      if (!parent) continue;
-      const childOur = `E${++sidSeq}`;
-      parent.children.set(dsSid, childOur);
-      rec.byParent.set(ourSid, childOur);
-      send({
-        method: "Target.attachedToTarget",
-        params: { ...params, sessionId: childOur },
-        sessionId: ourSid,
-      });
-    }
-    persistStateSoon();
+    attachChildSession(siblings, params && params.sessionId, params, targetId);
     return;
   }
   if (method === "Target.detachedFromTarget") {
-    const dsSid = params && params.sessionId;
-    const rec = dsSid && childByDsSid.get(dsSid);
-    if (rec) {
-      for (const [parentOur, childOur] of rec.byParent) {
-        send({
-          method: "Target.detachedFromTarget",
-          params: { sessionId: childOur, targetId: params && params.targetId },
-          sessionId: parentOur,
-        });
-        const parent = sessions.get(parentOur);
-        if (parent) parent.children.delete(dsSid);
-      }
-      childByDsSid.delete(dsSid);
-      persistStateSoon();
-    }
+    detachChildSession(params && params.sessionId, params && params.targetId);
     return;
+  }
+  if (method === "Page.windowOpen" && source.tabId !== undefined) {
+    recordWindowOpen(source.tabId, params && params.url);
   }
   for (const ourSid of siblings) {
     send({ method, params, sessionId: ourSid });
@@ -1193,18 +1550,14 @@ async function onBrowserDetach(targetId, reason) {
   }
   attached.delete(targetId);
   // 休眠即物理 attach 死：其下的真实子会话（dsSid）全部失效，清账防串扰
+  for (const ourSid of rootsByTarget.get(targetId) || []) {
+    purgeChildTree(ourSid);
+  }
   for (const [dsSid, rec] of [...childByDsSid]) {
     if (rec.targetId === targetId) {
-      for (const parentOur of rec.byParent.keys()) {
-        const parent = sessions.get(parentOur);
-        if (parent) parent.children.delete(dsSid);
-      }
+      for (const childOur of rec.byParent.values()) sessions.delete(childOur);
       childByDsSid.delete(dsSid);
     }
-  }
-  for (const ourSid of rootsByTarget.get(targetId) || []) {
-    const s = sessions.get(ourSid);
-    if (s) s.children.clear();
   }
   persistStateSoon();
   console.info("[cdp-ext] 调试被浏览器侧断开，会话软休眠（下一条命令自动重挂）", targetId, reason);
@@ -1217,26 +1570,88 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 });
 
 // ── chrome.tabs 事件 → Target 生命周期事件 ──────────────────────────
-// 事件准入（组=唯一真相）：只有会话组成员（含墓碑组）的生命周期进入事件流。
-// 物理宇宙里其余 tab（用户手动开/页面弹窗）与系统无关——不是"被过滤掉"，
-// 而是本就不在系统定义的宇宙里。创建单出口：我们自己 createTarget 的 tab
-// 在归组完成后由命令处理直接发 targetCreated（天然原子，无双报竞态）。
+// 事件准入（组=唯一真相）：只有会话组成员（含墓碑组）及会话派生 popup 窗口的
+// 生命周期进入事件流。用户手动开的无 opener 组外 tab 与系统无关，静默忽略。
+// 创建分两路：
+//   1) Target.createTarget：归组完成后单出口直发 targetCreated；
+//   2) 页面内 target="_blank" / window.open / popup：onCreated 凭 openerTabId
+//      归属到 opener 所在会话（普通 tab 归同组，popup 窗口记入 popupSessionByTab），
+//      保留 openerId 并 0ms 立即 syncSession 给 proxy 触发 targetCreated + autoAttach。
 
 // sessionGroupIds 当前全部会话组（含墓碑）的 groupId 集合。
 function sessionGroupIds() {
   return new Set(sessionGroups.values());
 }
 
-chrome.tabs.onCreated.addListener((tab) => {
-  // 新 tab 不发 targetCreated：createTarget 路径自己发（归组后），
-  // 其余来源（用户手动/页面 window.open）= 组外 = 无主不可见（设计语义）。
-  // 只建立映射供后续 onUpdated/命令使用。
-  if (tab.groupId !== undefined && tab.groupId !== -1) {
-    // 极罕见：创建即带组（组内新标签按钮）。记下，事件由 onUpdated 通道覆盖。
+async function resolveSessionForTab(tabId, hintGroupId) {
+  if (popupSessionByTab.has(tabId)) return popupSessionByTab.get(tabId);
+  const gid = hintGroupId ?? targetByTab.get(tabId)?.groupId;
+  if (gid !== undefined && gid !== -1) {
+    for (const [name, id] of sessionGroups) {
+      if (id === gid) {
+        const g = await chrome.tabGroups.get(gid).catch(() => null);
+        if (g && !g.title.endsWith(RELEASED_SUFFIX)) return name;
+      }
+    }
   }
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab || tab.groupId === undefined || tab.groupId === -1) return null;
+  const g = await chrome.tabGroups.get(tab.groupId).catch(() => null);
+  if (!g || !g.title || g.title.endsWith(RELEASED_SUFFIX)) return null;
+  const name = parseSessionName(g.title);
+  if (name !== null) sessionGroups.set(name, g.id);
+  return name;
+}
+
+chrome.tabs.onCreated.addListener((tab) => {
+  // 优先消费刚由受控 tab 发出的 Page.windowOpen（解决后台 tab window.open('_blank') 时
+  // Chrome 把 tabs.onCreated.openerTabId 误填成当前激活用户 tab 的问题），再回退 tab.openerTabId。
+  const fromWindowOpen = consumeWindowOpen(tab.pendingUrl || tab.url || "");
+  const effectiveOpenerTabId = fromWindowOpen !== undefined ? fromWindowOpen : tab.openerTabId;
+  if (effectiveOpenerTabId !== undefined) {
+    openerByTab.set(tab.id, effectiveOpenerTabId);
+    (async () => {
+      try {
+        const sessionName = await resolveSessionForTab(effectiveOpenerTabId);
+        if (!sessionName) {
+          // 组外普通用户页打开的新 tab：仅建映射，不进事件流
+          await refreshTargets();
+          const entry = targetByTab.get(tab.id);
+          if (entry && tab.groupId !== undefined) entry.groupId = tab.groupId;
+          return;
+        }
+        const targetId = await waitForTargetId(tab.id);
+        if (!targetId) return;
+        const win = tab.windowId !== undefined
+          ? await chrome.windows.get(tab.windowId).catch(() => null)
+          : null;
+        if (win && win.type !== "normal") {
+          // 独立 popup 窗口无法加入 Chrome tabGroup，通过 popupSessionByTab 挂靠同一会话
+          popupSessionByTab.set(tab.id, sessionName);
+          persistStateSoon();
+        } else {
+          await addToGroup(sessionName, tab.id);
+          const gid = sessionGroups.get(sessionName);
+          const entry = targetByTab.get(tab.id);
+          if (entry && gid !== undefined) entry.groupId = gid;
+        }
+        const entry = targetByTab.get(tab.id);
+        if (entry) entry.openerTabId = effectiveOpenerTabId;
+        await syncSession(sessionName);
+      } catch (e) {
+        console.warn("[cdp-ext] 自动归属派生 tab/popup 失败", tab.id, e);
+      }
+    })();
+    return;
+  }
+  // 无 opener：Target.createTarget 由命令路径归组并单出口发 targetCreated；
+  // 用户手动开组外 tab 保持完全静默；若用户在组内点「+」建 tab 则触发对账。
   refreshTargets().then(() => {
     const entry = targetByTab.get(tab.id);
     if (entry && tab.groupId !== undefined) entry.groupId = tab.groupId;
+    if (tab.groupId !== undefined && tab.groupId !== -1 && sessionGroupIds().has(tab.groupId)) {
+      scheduleReconcile(50);
+    }
   });
 });
 
@@ -1248,34 +1663,37 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.title) entry.title = changeInfo.title;
   // 组员身份缓存：tab.groupId 是最新事实（-1=无组）
   if (tab && tab.groupId !== undefined) entry.groupId = tab.groupId;
-  // 准入：非会话组成员的 tab 不进入事件流
-  if (!entry.groupId || !sessionGroupIds().has(entry.groupId)) return;
+  // 准入：非会话组成员且非派生 popup 的 tab 不进入事件流
+  const isMember = (entry.groupId && sessionGroupIds().has(entry.groupId)) || popupSessionByTab.has(tabId);
+  if (!isMember) return;
   send({
     method: "Target.targetInfoChanged",
     params: {
-      targetInfo: {
-        targetId: entry.targetId,
-        type: entry.type,
-        title: entry.title,
-        url: entry.url,
-        attached: attached.has(entry.targetId),
-        tabId,
-      },
+      targetInfo: cdpTargetInfo(
+        { ...entry, attached: attached.has(entry.targetId), tabId },
+        entry.openerTabId ?? openerByTab.get(tabId),
+      ),
     },
   });
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   const entry = targetByTab.get(tabId);
+  const wasPopup = popupSessionByTab.delete(tabId);
+  openerByTab.delete(tabId);
   scheduleReconcile();
   if (!entry) return;
   targetByTab.delete(tabId);
   tabByTarget.delete(entry.targetId);
-  // 准入：组员的关闭才进入事件流（entry.groupId 是最后已知身份，不查实时——
+  // 准入：组员或派生 popup 的关闭才进入事件流（entry.groupId 是最后已知身份，不查实时——
   // 关闭瞬间 Chrome 可能已把 tab 移出组，实时查询会误判成组外）。组外的
   // 用户 tab 关闭与系统无关。
-  const wasMember = entry.groupId && sessionGroupIds().has(entry.groupId);
-  if (!wasMember) return;
+  const wasMember = (entry.groupId && sessionGroupIds().has(entry.groupId)) || wasPopup;
+  if (!wasMember) {
+    // 组外 tab 若曾挂载过虚拟会话（如被拖出组后关闭），静默清账防 sessions 泄漏，不发事件
+    if (rootsByTarget.has(entry.targetId)) dropTarget(entry.targetId, { notify: false });
+    return;
+  }
   dropTarget(entry.targetId).then(() => {
     send({ method: "Target.targetDestroyed", params: { targetId: entry.targetId } });
   });

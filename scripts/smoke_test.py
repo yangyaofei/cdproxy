@@ -25,10 +25,14 @@ RUN_ID = str(int(time.time()))
 
 
 def alloc_token() -> str:
-    """分配令牌：从管理面 /status 自取（与 agent-browser plugin 同链路）。"""
+    """分配令牌：优先读环境变量，回落 ~/.cdproxy/settings.json。"""
+    tok = os.environ.get("ALLOC_TOKEN") or os.environ.get("EXT_TOKEN") or ""
+    if tok:
+        return tok
     try:
-        with urllib.request.urlopen(CONTROL + "/status", timeout=10) as resp:
-            return json.loads(resp.read())["sources"]["alloc_token"]
+        cfg_path = os.path.expanduser("~/.cdproxy/settings.json")
+        with open(cfg_path, encoding="utf-8") as f:
+            return json.load(f).get("sources", {}).get("alloc_token", "")
     except Exception:
         return ""
 

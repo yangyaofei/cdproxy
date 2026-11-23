@@ -825,11 +825,21 @@ func (p *Proxy) onUpstreamMessage(sess *state.Session, data []byte) {
 	delta := outcome.Delta
 	action := outcome.Action
 
-	// 扩展下游：createTarget 夹带会话名（私有参数，扩展据此把新 tab 归入
-	// "ab: <会话>" 标签组后剥离，不进 chrome.tabs API）。chrome 下游不带
-	// ——真 Chrome 忽略未知字段，但基座浏览器无需分组（无用户混用场景）。
-	if kind == dsExtension && method == "Target.createTarget" {
-		params["abSession"] = sess.Name
+	// 扩展下游：
+	// - createTarget 夹带会话名（私有参数，扩展据此把新 tab 归入会话标签组后剥离）
+	// - Storage.*Cookies 夹带会话名与名下目标（扩展借该会话已附着 tab 调原生
+	//   chrome.debugger 执行，绝不触碰用户组外 tab）
+	// chrome 下游不带私有参数。
+	if kind == dsExtension {
+		switch method {
+		case "Target.createTarget":
+			params["abSession"] = sess.Name
+		case "Storage.getCookies", "Storage.setCookies", "Storage.clearCookies":
+			params["abSession"] = sess.Name
+			if owned := sess.OwnedTargets(); len(owned) > 0 {
+				params["abTargetId"] = owned[0]
+			}
+		}
 	}
 
 	// 处理标签（响应到达时做归属/绑定/过滤）
@@ -1338,30 +1348,12 @@ func (p *Proxy) projectGroup(sess *state.Session, tids []string, infos map[strin
 			missing = append(missing, tid)
 		}
 	}
-	// 信息兜底：sync/gstate 未随行 targetInfo 的（旧版扩展/异常路径），
-	// 现场向扩展拉一次 getTargets 补齐——合成事件不依赖上报格式。
-	if len(missing) > 0 {
-		if resp, err := p.dsCallOn(dsExtension, "Target.getTargets", map[string]any{}, 3*time.Second); err == nil {
-			if result, ok := resp["result"].(map[string]any); ok {
-				if items, ok := result["targetInfos"].([]any); ok {
-					for _, item := range items {
-						if im, ok := item.(map[string]any); ok {
-							if tid, _ := im["targetId"].(string); tid != "" {
-								infos[tid] = im
-							}
-						}
-					}
-				}
-			}
+	emitGained := func(resolvedInfos map[string]map[string]any) {
+		if !sess.Connected() || (!sess.DiscoverTargets() && !sess.AutoAttach()) {
+			return
 		}
-	}
-	// 合成 targetCreated：客户端页面列表靠事件流维护（等价真 Chrome 的
-	// tab 出现）；门控=会话已开启 target 发现或 autoAttach（真 Chrome 仅
-	// 在二者之一开启后才推送生命周期事件）；会话已开 autoAttach 则同步
-	// 补挂（可见即可连）。仅对本次新增的发放。
-	if sess.Connected() && (sess.DiscoverTargets() || sess.AutoAttach()) {
 		for tid := range gainedSet {
-			info, ok := infos[tid]
+			info, ok := resolvedInfos[tid]
 			if !ok {
 				continue
 			}
@@ -1372,9 +1364,35 @@ func (p *Proxy) projectGroup(sess *state.Session, tids []string, infos map[strin
 				"params": map[string]any{"targetInfo": info},
 			})
 			if sess.AutoAttach() {
-				p.proxyAttachSync(sess, tid, 3*time.Second)
+				// 必须非阻塞发 attach：projectGroup 运行在 dsRecvLoop 内，同步等
+				// 下游应答会自锁整个读循环；发出的 Target.attachToTarget 经
+				// dsRecvLoop 收到 Target.attachedToTarget 后即刻绑定并路由给上游。
+				p.proxyAttach(sess, tid)
 			}
 		}
+	}
+
+	if len(missing) > 0 {
+		// 信息兜底：旧版扩展未随行 targetInfo 时放 goroutine 拉 getTargets，
+		// 绝不在 dsRecvLoop 内阻塞等待下游应答（防死锁）。
+		go func(baseInfos map[string]map[string]any) {
+			if resp, err := p.dsCallOn(dsExtension, "Target.getTargets", map[string]any{}, 3*time.Second); err == nil {
+				if result, ok := resp["result"].(map[string]any); ok {
+					if items, ok := result["targetInfos"].([]any); ok {
+						for _, item := range items {
+							if im, ok := item.(map[string]any); ok {
+								if tid, _ := im["targetId"].(string); tid != "" {
+									baseInfos[tid] = im
+								}
+							}
+						}
+					}
+				}
+			}
+			emitGained(baseInfos)
+		}(infos)
+	} else {
+		emitGained(infos)
 	}
 	if len(gainedSet) > 0 {
 		p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: sess.Name,
@@ -1563,6 +1581,17 @@ func (p *Proxy) onDsEvent(msg map[string]any, kind string) {
 	// 带 sessionId 的事件 → 路由到绑定的 session
 	if sid, ok := msg["sessionId"].(string); ok && sid != "" {
 		if sess := p.st.SessionOfDs(sid); sess != nil && sess.Downstream() == kind {
+			// 嵌套 Target.attachedToTarget（OOPIF / Worker / attachToBrowserTarget 下的子会话）：
+			// 先绑定子 sessionId 归属，确保子会话后续上报的事件能路由回同一上游会话。
+			if method == "Target.attachedToTarget" {
+				if childSid, _ := params["sessionId"].(string); childSid != "" {
+					childTid := ""
+					if ti, ok := params["targetInfo"].(map[string]any); ok {
+						childTid, _ = ti["targetId"].(string)
+					}
+					p.st.BindDsSession(sess, childSid, childTid)
+				}
+			}
 			// 只记结构类事件（Target 生命周期/对话框/弹窗），网络与帧噪声跳过——
 			// 它们会淹没命令流水
 			if strings.HasPrefix(method, "Target.") || method == "Page.javascriptDialogOpening" || method == "Page.windowOpen" {
@@ -1570,6 +1599,19 @@ func (p *Proxy) onDsEvent(msg map[string]any, kind string) {
 					Method: method, Action: "routed", Detail: sid[:min(12, len(sid))]})
 			}
 			p.sendTo(sess, msg)
+			// BFCache 往返缓存恢复补偿：用户日常 Chrome 默认开启 BFCache，goBack/goForward
+			// 触发 Page.frameNavigated(type="BackForwardCacheRestore") 后 Chrome 不会重发
+			// DOMContentLoaded/load 生命周期事件，导致 Playwright/Puppeteer 等待导航超时。
+			if method == "Page.frameNavigated" {
+				if navType, _ := params["type"].(string); navType == "BackForwardCacheRestore" {
+					p.emitBFCacheLifecycle(sess, sid, params)
+				}
+			}
+			if method == "Target.detachedFromTarget" {
+				if childSid, _ := params["sessionId"].(string); childSid != "" {
+					p.st.UnbindDsSession(childSid)
+				}
+			}
 		}
 		return
 	}
@@ -1600,10 +1642,25 @@ func (p *Proxy) onDsEvent(msg map[string]any, kind string) {
 	case "Target.targetCreated", "Target.targetInfoChanged":
 		ti, _ := params["targetInfo"].(map[string]any)
 		tid, _ := ti["targetId"].(string)
-		if owner := p.st.OwnerOf(tid); owner != nil && owner.Downstream() == kind {
+		owner := p.st.OwnerOf(tid)
+		adoptedOpener := false
+		// standalone 下会话页触发 target="_blank"/window.open：按 openerId 继承归属并补挂
+		if owner == nil && method == "Target.targetCreated" && kind == dsStandalone && tid != "" {
+			if openerID, _ := ti["openerId"].(string); openerID != "" {
+				if openerOwner := p.st.OwnerOf(openerID); openerOwner != nil && openerOwner.Downstream() == kind {
+					p.st.OwnTarget(openerOwner, tid)
+					owner = openerOwner
+					adoptedOpener = true
+				}
+			}
+		}
+		if owner != nil && owner.Downstream() == kind {
 			p.ilog.Append(interlog.Entry{Dir: "down", Kind: "event", Session: owner.Name,
 				Method: method, Action: "routed", TargetID: tid, In: interlog.Safe(ti)})
 			p.sendTo(owner, msg)
+			if adoptedOpener && owner.AutoAttach() {
+				p.proxyAttach(owner, tid)
+			}
 		} else {
 			// 会话宇宙之外（用户日常 tab / keeper 自身 tab / autoAttach 子树
 			// 广播）。事件准入在源头完成：extension 源=扩展按组准入，本分支只
@@ -1618,6 +1675,53 @@ func (p *Proxy) onDsEvent(msg map[string]any, kind string) {
 		if owner != nil && owner.Downstream() == kind {
 			p.sendTo(owner, msg)
 		}
+	}
+}
+
+// emitBFCacheLifecycle 在 Chrome BFCache 恢复后补发已完成页面生命周期事件，
+// 防止 Playwright/Puppeteer 在 goBack/goForward 时无限等待 load/DOMContentLoaded。
+func (p *Proxy) emitBFCacheLifecycle(sess *state.Session, sid string, params map[string]any) {
+	frame, ok := params["frame"].(map[string]any)
+	if !ok {
+		return
+	}
+	frameID, _ := frame["id"].(string)
+	if frameID == "" {
+		return
+	}
+	loaderID, _ := frame["loaderId"].(string)
+	ts := float64(time.Now().UnixNano()) / 1e9
+	p.sendTo(sess, map[string]any{
+		"sessionId": sid,
+		"method":    "Page.domContentEventFired",
+		"params":    map[string]any{"timestamp": ts},
+	})
+	p.sendTo(sess, map[string]any{
+		"sessionId": sid,
+		"method":    "Page.lifecycleEvent",
+		"params": map[string]any{
+			"frameId":   frameID,
+			"loaderId":  loaderID,
+			"name":      "DOMContentLoaded",
+			"timestamp": ts,
+		},
+	})
+	p.sendTo(sess, map[string]any{
+		"sessionId": sid,
+		"method":    "Page.loadEventFired",
+		"params":    map[string]any{"timestamp": ts},
+	})
+	for _, name := range []string{"load", "networkAlmostIdle", "networkIdle"} {
+		p.sendTo(sess, map[string]any{
+			"sessionId": sid,
+			"method":    "Page.lifecycleEvent",
+			"params": map[string]any{
+				"frameId":   frameID,
+				"loaderId":  loaderID,
+				"name":      name,
+				"timestamp": ts,
+			},
+		})
 	}
 }
 

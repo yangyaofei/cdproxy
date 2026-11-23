@@ -4,6 +4,9 @@
 //   C3 客户端未收到 targetDestroyed 风暴
 //   C4 release（close 策略）→ 组内 tab 全关、组消失
 //   C5 mark 策略 release 后同名 alloc → 墓碑复活 + 整组认领（组在即领地）
+import { readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 const CONTROL = process.env.EXT_CONTROL || "http://127.0.0.1:9234";
 const CHROME_CDP = process.env.CHROME_CDP || "http://127.0.0.1:9333";
 const RUN = "cold" + Date.now().toString(36);
@@ -15,19 +18,15 @@ const check = (name, ok, detail = "") => {
 };
 
 // ── HTTP 帮助 ──
-// 分配令牌：从管理面 /status 自取（POST /sessions 需要 Bearer 准入）
-let _tok = "";
-const allocToken = async () => {
-  if (_tok) return _tok;
-  const r = await http("GET", "/status");
-  _tok = r?.data?.sources?.alloc_token || r?.sources?.alloc_token || "";
-  return _tok;
-};
+const _tok = process.env.ALLOC_TOKEN || process.env.EXT_TOKEN || (() => {
+  try {
+    return JSON.parse(readFileSync(path.join(os.homedir(), ".cdproxy", "settings.json"), "utf8"))?.sources?.alloc_token || "";
+  } catch { return ""; }
+})();
 
-const http = async (method, path, body) => {
-  const resp = await fetch(CONTROL + path, {
-    method, headers: { "Content-Type": "application/json",
-      ...(method === "POST" && path === "/sessions" ? { Authorization: `Bearer ${await allocToken()}` } : {}) },
+const http = async (method, p, body) => {
+  const resp = await fetch(CONTROL + p, {
+    method, headers: { "Content-Type": "application/json", ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   return { code: resp.status, data: await resp.json().catch(() => ({})) };
